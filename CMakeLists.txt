@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(PP_AMP_BUILD_TESTS "Build pp-cpp-amp unit and integration tests" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+set(PP_AMP_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PpAmp.cmake")
 include(PpAmpDeps)
 

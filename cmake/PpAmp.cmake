@@ -3,7 +3,7 @@
 function(pp_amp_add_library target)
   add_library(${target} STATIC ${ARGN})
   target_include_directories(${target} PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PP_AMP_SOURCE_ROOT}/include>
     $<INSTALL_INTERFACE:include>)
   target_link_libraries(${target} PUBLIC pp_common)
   if(MSVC)
@@ -25,8 +25,8 @@ function(pp_amp_add_layer_tests lib_target test_target)
 
   add_executable(${test_target} ${_test_sources} ${ARG_EXTRA_SOURCES})
   target_include_directories(${test_target} PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/tests
+    ${PP_AMP_SOURCE_ROOT}/include
+    ${PP_AMP_SOURCE_ROOT}/tests
     ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(${test_target} PRIVATE
     GTest::gtest
