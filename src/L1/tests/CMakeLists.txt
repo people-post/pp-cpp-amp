@@ -1,0 +1,1 @@
+pp_amp_add_layer_tests(pp_amp_l1 pp_amp_l1_test)
