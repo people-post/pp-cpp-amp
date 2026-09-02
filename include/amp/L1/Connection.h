@@ -62,6 +62,9 @@ public:
 
   bool LooksAlive(int64_t now_ms) const;
 
+  /** Send an empty Keepalive packet (BestEffort-style; no app payload). */
+  Roe<void> SendKeepalive(int64_t now_ms);
+
   /** Drive retransmits / close drain. */
   void Tick(int64_t now_ms);
 

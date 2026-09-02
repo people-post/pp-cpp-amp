@@ -67,6 +67,16 @@ bool Connection::LooksAlive(int64_t now_ms) const {
   return (now_ms - last_auth_rx_ms_) <= kAliveTimeoutMs;
 }
 
+Connection::Roe<void> Connection::SendKeepalive(const int64_t now_ms) {
+  if (closed_) {
+    return Failure::Of(Err::Closed, "adp: keepalive on closed connection");
+  }
+  if (peer_.port == 0) {
+    return Failure::Of(Err::WireError, "adp: keepalive without peer endpoint");
+  }
+  return SendPacket(PacketType::Keepalive, 0, {}, now_ms);
+}
+
 uint32_t Connection::TruncTs(int64_t now_ms) const {
   return static_cast<uint32_t>(static_cast<uint64_t>(now_ms) & 0xffffffffull);
 }
@@ -212,6 +222,9 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     peer_closed_ = true;
     closed_ = true;
     endpoint_->Unregister(id_);
+    break;
+  }
+  case PacketType::Keepalive: {
     break;
   }
   case PacketType::DataBestEffort: {

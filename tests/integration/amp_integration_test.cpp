@@ -488,5 +488,43 @@ TEST_F(AmpIntegrationTest, AdversarialFragPartialBombAdv08) {
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
 }
 
+TEST_F(AmpIntegrationTest, ColdLinkEvictedAfterIdle) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+  h.AdvanceMs(pp::adp::kAliveTimeoutMs + 500);
+  h.PumpBudget(10);
+  EXPECT_FALSE(h.mgr_a().IsConnected("b"));
+}
+
+TEST_F(AmpIntegrationTest, WarmLinkSurvivesIdle) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+  h.mgr_a().MarkWarm("b");
+  h.AdvanceMs(pp::adp::kAliveTimeoutMs + 500);
+  h.PumpBudget(10);
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
+TEST_F(AmpIntegrationTest, OutboundWarmKeepaliveRefreshesAssociation) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+  h.mgr_a().MarkWarm("b");
+  auto* outbound = h.mgr_a().FindLink("b");
+  ASSERT_NE(outbound, nullptr);
+  auto* conn = outbound->ConnectionOrNull();
+  ASSERT_NE(conn, nullptr);
+  h.AdvanceMs(25'000);
+  h.PumpBudget(20);
+  EXPECT_TRUE(conn->LooksAlive(h.clock->NowMs()));
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
 } // namespace
 } // namespace pbr::test

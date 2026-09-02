@@ -79,8 +79,14 @@ public:
   }
 
   void MarkWarm();
+  void MarkHot();
   void ClearWarm();
-  bool IsWarm() const { return warm_; }
+  bool IsWarm() const { return keepalive_tier_ != KeepaliveTier::None; }
+  KeepaliveTier GetKeepaliveTier() const { return keepalive_tier_; }
+
+  LinkRoe SendKeepalive(int64_t now_ms);
+  int64_t LastKeepaliveTxMs() const { return last_keepalive_tx_ms_; }
+  void SetLastKeepaliveTxMs(int64_t ms) { last_keepalive_tx_ms_ = ms; }
 
   /** Wire-coordinated session rekey on channel 0 (after capability exchange). */
   void RequestSessionRekey(std::function<void(Roe<void>)> on_complete);
@@ -123,7 +129,8 @@ private:
   MshIdentity identity_;
   PeerLinkManager& owner_;
   PeerLinkPhase phase_ = PeerLinkPhase::Handshaking;
-  bool warm_ = false;
+  KeepaliveTier keepalive_tier_ = KeepaliveTier::None;
+  int64_t last_keepalive_tx_ms_ = 0;
   bool capability_exchange_started_ = false;
   bool capability_offer_sent_ = false;
   std::optional<CapabilityPayload> remote_capability_;

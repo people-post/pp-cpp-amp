@@ -39,6 +39,8 @@ enum class PacketType : uint8_t {
   DataReliable = 1,
   Ack = 2,
   Close = 3,
+  /** Empty payload; refreshes association liveness and NAT mappings (see docs/KEEPALIVE.md). */
+  Keepalive = 4,
 };
 
 struct AssocId {
