@@ -367,9 +367,23 @@ void PeerLink::AttachMuxTransport() {
   });
 }
 
-void PeerLink::MarkWarm() { warm_ = true; }
+void PeerLink::MarkWarm() { keepalive_tier_ = KeepaliveTier::Warm; }
 
-void PeerLink::ClearWarm() { warm_ = false; }
+void PeerLink::MarkHot() { keepalive_tier_ = KeepaliveTier::Hot; }
+
+void PeerLink::ClearWarm() { keepalive_tier_ = KeepaliveTier::None; }
+
+PeerLink::LinkRoe PeerLink::SendKeepalive(const int64_t now_ms) {
+  if (IsCarrierBacked() || !connection_) {
+    return LinkRoe::error(Failure::Of(Err::TransportUnavailable, "amp link: keepalive unavailable"));
+  }
+  auto sent = connection_->SendKeepalive(now_ms);
+  if (!sent) {
+    return LinkRoe::error(WrapConnectionFailure(sent.error()));
+  }
+  last_keepalive_tx_ms_ = now_ms;
+  return LinkRoe();
+}
 
 void PeerLink::RequestSessionRekey(std::function<void(Roe<void>)> on_complete) {
   if (phase_ != PeerLinkPhase::Connected || !mux_ || !session_) {

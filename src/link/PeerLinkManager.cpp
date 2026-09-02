@@ -732,9 +732,36 @@ void PeerLinkManager::MarkWarm(const std::string& peer_key) {
   }
 }
 
+void PeerLinkManager::MarkHot(const std::string& peer_key) {
+  if (auto* link = FindLink(peer_key)) {
+    link->MarkHot();
+  }
+}
+
 void PeerLinkManager::ClearWarm(const std::string& peer_key) {
   if (auto* link = FindLink(peer_key)) {
     link->ClearWarm();
+  }
+}
+
+void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
+  for (auto& [_, link] : links_) {
+    if (link->Phase() != PeerLinkPhase::Connected || link->IsCarrierBacked() || !link->IsOutbound()) {
+      continue;
+    }
+    const auto tier = link->GetKeepaliveTier();
+    if (tier == KeepaliveTier::None) {
+      continue;
+    }
+    const int64_t interval_ms = tier == KeepaliveTier::Hot ? config_.keepalive_hot_interval.count()
+                                                           : config_.keepalive_warm_interval.count();
+    if (interval_ms <= 0) {
+      continue;
+    }
+    if (link->LastKeepaliveTxMs() != 0 && now_ms - link->LastKeepaliveTxMs() < interval_ms) {
+      continue;
+    }
+    (void)link->SendKeepalive(now_ms);
   }
 }
 
@@ -803,6 +830,8 @@ void PeerLinkManager::Tick() {
   for (const auto& key : evict) {
     links_.erase(key);
   }
+
+  MaybeSendKeepalives(now);
 }
 
 void PeerLinkManager::EnableNestedCarrierAccept(const bool enable) {

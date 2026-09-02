@@ -94,6 +94,7 @@ public:
   bool IsConnected(const std::string& peer_key) const;
 
   void MarkWarm(const std::string& peer_key);
+  void MarkHot(const std::string& peer_key);
   void ClearWarm(const std::string& peer_key);
 
   PeerLink* FindLink(const std::string& peer_key);
@@ -147,6 +148,8 @@ private:
   void DropLink(const std::string& peer_key);
   /** After dual-dial loser outbound drops, rekey winner onto the dial alias. */
   void ScheduleAdoptDialAlias(std::string remote_peer_id, std::string dial_alias);
+
+  void MaybeSendKeepalives(int64_t now_ms);
 
   static Failure WrapPeerLinkFailure(const PeerLink::Failure& child);
   static LinkRoe WrapPeerLinkResult(const PeerLink::LinkRoe& child);

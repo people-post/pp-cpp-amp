@@ -51,8 +51,19 @@ struct PeerLinkConfig {
   std::chrono::milliseconds dial_timeout{8000};
   std::chrono::milliseconds idle_ttl{180000};
   std::chrono::milliseconds dial_failure_backoff{30000};
+  /** Outbound keepalive interval for MarkHot links (NAT refresh). */
+  std::chrono::milliseconds keepalive_hot_interval{20000};
+  /** Outbound keepalive interval for MarkWarm links. */
+  std::chrono::milliseconds keepalive_warm_interval{60000};
   /** When set, derives remote PeerId string from authenticated MSH identity key. */
   std::function<std::string(const ByteVector& identity_public_key)> peer_id_from_identity;
+};
+
+/** Scheduled keepalive tier on a connected link (see docs/KEEPALIVE.md). */
+enum class KeepaliveTier {
+  None = 0,
+  Warm = 1,
+  Hot = 2,
 };
 
 } // namespace pp::amp

@@ -18,6 +18,8 @@ tests/integration/    Cross-layer integration tests
 
 Consumers include headers as `#include "amp/L1/Clock.h"` (include root is `include/`).
 
+NAT / association keepalive: [docs/KEEPALIVE.md](docs/KEEPALIVE.md).
+
 ## Build
 
 ```bash

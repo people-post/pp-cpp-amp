@@ -61,7 +61,7 @@ Roe<WirePacket> WireCodec::Decode(std::span<const uint8_t> datagram) {
     return Error("adp: unknown version");
   }
   const uint8_t type = datagram[1];
-  if (type > static_cast<uint8_t>(PacketType::Close)) {
+  if (type > static_cast<uint8_t>(PacketType::Keepalive)) {
     return Error("adp: bad packet type");
   }
   pkt.type = static_cast<PacketType>(type);
