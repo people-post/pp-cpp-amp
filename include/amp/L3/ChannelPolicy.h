@@ -57,12 +57,8 @@ inline ChannelPolicy ChatBlobChannelPolicy() {
   return policy;
 }
 
-/**
- * Outer splice for nested Session carrier ([A024]).
- * BestEffort (Realtime) so inner media FRAG bursts are not capped by ADP reliable_window.
- * Nested MSH is a few frames; MemoryDatagramIo tests are lossless. Dual QoS lanes later.
- */
-inline ChannelPolicy CircuitCarrierChannelPolicy(
+/** Call-media / realtime frames: BestEffort + drop Oldest under outbound burst. */
+inline ChannelPolicy CallMediaChannelPolicy(
     std::chrono::milliseconds read_timeout = std::chrono::milliseconds{8000}) {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Realtime;
@@ -73,6 +69,16 @@ inline ChannelPolicy CircuitCarrierChannelPolicy(
   policy.max_message_bytes = AmpChannelLimits::kMaxCallMediaFrameBytes;
   policy.read_timeout = read_timeout;
   return policy;
+}
+
+/**
+ * Outer splice for nested Session carrier ([A024]).
+ * BestEffort (Realtime) so inner media FRAG bursts are not capped by ADP reliable_window.
+ * Nested MSH is a few frames; MemoryDatagramIo tests are lossless. Dual QoS lanes later.
+ */
+inline ChannelPolicy CircuitCarrierChannelPolicy(
+    std::chrono::milliseconds read_timeout = std::chrono::milliseconds{8000}) {
+  return CallMediaChannelPolicy(read_timeout);
 }
 
 } // namespace pp::amp

@@ -1,7 +1,11 @@
-set(_PP_AMP_PERF_SOURCES
-  perf_main.cpp)
+set(_PP_AMP_PERF_SUPPORT
+  ${PP_AMP_SOURCE_ROOT}/tests/support/mesh_harness_support.cpp
+  ${PP_AMP_SOURCE_ROOT}/tests/support/mesh_test_harness.cpp
+  ${PP_AMP_SOURCE_ROOT}/tests/support/amp_integration_harness.cpp)
 
-add_executable(pp_amp_perf ${_PP_AMP_PERF_SOURCES})
+add_executable(pp_amp_perf
+  perf_main.cpp
+  ${_PP_AMP_PERF_SUPPORT})
 
 target_include_directories(pp_amp_perf PRIVATE
   ${PP_AMP_SOURCE_ROOT}/include
