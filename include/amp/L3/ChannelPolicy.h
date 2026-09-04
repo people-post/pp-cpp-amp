@@ -47,6 +47,16 @@ inline ChannelPolicy CapabilityChannelPolicy() {
   return policy;
 }
 
+/** Chat attachment / large binary (FRAG up to AmpChannelLimits::kMaxChatBlobFrameBytes). */
+inline ChannelPolicy ChatBlobChannelPolicy() {
+  ChannelPolicy policy;
+  policy.cls = ChannelClass::Bulk;
+  policy.drop = ChannelDropPolicy::Never;
+  policy.max_outbound_frames = AmpChannelLimits::kMaxControlOutboundFrames;
+  policy.max_message_bytes = AmpChannelLimits::kMaxChatBlobFrameBytes;
+  return policy;
+}
+
 /**
  * Outer splice for nested Session carrier ([A024]).
  * BestEffort (Realtime) so inner media FRAG bursts are not capped by ADP reliable_window.

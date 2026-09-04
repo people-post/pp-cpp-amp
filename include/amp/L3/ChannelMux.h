@@ -41,6 +41,12 @@ public:
   /** Register handler for inbound DATA on a channel. */
   void SetDataHandler(uint32_t channel_id, DataHandler handler);
 
+  /**
+   * Update local channel policy (e.g. ChannelSession::Bind after inbound OPEN).
+   * Recreates MessageReassembly from policy.max_message_bytes (drops in-flight partials).
+   */
+  Roe<void> ApplyChannelPolicy(uint32_t channel_id, ChannelPolicy policy);
+
   /** Invoked on inbound CLOSE/RESET for a channel. */
   void SetTerminalHandler(uint32_t channel_id, TerminalHandler handler);
 

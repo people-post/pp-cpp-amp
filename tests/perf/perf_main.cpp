@@ -3,7 +3,6 @@
 #include "amp/L1/WireCodec.h"
 #include "amp/L2/SessionCrypto.h"
 #include "amp/L2/Types.h"
-#include "amp/L3/AmpChannelLimits.h"
 #include "amp/L3/ChannelMux.h"
 #include "amp/L3/ChannelPolicy.h"
 #include "amp/L3/Types.h"
@@ -54,14 +53,7 @@ pp::adp::AssocId AdpAssoc(const uint8_t fill = 0x11) {
 
 pp::amp::ByteVector SessionKey(const uint8_t seed) { return pp::amp::ByteVector(pp::amp::kSessionKeyBytes, seed); }
 
-pp::amp::ChannelPolicy BulkPolicy() {
-  pp::amp::ChannelPolicy policy;
-  policy.cls = pp::amp::ChannelClass::Bulk;
-  policy.drop = pp::amp::ChannelDropPolicy::Never;
-  policy.max_outbound_frames = pp::amp::AmpChannelLimits::kMaxControlOutboundFrames;
-  policy.max_message_bytes = pp::amp::AmpChannelLimits::kMaxChatBlobFrameBytes;
-  return policy;
-}
+pp::amp::ChannelPolicy BulkPolicy() { return pp::amp::ChatBlobChannelPolicy(); }
 
 bool RunA1(const int warmup, const int iters) {
   std::printf("\n== A1 WireCodec + HmacBinder ==\n");
@@ -159,9 +151,8 @@ bool RunA2(const int warmup, const int iters) {
 
 bool RunC3(const int warmup, const int iters) {
   std::printf("\n== C3 ChannelMux FRAG (AmpTestLink) ==\n");
-  // Cap at 256 KiB: OPEN does not wire max_message_bytes, so the responder keeps the
-  // ChannelPolicy default (kMaxChatStreamJsonBytes). 512 KiB+ needs a product/policy fix.
-  const size_t payloads[] = {900, 64 * 1024, 128 * 1024, 256 * 1024};
+  // Ledger RPC (512 KiB) + chat-blob (4 MiB); OPEN carries max_message_bytes to the peer.
+  const size_t payloads[] = {900, 64 * 1024, 256 * 1024, 512 * 1024, 4ull * 1024ull * 1024ull};
   bool ok = true;
 
   for (const size_t payload_len : payloads) {
@@ -195,7 +186,8 @@ bool RunC3(const int warmup, const int iters) {
     }
 
     const int case_warmup = std::min(warmup, 2);
-    const int case_iters = std::max(1, iters);
+    const int case_iters =
+        payload_len >= 4ull * 1024ull * 1024ull ? std::max(1, std::min(iters, 2)) : std::max(1, iters);
     auto samples = TimeLoop(case_warmup, case_iters, [&] {
       received.clear();
       if (!static_cast<bool>(link.initiator.mux.SendData(*ch, large))) {

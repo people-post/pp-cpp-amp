@@ -34,14 +34,14 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 |----|------|---------|--------|
 | **C1** | `EnsureAssociation` → capability open | handshake ms | planned |
 | **C2** | `OpenChannel` + first DATA RTT | ms | planned |
-| **C3** | `ChannelMux::SendData` FRAG 900 / 64 / 128 / 256 KiB | reassembly time, MB/s, frags | **scaffold** (AmpTestLink) |
+| **C3** | `ChannelMux::SendData` FRAG 900 / 64 / 256 / 512 KiB / 4 MiB | reassembly time, MB/s, frags | **scaffold** (AmpTestLink) |
 | **C4** | Realtime + Drop Oldest burst > 64 frames | drop %, queue age | planned |
 | **C5** | Mux fairness (control + bulk + realtime) | HOL under Reliable | planned |
 
 **C3 notes:**
 
 - Large Reliable sends through ADP can hit `reliable_window=16` mid-FRAG if the caller does not pump ACKs between frames. The scaffold measures **AmpTestLink** (in-process seal → peer mux) so FRAG/AEAD throughput is not conflated with window pacing. Full-stack paced/OsUdp variants belong with B1 / OsUdp follow-ups.
-- OPEN does not negotiate `max_message_bytes`; the responder keeps the `ChannelPolicy` default (`kMaxChatStreamJsonBytes` = 256 KiB). Scaffold sizes stop at 256 KiB. **512 KiB / 4 MiB** wait on wiring blob limits on both peers (or a test-only policy inject).
+- OPEN carries `max_message_bytes` (u32 after flags). Responder caps at `kMaxChatBlobFrameBytes`. `ChannelSession::Bind` also calls `ChannelMux::ApplyChannelPolicy` so L4 policies (e.g. ledger 512 KiB) raise reassembly even if OPEN omitted the field (legacy peers).
 
 ### D — Mesh runtime / scale
 
@@ -55,9 +55,9 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 
 | ID | Profile | Status |
 |----|---------|--------|
-| **E1** | Ledger RPC ≤512 KiB (`/pp-ledger/rpc/1.0.0`) | planned (C3 sizes cover FRAG cost) |
+| **E1** | Ledger RPC ≤512 KiB (`/pp-ledger/rpc/1.0.0`) | C3 covers FRAG cost; full-stack paced send planned |
 | **E2** | Call media Realtime + Oldest | planned (C4) |
-| **E3** | Chat blob ~4 MiB | planned |
+| **E3** | Chat blob ~4 MiB | **scaffold** (C3 4 MiB size) |
 | **E4** | Nested carrier vs direct | planned (after bridge e2e) |
 
 ### F — Adversarial cost
@@ -86,7 +86,7 @@ Environment (optional):
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PP_AMP_PERF_ITERS` | `2000` | timed iterations for A1/A2 after warm-up |
-| `PP_AMP_PERF_FRAG_ITERS` | `8` | timed iterations for C3 after warm-up |
+| `PP_AMP_PERF_FRAG_ITERS` | `8` | timed iterations for C3 after warm-up (4 MiB capped at 2) |
 | `PP_AMP_PERF_WARMUP` | `50` | discarded warm-up iterations (C3 caps warm-up at 2) |
 
 CSV lines are prefixed with `csv,` for easy grep.
@@ -104,5 +104,5 @@ CSV lines are prefixed with `csv,` for easy grep.
 Track on a fixed Release machine; tighten thresholds after a few runs:
 
 - A1/A2: flag ~10–15% ns/op regressions across commits.
-- C3 256 KiB (AmpTestLink): stable MB/s; same regression band.
+- C3 512 KiB / 4 MiB (AmpTestLink): stable MB/s; same regression band.
 - Assoc (when C1 lands): report p50/p99; PQ dominates — do not chase Memory RTT.

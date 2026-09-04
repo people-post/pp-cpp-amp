@@ -13,20 +13,12 @@ namespace pbr::test {
 namespace {
 
 pp::amp::ChannelPolicy BulkPolicy() {
-  pp::amp::ChannelPolicy policy;
-  policy.cls = pp::amp::ChannelClass::Bulk;
-  policy.drop = pp::amp::ChannelDropPolicy::Never;
-  policy.max_outbound_frames = pp::amp::AmpChannelLimits::kMaxControlOutboundFrames;
-  policy.max_message_bytes = pp::amp::AmpChannelLimits::kMaxChatBlobFrameBytes;
-  return policy;
+  return pp::amp::ChatBlobChannelPolicy();
 }
 
 pp::amp::ChannelPolicy RealtimeBulkPolicy() {
-  pp::amp::ChannelPolicy policy;
+  pp::amp::ChannelPolicy policy = pp::amp::ChatBlobChannelPolicy();
   policy.cls = pp::amp::ChannelClass::Realtime;
-  policy.drop = pp::amp::ChannelDropPolicy::Never;
-  policy.max_outbound_frames = pp::amp::AmpChannelLimits::kMaxControlOutboundFrames;
-  policy.max_message_bytes = pp::amp::AmpChannelLimits::kMaxChatBlobFrameBytes;
   return policy;
 }
 
