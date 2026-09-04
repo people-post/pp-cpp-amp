@@ -21,8 +21,13 @@ inline void PrintCsv(const char* case_id, const char* label, const size_t payloa
 
 /** B1 Reliable window + loss; OsUdp loopback; E1 paced 512 KiB; D1 multi-link Drive. */
 bool RunB1(int warmup, int iters);
+bool RunB2(int warmup, int iters);
+bool RunB3(int warmup, int iters);
+bool RunA3(int warmup, int iters);
 bool RunOsUdp(int warmup, int iters);
 bool RunE1(int warmup, int iters);
 bool RunD1Multi(int warmup, int drive_iters);
+bool RunD2(int warmup, int iters);
+bool RunF(int warmup, int iters);
 
 } // namespace pp::amp::perf

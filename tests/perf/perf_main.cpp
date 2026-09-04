@@ -398,7 +398,10 @@ int main() {
   bool ok = true;
   ok = RunA1(warmup, micro_iters) && ok;
   ok = RunA2(warmup, micro_iters) && ok;
+  ok = pp::amp::perf::RunA3(warmup, micro_iters) && ok;
   ok = pp::amp::perf::RunB1(std::min(warmup, 1), xfer_iters) && ok;
+  ok = pp::amp::perf::RunB2(std::min(warmup, 1), xfer_iters) && ok;
+  ok = pp::amp::perf::RunB3(warmup, media_iters) && ok;
   ok = pp::amp::perf::RunOsUdp(std::min(warmup, 1), xfer_iters) && ok;
   ok = RunC1(std::min(warmup, 1), assoc_iters) && ok;
   ok = RunC2(std::min(warmup, 1), assoc_iters) && ok;
@@ -406,7 +409,9 @@ int main() {
   ok = RunC4(warmup, media_iters) && ok;
   ok = RunD1(warmup, drive_iters) && ok;
   ok = pp::amp::perf::RunD1Multi(warmup, std::min(drive_iters, 500)) && ok;
+  ok = pp::amp::perf::RunD2(std::min(warmup, 1), xfer_iters) && ok;
   ok = pp::amp::perf::RunE1(std::min(warmup, 1), xfer_iters) && ok;
+  ok = pp::amp::perf::RunF(std::min(warmup, 1), xfer_iters) && ok;
 
   std::printf("\n%s\n", ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
