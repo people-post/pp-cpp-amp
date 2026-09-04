@@ -8,6 +8,7 @@
 #include "amp/L2/SessionControl.h"
 
 #include <functional>
+#include <limits>
 
 namespace pp::amp {
 
@@ -353,17 +354,26 @@ void PeerLink::FailHandshakeTimeout() {
 }
 
 void PeerLink::AttachMuxTransport() {
+  mux_->SetTransportCredits([this]() -> size_t {
+    if (IsCarrierBacked() || !connection_) {
+      return std::numeric_limits<size_t>::max();
+    }
+    return connection_->ReliableCreditsRemaining();
+  });
   mux_->SetTransport([this](const uint32_t channel_id, const uint32_t channel_seq, const adp::QosClass qos,
-                            std::vector<uint8_t> sealed) {
+                            std::vector<uint8_t> sealed) -> Roe<void> {
     auto wire = AmpAdpCarrier::EncodeSealed(channel_id, channel_seq, sealed);
     if (!wire) {
-      return;
+      return wire.error();
     }
     if (IsCarrierBacked()) {
-      (void)SendCarrierWire(std::move(*wire));
-      return;
+      auto sent = SendCarrierWire(std::move(*wire));
+      if (!sent) {
+        return Error(sent.error().message);
+      }
+      return Roe<void>();
     }
-    (void)SendAdp(std::move(*wire), qos);
+    return SendAdp(std::move(*wire), qos);
   });
 }
 

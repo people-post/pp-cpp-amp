@@ -21,6 +21,8 @@ struct ChannelOpenBody {
   std::string protocol_id;
   ChannelClass channel_class = ChannelClass::Control;
   uint16_t flags = 0;
+  /** Receiver reassembly budget; 0 means use ChannelPolicy default on the peer. */
+  uint32_t max_message_bytes = 0;
 };
 
 struct ChannelFragBody {
@@ -43,6 +45,10 @@ struct ChannelFrame {
 class ChannelWire {
 public:
   static Roe<std::vector<uint8_t>> Encode(const ChannelFrame& frame);
+  /** Encode a FRAG frame from a payload span (avoids copying into ChannelFragBody::chunk). */
+  static Roe<std::vector<uint8_t>> EncodeFrag(const ChannelHeader& header, uint64_t msg_id, uint16_t frag_index,
+                                              uint16_t frag_count, uint32_t total_len,
+                                              std::span<const uint8_t> chunk);
   static Roe<ChannelFrame> Decode(std::span<const uint8_t> wire);
 
   static Roe<std::vector<uint8_t>> EncodeLenUtf8Le(std::string_view text);

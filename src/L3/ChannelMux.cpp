@@ -1,5 +1,6 @@
 #include "amp/L3/ChannelMux.h"
 
+#include "amp/L3/AmpChannelLimits.h"
 #include "amp/L3/Capability.h"
 
 namespace pp::amp {
@@ -20,6 +21,8 @@ ChannelMux::ChannelMux(Session& session) : session_(session), now_ms_(DefaultNow
 void ChannelMux::SetPeerSession(Session* peer_session) { peer_session_ = peer_session; }
 
 void ChannelMux::SetTransport(TransportSend send) { transport_ = std::move(send); }
+
+void ChannelMux::SetTransportCredits(TransportCredits credits) { transport_credits_ = std::move(credits); }
 
 void ChannelMux::SetClock(std::function<int64_t()> now_ms) { now_ms_ = std::move(now_ms); }
 
@@ -52,8 +55,7 @@ Roe<void> ChannelMux::SendFrame(const ChannelFrame& frame, ChannelRecord& channe
   if (!sealed) {
     return sealed.error();
   }
-  transport_(frame.header.channel_id, frame.header.channel_seq, last_send_qos_, std::move(*sealed));
-  return Roe<void>();
+  return transport_(frame.header.channel_id, frame.header.channel_seq, last_send_qos_, std::move(*sealed));
 }
 
 Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,
@@ -94,6 +96,9 @@ Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPo
   frame.header.channel_seq = 0;
   frame.open.protocol_id = protocol_id;
   frame.open.channel_class = channels_.at(id).policy.cls;
+  const size_t max_bytes = channels_.at(id).policy.max_message_bytes;
+  frame.open.max_message_bytes =
+      max_bytes > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<uint32_t>(max_bytes);
 
   auto* channel = ChannelById(id);
   if (!channel) {
@@ -112,6 +117,19 @@ void ChannelMux::SetDataHandler(const uint32_t channel_id, DataHandler handler) 
     return;
   }
   pending_handlers_[channel_id] = std::move(handler);
+}
+
+Roe<void> ChannelMux::ApplyChannelPolicy(const uint32_t channel_id, ChannelPolicy policy) {
+  auto* channel = ChannelById(channel_id);
+  if (!channel) {
+    return Error("amp mux: apply policy on unknown channel");
+  }
+  if (policy.max_message_bytes > AmpChannelLimits::kMaxChatBlobFrameBytes) {
+    policy.max_message_bytes = AmpChannelLimits::kMaxChatBlobFrameBytes;
+  }
+  channel->policy = std::move(policy);
+  channel->reassembly = MessageReassembly(channel->policy.max_message_bytes);
+  return Roe<void>();
 }
 
 void ChannelMux::SetTerminalHandler(const uint32_t channel_id, TerminalHandler handler) {
@@ -158,6 +176,11 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
   rec.id = frame.header.channel_id;
   rec.protocol_id = frame.open.protocol_id;
   rec.policy.cls = frame.open.channel_class;
+  if (frame.open.max_message_bytes > 0) {
+    const size_t offered = frame.open.max_message_bytes;
+    rec.policy.max_message_bytes =
+        offered > AmpChannelLimits::kMaxChatBlobFrameBytes ? AmpChannelLimits::kMaxChatBlobFrameBytes : offered;
+  }
   rec.reassembly = MessageReassembly(rec.policy.max_message_bytes);
   rec.state = ChannelState::Open;
   channels_.emplace(rec.id, std::move(rec));
@@ -301,31 +324,51 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     ChannelFrame frame;
     frame.header.frame_type = ChannelFrameType::Data;
     frame.header.channel_id = channel_id;
-    frame.header.channel_seq = channel->tx_seq++;
+    frame.header.channel_seq = channel->tx_seq;
     frame.payload = std::move(payload);
-    return SendFrame(frame, *channel);
+    auto sent = SendFrame(frame, *channel);
+    if (!sent) {
+      return sent.error();
+    }
+    ++channel->tx_seq;
+    return Roe<void>();
   }
 
   const uint64_t msg_id = next_frag_msg_id_++;
   const uint16_t frag_count =
       static_cast<uint16_t>((payload.size() + kMaxSingleDataBytes - 1) / kMaxSingleDataBytes);
+  // Reliable ADP: refuse before any FRAG leaves so a WindowFull cannot strand a partial message.
+  if (QosForClass(channel->policy.cls) == adp::QosClass::Reliable && transport_credits_) {
+    const size_t credits = transport_credits_();
+    if (credits < frag_count) {
+      return Error("amp mux: transport window full");
+    }
+  }
   for (uint16_t i = 0; i < frag_count; ++i) {
     const size_t offset = static_cast<size_t>(i) * kMaxSingleDataBytes;
     const size_t chunk_len = std::min(kMaxSingleDataBytes, payload.size() - offset);
-    ChannelFrame frame;
-    frame.header.frame_type = ChannelFrameType::Frag;
-    frame.header.channel_id = channel_id;
-    frame.header.channel_seq = channel->tx_seq++;
-    frame.frag.msg_id = msg_id;
-    frame.frag.frag_index = i;
-    frame.frag.frag_count = frag_count;
-    frame.frag.total_len = static_cast<uint32_t>(payload.size());
-    frame.frag.chunk.assign(payload.begin() + static_cast<std::ptrdiff_t>(offset),
-                            payload.begin() + static_cast<std::ptrdiff_t>(offset + chunk_len));
-    auto sent = SendFrame(frame, *channel);
+    ChannelHeader header;
+    header.frame_type = ChannelFrameType::Frag;
+    header.channel_id = channel_id;
+    header.channel_seq = channel->tx_seq;
+    auto wire = ChannelWire::EncodeFrag(header, msg_id, i, frag_count, static_cast<uint32_t>(payload.size()),
+                                        std::span<const uint8_t>(payload.data() + offset, chunk_len));
+    if (!wire) {
+      return wire.error();
+    }
+    last_send_qos_ = QosForClass(channel->policy.cls);
+    auto sealed = session_.Seal(channel_id, channel->tx_seq, *wire);
+    if (!sealed) {
+      return sealed.error();
+    }
+    if (!transport_) {
+      return Error("amp mux: no transport");
+    }
+    auto sent = transport_(channel_id, channel->tx_seq, last_send_qos_, std::move(*sealed));
     if (!sent) {
       return sent.error();
     }
+    ++channel->tx_seq;
   }
   return Roe<void>();
 }
@@ -405,8 +448,7 @@ Roe<void> ChannelMux::InjectSealedForTest(const uint32_t channel_id, const uint3
     return Error("amp mux: inject on closed channel");
   }
   last_send_qos_ = QosForClass(channel->policy.cls);
-  transport_(channel_id, channel_seq, last_send_qos_, std::move(sealed));
-  return Roe<void>();
+  return transport_(channel_id, channel_seq, last_send_qos_, std::move(sealed));
 }
 
 } // namespace pp::amp

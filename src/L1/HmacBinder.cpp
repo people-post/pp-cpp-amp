@@ -18,11 +18,19 @@ std::array<uint8_t, kHmacBytes> HmacBinder::ComputeTag(const PeerKey& key,
   return tag;
 }
 
-Roe<std::vector<uint8_t>> HmacBinder::Seal(std::span<const uint8_t> header_and_payload) const {
+Roe<std::vector<uint8_t>> HmacBinder::Seal(const std::span<const uint8_t> header_and_payload) const {
   auto tag = ComputeTag(key_, header_and_payload);
-  std::vector<uint8_t> out(header_and_payload.begin(), header_and_payload.end());
+  std::vector<uint8_t> out;
+  out.reserve(header_and_payload.size() + kHmacBytes);
+  out.assign(header_and_payload.begin(), header_and_payload.end());
   out.insert(out.end(), tag.begin(), tag.end());
   return out;
+}
+
+Roe<std::vector<uint8_t>> HmacBinder::Seal(std::vector<uint8_t>&& header_and_payload) const {
+  auto tag = ComputeTag(key_, header_and_payload);
+  header_and_payload.insert(header_and_payload.end(), tag.begin(), tag.end());
+  return std::move(header_and_payload);
 }
 
 Roe<void> HmacBinder::Verify(std::span<const uint8_t> datagram) const {

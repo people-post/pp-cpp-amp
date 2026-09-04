@@ -88,10 +88,15 @@ Roe<std::string> ChannelWire::DecodeLenUtf8Le(std::span<const uint8_t> wire, siz
 }
 
 Roe<std::vector<uint8_t>> ChannelWire::Encode(const ChannelFrame& frame) {
+  if (frame.header.frame_type == ChannelFrameType::Frag) {
+    return EncodeFrag(frame.header, frame.frag.msg_id, frame.frag.frag_index, frame.frag.frag_count,
+                      frame.frag.total_len, frame.frag.chunk);
+  }
   if (frame.header.frame_version != kChannelFrameVersion) {
     return Error("amp ch: bad frame version");
   }
   std::vector<uint8_t> out;
+  out.reserve(10 + frame.payload.size() + 64);
   out.push_back(frame.header.frame_version);
   out.push_back(static_cast<uint8_t>(frame.header.frame_type));
   AppendU32(out, frame.header.channel_id);
@@ -106,6 +111,7 @@ Roe<std::vector<uint8_t>> ChannelWire::Encode(const ChannelFrame& frame) {
     out.insert(out.end(), proto->begin(), proto->end());
     out.push_back(static_cast<uint8_t>(frame.open.channel_class));
     AppendU16(out, frame.open.flags);
+    AppendU32(out, frame.open.max_message_bytes);
     break;
   }
   case ChannelFrameType::OpenAck:
@@ -127,15 +133,31 @@ Roe<std::vector<uint8_t>> ChannelWire::Encode(const ChannelFrame& frame) {
     AppendU32(out, frame.reset_code);
     break;
   case ChannelFrameType::Frag:
-    AppendU64(out, frame.frag.msg_id);
-    AppendU16(out, frame.frag.frag_index);
-    AppendU16(out, frame.frag.frag_count);
-    AppendU32(out, frame.frag.total_len);
-    out.insert(out.end(), frame.frag.chunk.begin(), frame.frag.chunk.end());
+    // Handled above.
     break;
   default:
     return Error("amp ch: unknown frame type");
   }
+  return out;
+}
+
+Roe<std::vector<uint8_t>> ChannelWire::EncodeFrag(const ChannelHeader& header, const uint64_t msg_id,
+                                                  const uint16_t frag_index, const uint16_t frag_count,
+                                                  const uint32_t total_len, const std::span<const uint8_t> chunk) {
+  if (header.frame_version != kChannelFrameVersion) {
+    return Error("amp ch: bad frame version");
+  }
+  std::vector<uint8_t> out;
+  out.reserve(10 + 16 + chunk.size());
+  out.push_back(header.frame_version);
+  out.push_back(static_cast<uint8_t>(ChannelFrameType::Frag));
+  AppendU32(out, header.channel_id);
+  AppendU32(out, header.channel_seq);
+  AppendU64(out, msg_id);
+  AppendU16(out, frag_index);
+  AppendU16(out, frag_count);
+  AppendU32(out, total_len);
+  out.insert(out.end(), chunk.begin(), chunk.end());
   return out;
 }
 
@@ -175,6 +197,14 @@ Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
       return flags.error();
     }
     frame.open.flags = *flags;
+    // Optional trailing u32 for forward/backward decode: absent → 0 (peer default).
+    if (!body.empty()) {
+      auto max_bytes = ReadU32(body);
+      if (!max_bytes) {
+        return max_bytes.error();
+      }
+      frame.open.max_message_bytes = *max_bytes;
+    }
     if (auto trailing = ExpectEmpty(body); !trailing) {
       return trailing.error();
     }

@@ -1,5 +1,6 @@
 #include "amp/L1/MemoryDatagramIo.h"
 
+#include <cstddef>
 #include <utility>
 
 namespace pp::adp {
@@ -42,9 +43,11 @@ Roe<void> MemoryDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8
     if (reorder_window_ > 0) {
       pending_reorder_.emplace_back(peer, std::move(buf));
       if (pending_reorder_.size() > reorder_window_) {
-        auto front = std::move(pending_reorder_.front());
-        pending_reorder_.pop_front();
-        (void)hub_->Deliver(local_, front.first, std::move(front.second));
+        std::uniform_int_distribution<size_t> pick(0, pending_reorder_.size() - 1);
+        const size_t idx = pick(rng_);
+        auto chosen = std::move(pending_reorder_[idx]);
+        pending_reorder_.erase(pending_reorder_.begin() + static_cast<std::ptrdiff_t>(idx));
+        (void)hub_->Deliver(local_, chosen.first, std::move(chosen.second));
       }
       return;
     }

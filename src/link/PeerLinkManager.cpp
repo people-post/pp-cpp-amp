@@ -260,7 +260,11 @@ bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
     return false;
   }
   if (!link.RemotePeerId().empty()) {
-    peer_id_to_key_[link.RemotePeerId()] = link.PeerKey();
+    const auto it = peer_id_to_key_.find(link.RemotePeerId());
+    // Prefer ADP (non-carrier) as the primary PeerId index; nested carriers coexist ([A024]).
+    if (it == peer_id_to_key_.end() || !link.IsCarrierBacked()) {
+      peer_id_to_key_[link.RemotePeerId()] = link.PeerKey();
+    }
   }
   ApplyProtocolHandlers(link);
   // Nested carrier links skip ch0 — product reachability already established via outer mesh.
@@ -299,6 +303,16 @@ bool PeerLinkManager::AdoptInboundOrDropDuplicate(PeerLink& candidate) {
       }
     }
     peer_id_to_key_[remote] = candidate.PeerKey();
+    return true;
+  }
+
+  // [A024] ADP Session and nested carrier Session to the same PeerId coexist.
+  if (existing->IsCarrierBacked() != candidate.IsCarrierBacked()) {
+    if (!existing->IsCarrierBacked()) {
+      peer_id_to_key_[remote] = existing->PeerKey();
+    } else if (!candidate.IsCarrierBacked()) {
+      peer_id_to_key_[remote] = candidate.PeerKey();
+    }
     return true;
   }
 
@@ -892,10 +906,22 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
 void PeerLinkManager::FinishNestedCarrier(const std::string& provisional_key, LinkRoe result) {
   auto* link = FindLink(provisional_key);
   if (result && link && !link->RemotePeerId().empty() && link->RemotePeerId() != provisional_key) {
-    // Prefer authenticated PeerId as the stable key when unused.
-    if (!links_.contains(link->RemotePeerId())) {
+    PeerLink* adp = nullptr;
+    for (auto& [_, other] : links_) {
+      if (!other || other.get() == link || other->Phase() != PeerLinkPhase::Connected) {
+        continue;
+      }
+      if (other->RemotePeerId() == link->RemotePeerId() && !other->IsCarrierBacked()) {
+        adp = other.get();
+        break;
+      }
+    }
+    // Prefer authenticated PeerId as the stable key when unused; keep provisional when ADP owns it ([A024]).
+    if (!adp && !links_.contains(link->RemotePeerId())) {
       RekeyLink(provisional_key, link->RemotePeerId());
       link = FindLink(link->RemotePeerId());
+    } else if (adp) {
+      peer_id_to_key_[link->RemotePeerId()] = adp->PeerKey();
     } else {
       peer_id_to_key_[link->RemotePeerId()] = provisional_key;
     }

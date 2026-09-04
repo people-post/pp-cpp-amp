@@ -13,6 +13,10 @@ namespace pp::adp {
 /**
  * In-process datagram fabric for tests. Endpoints share a Hub; optional
  * loss/reorder/dup injection is applied on SendTo.
+ *
+ * SetReorderWindow(N): hold up to N datagrams; when a send would exceed N,
+ * deliver one randomly chosen buffered datagram (true reorder). Call
+ * FlushReorder() to drain any remainder (FIFO).
  */
 class MemoryDatagramHub;
 
@@ -34,7 +38,7 @@ public:
   /** Force next N sends to be dropped (after which drop_rate applies). */
   void DropNext(size_t n) { drop_next_ = n; }
 
-  /** Deliver any datagrams held for reorder. */
+  /** Deliver any datagrams held for reorder (FIFO drain). */
   void FlushReorder();
 
   ~MemoryDatagramIo() override;

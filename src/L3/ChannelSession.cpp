@@ -60,6 +60,8 @@ void ChannelSession::Bind(ChannelMux& mux, const uint32_t channel_id, ChannelPol
   closed_ = false;
   outbound_.clear();
   write_inflight_ = false;
+  // Align mux reassembly / send limits with L4 policy (OPEN may have omitted or understated max).
+  (void)mux_->ApplyChannelPolicy(channel_id_, policy_);
   InstallMuxHandlers();
 }
 
