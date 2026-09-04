@@ -417,13 +417,18 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
   const auto ep_it = endpoints_.find(peer_key);
   if (ep_it != endpoints_.end()) {
     if (auto* existing = FindConnectedLinkForPeerId(ep_it->second.peer_id)) {
-      if (existing->PeerKey() != peer_key) {
-        RekeyLink(existing->PeerKey(), peer_key);
+      // Nested/circuit carrier Sessions coexist with ADP ([A024]). A carrier-backed
+      // link must not satisfy EnsureAssociation for a new ADP dial alias — otherwise
+      // upgrade-from-circuit punch rekeys the nested Session and never opens direct.
+      if (!existing->IsCarrierBacked()) {
+        if (existing->PeerKey() != peer_key) {
+          RekeyLink(existing->PeerKey(), peer_key);
+        }
+        if (on_complete) {
+          on_complete(LinkRoe());
+        }
+        return;
       }
-      if (on_complete) {
-        on_complete(LinkRoe());
-      }
-      return;
     }
   }
 
