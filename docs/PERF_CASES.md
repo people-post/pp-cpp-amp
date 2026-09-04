@@ -26,15 +26,19 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 | **D2** | Hub fan-in data 4×64 KiB | **scaffold** |
 | **E1–E3** | Paced 512 KiB / media / 4 MiB FRAG | **scaffold** |
 | **F** | Sealed-garbage reject cost | **scaffold** |
-| **C5 / D3 / E4** | Mux fairness / keepalive budget / nested carrier | planned |
+| **C5** | Mux 3-channel interleave (control/bulk/rt) | **scaffold** |
+| **D3** | Hot/warm keepalive B/hour (simulated) | **scaffold** |
+| **E4** | Nested carrier assoc + DATA vs direct | **scaffold** |
+| **OsUdpAmp** | MeshRuntime on OsUdp paced 64 KiB | **scaffold** |
 
 ## Layout
 
 ```
 tests/perf/
   perf_timer.h / perf_report.h
-  perf_main.cpp   # A1–A2, C*, D1(1-link)
-  perf_more.cpp   # A3, B*, OsUdp, D1 multi, D2, E1, F
+  perf_main.cpp    # A1–A2, C1–C4, D1(1-link)
+  perf_more.cpp    # A3, B*, OsUdp, D1 multi, D2, E1, F
+  perf_finish.cpp  # C5, D3, E4, OsUdpAmp
 ```
 
 ```bash
@@ -44,17 +48,15 @@ tests/perf/
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PP_AMP_PERF_ITERS` | `2000` | A1/A2/A3 |
-| `PP_AMP_PERF_FRAG_ITERS` | `8` | C3 |
-| `PP_AMP_PERF_ASSOC_ITERS` | `3` | C1/C2 |
+| `PP_AMP_PERF_FRAG_ITERS` | `8` | C3/C5 |
+| `PP_AMP_PERF_ASSOC_ITERS` | `3` | C1/C2/E4 |
 | `PP_AMP_PERF_MEDIA_ITERS` | `8` | B3/C4 |
 | `PP_AMP_PERF_DRIVE_ITERS` | `2000` | D1 1-link |
-| `PP_AMP_PERF_XFER_ITERS` | `3` | B1/B2/OsUdp/D2/E1/F |
+| `PP_AMP_PERF_XFER_ITERS` | `3` | B1/B2/OsUdp/D2/D3/E1/F/OsUdpAmp |
 | `PP_AMP_PERF_MAX_LINKS` | `16` | D1 multi ladder cap (32/48 optional) |
 | `PP_AMP_PERF_WARMUP` | `50` | warm-up |
 
 ## Remaining (optional)
 
-- Full-stack OsUdp AMP FRAG (MeshRuntime on UDP)
-- D3 keepalive bytes/hour soak
-- C5 mux HOL fairness
-- E4 nested carrier
+- D1 32/48 via `PP_AMP_PERF_MAX_LINKS`
+- E2/E3 media / 4 MiB FRAG pacing variants

@@ -30,4 +30,10 @@ bool RunD1Multi(int warmup, int drive_iters);
 bool RunD2(int warmup, int iters);
 bool RunF(int warmup, int iters);
 
+/** C5 mux HOL; D3 keepalive B/hour; E4 nested carrier; OsUdp full-stack AMP. */
+bool RunC5(int warmup, int iters);
+bool RunD3(int warmup, int iters);
+bool RunE4(int warmup, int iters);
+bool RunOsUdpAmp(int warmup, int iters);
+
 } // namespace pp::amp::perf

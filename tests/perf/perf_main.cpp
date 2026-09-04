@@ -407,11 +407,15 @@ int main() {
   ok = RunC2(std::min(warmup, 1), assoc_iters) && ok;
   ok = RunC3(warmup, frag_iters) && ok;
   ok = RunC4(warmup, media_iters) && ok;
+  ok = pp::amp::perf::RunC5(std::min(warmup, 2), std::max(1, frag_iters)) && ok;
   ok = RunD1(warmup, drive_iters) && ok;
   ok = pp::amp::perf::RunD1Multi(warmup, std::min(drive_iters, 500)) && ok;
   ok = pp::amp::perf::RunD2(std::min(warmup, 1), xfer_iters) && ok;
+  ok = pp::amp::perf::RunD3(std::min(warmup, 1), xfer_iters) && ok;
   ok = pp::amp::perf::RunE1(std::min(warmup, 1), xfer_iters) && ok;
+  ok = pp::amp::perf::RunE4(std::min(warmup, 1), assoc_iters) && ok;
   ok = pp::amp::perf::RunF(std::min(warmup, 1), xfer_iters) && ok;
+  ok = pp::amp::perf::RunOsUdpAmp(std::min(warmup, 1), xfer_iters) && ok;
 
   std::printf("\n%s\n", ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;

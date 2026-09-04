@@ -6,6 +6,7 @@ set(_PP_AMP_PERF_SUPPORT
 add_executable(pp_amp_perf
   perf_main.cpp
   perf_more.cpp
+  perf_finish.cpp
   ${_PP_AMP_PERF_SUPPORT})
 
 target_include_directories(pp_amp_perf PRIVATE
