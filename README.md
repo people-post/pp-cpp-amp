@@ -45,4 +45,4 @@ Sibling checkouts (`../pp-cpp-common`, `../pp-cpp-crypto`) are used automaticall
 
 126 tests across five ctest targets (`pp_amp_l1_test` … `pp_amp_integration_test`). Unit tests are co-located per layer; integration tests live under `tests/integration/`.
 
-Performance scaffold (A1/A2, C1–C4, D1): `pp_amp_perf` under `tests/perf/` — see [docs/PERF_CASES.md](docs/PERF_CASES.md).
+Performance scaffold (A1–A2, B1, OsUdp, C1–C4, D1, E1): `pp_amp_perf` under `tests/perf/` — see [docs/PERF_CASES.md](docs/PERF_CASES.md).

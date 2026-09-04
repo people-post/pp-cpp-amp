@@ -8,7 +8,7 @@
 #include "amp/L3/ChannelPolicy.h"
 #include "amp/L3/ChannelSession.h"
 #include "amp/L3/Types.h"
-#include "perf_timer.h"
+#include "perf_report.h"
 #include "support/amp_integration_harness.h"
 
 #include "L3/tests/amp_test_link.h"
@@ -29,22 +29,12 @@ namespace {
 using pp::amp::perf::EnvInt;
 using pp::amp::perf::MegaBytesPerSec;
 using pp::amp::perf::OpsPerSec;
+using pp::amp::perf::PrintCsv;
+using pp::amp::perf::PrintHuman;
 using pp::amp::perf::SampleStats;
 using pp::amp::perf::Summarize;
 using pp::amp::perf::TimeLoop;
 using HarnessSide = pbr::test::HarnessSide;
-
-void PrintHuman(const char* case_id, const char* label, const SampleStats& s, const double throughput,
-                const char* throughput_unit) {
-  std::printf("%s  %-28s  n=%zu  p50=%.0fns  p95=%.0fns  p99=%.0fns  mean=%.0fns  %s=%.2f\n", case_id, label, s.n,
-              s.p50_ns, s.p95_ns, s.p99_ns, s.mean_ns, throughput_unit, throughput);
-}
-
-void PrintCsv(const char* case_id, const char* label, const size_t payload_bytes, const SampleStats& s,
-              const double throughput, const char* throughput_unit) {
-  std::printf("csv,%s,%s,%zu,%zu,%.3f,%.3f,%.3f,%.3f,%.6f,%s\n", case_id, label, payload_bytes, s.n, s.p50_ns, s.p95_ns,
-              s.p99_ns, s.mean_ns, throughput, throughput_unit);
-}
 
 pp::adp::PeerKey AdpKey(const uint8_t fill = 0x42) {
   pp::adp::PeerKey k;
@@ -397,19 +387,26 @@ int main() {
   const int assoc_iters = EnvInt("PP_AMP_PERF_ASSOC_ITERS", 3);
   const int drive_iters = EnvInt("PP_AMP_PERF_DRIVE_ITERS", 2000);
   const int media_iters = EnvInt("PP_AMP_PERF_MEDIA_ITERS", 8);
+  const int xfer_iters = EnvInt("PP_AMP_PERF_XFER_ITERS", 3);
 
-  std::printf("pp_amp_perf  warmup=%d  micro_iters=%d  frag_iters=%d  assoc_iters=%d  drive_iters=%d  media_iters=%d\n",
-              warmup, micro_iters, frag_iters, assoc_iters, drive_iters, media_iters);
+  std::printf(
+      "pp_amp_perf  warmup=%d  micro_iters=%d  frag_iters=%d  assoc_iters=%d  drive_iters=%d  media_iters=%d  "
+      "xfer_iters=%d\n",
+      warmup, micro_iters, frag_iters, assoc_iters, drive_iters, media_iters, xfer_iters);
   std::printf("csv,case,label,payload_bytes,n,p50_ns,p95_ns,p99_ns,mean_ns,throughput,throughput_unit\n");
 
   bool ok = true;
   ok = RunA1(warmup, micro_iters) && ok;
   ok = RunA2(warmup, micro_iters) && ok;
+  ok = pp::amp::perf::RunB1(std::min(warmup, 1), xfer_iters) && ok;
+  ok = pp::amp::perf::RunOsUdp(std::min(warmup, 1), xfer_iters) && ok;
   ok = RunC1(std::min(warmup, 1), assoc_iters) && ok;
   ok = RunC2(std::min(warmup, 1), assoc_iters) && ok;
   ok = RunC3(warmup, frag_iters) && ok;
   ok = RunC4(warmup, media_iters) && ok;
   ok = RunD1(warmup, drive_iters) && ok;
+  ok = pp::amp::perf::RunD1Multi(warmup, std::min(drive_iters, 500)) && ok;
+  ok = pp::amp::perf::RunE1(std::min(warmup, 1), xfer_iters) && ok;
 
   std::printf("\n%s\n", ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
