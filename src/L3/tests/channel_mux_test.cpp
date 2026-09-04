@@ -221,5 +221,39 @@ TEST(ChannelSessionTest, ReadOnceClosesAfterFirstFrame) {
   EXPECT_TRUE(session.IsClosed());
 }
 
+TEST(ChannelMuxTest, FragPreflightRefusesWhenCreditsLow) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+
+  size_t credits = 1; // 2500 B needs 3 FRAG frames @ 900 B
+  size_t transport_calls = 0;
+  link.initiator.mux.SetTransportCredits([&] { return credits; });
+  link.initiator.mux.SetTransport([&](uint32_t ch, uint32_t seq, adp::QosClass, std::vector<uint8_t> sealed) {
+    ++transport_calls;
+    (void)link.responder.mux.OnSealedInbound(ch, seq, sealed);
+    return Roe<void>();
+  });
+
+  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  transport_calls = 0;
+
+  std::vector<uint8_t> large(2500, 0xAB);
+  auto sent = link.initiator.mux.SendData(*ch, large);
+  ASSERT_FALSE(static_cast<bool>(sent));
+  EXPECT_NE(sent.error().message.find("window full"), std::string::npos);
+  EXPECT_EQ(transport_calls, 0u);
+
+  credits = 8;
+  std::vector<uint8_t> received;
+  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    received = std::move(payload);
+  });
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, large)));
+  EXPECT_EQ(received, large);
+  EXPECT_GE(transport_calls, 3u);
+}
+
 } // namespace
 } // namespace pp::amp

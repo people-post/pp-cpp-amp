@@ -22,6 +22,8 @@ void ChannelMux::SetPeerSession(Session* peer_session) { peer_session_ = peer_se
 
 void ChannelMux::SetTransport(TransportSend send) { transport_ = std::move(send); }
 
+void ChannelMux::SetTransportCredits(TransportCredits credits) { transport_credits_ = std::move(credits); }
+
 void ChannelMux::SetClock(std::function<int64_t()> now_ms) { now_ms_ = std::move(now_ms); }
 
 ChannelMux::ChannelRecord* ChannelMux::ChannelById(const uint32_t channel_id) {
@@ -53,8 +55,7 @@ Roe<void> ChannelMux::SendFrame(const ChannelFrame& frame, ChannelRecord& channe
   if (!sealed) {
     return sealed.error();
   }
-  transport_(frame.header.channel_id, frame.header.channel_seq, last_send_qos_, std::move(*sealed));
-  return Roe<void>();
+  return transport_(frame.header.channel_id, frame.header.channel_seq, last_send_qos_, std::move(*sealed));
 }
 
 Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,
@@ -323,21 +324,33 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     ChannelFrame frame;
     frame.header.frame_type = ChannelFrameType::Data;
     frame.header.channel_id = channel_id;
-    frame.header.channel_seq = channel->tx_seq++;
+    frame.header.channel_seq = channel->tx_seq;
     frame.payload = std::move(payload);
-    return SendFrame(frame, *channel);
+    auto sent = SendFrame(frame, *channel);
+    if (!sent) {
+      return sent.error();
+    }
+    ++channel->tx_seq;
+    return Roe<void>();
   }
 
   const uint64_t msg_id = next_frag_msg_id_++;
   const uint16_t frag_count =
       static_cast<uint16_t>((payload.size() + kMaxSingleDataBytes - 1) / kMaxSingleDataBytes);
+  // Reliable ADP: refuse before any FRAG leaves so a WindowFull cannot strand a partial message.
+  if (QosForClass(channel->policy.cls) == adp::QosClass::Reliable && transport_credits_) {
+    const size_t credits = transport_credits_();
+    if (credits < frag_count) {
+      return Error("amp mux: transport window full");
+    }
+  }
   for (uint16_t i = 0; i < frag_count; ++i) {
     const size_t offset = static_cast<size_t>(i) * kMaxSingleDataBytes;
     const size_t chunk_len = std::min(kMaxSingleDataBytes, payload.size() - offset);
     ChannelFrame frame;
     frame.header.frame_type = ChannelFrameType::Frag;
     frame.header.channel_id = channel_id;
-    frame.header.channel_seq = channel->tx_seq++;
+    frame.header.channel_seq = channel->tx_seq;
     frame.frag.msg_id = msg_id;
     frame.frag.frag_index = i;
     frame.frag.frag_count = frag_count;
@@ -348,6 +361,7 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     if (!sent) {
       return sent.error();
     }
+    ++channel->tx_seq;
   }
   return Roe<void>();
 }
@@ -427,8 +441,7 @@ Roe<void> ChannelMux::InjectSealedForTest(const uint32_t channel_id, const uint3
     return Error("amp mux: inject on closed channel");
   }
   last_send_qos_ = QosForClass(channel->policy.cls);
-  transport_(channel_id, channel_seq, last_send_qos_, std::move(sealed));
-  return Roe<void>();
+  return transport_(channel_id, channel_seq, last_send_qos_, std::move(sealed));
 }
 
 } // namespace pp::amp

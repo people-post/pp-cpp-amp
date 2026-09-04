@@ -307,7 +307,7 @@ bool RunC4(const int warmup, const int iters) {
     // so Drop Oldest fires. Only burst once — later drains must not re-enter the burst.
     bool did_burst = false;
     link.initiator.mux.SetTransport([&](uint32_t channel_id, uint32_t channel_seq, pp::adp::QosClass qos,
-                                        std::vector<uint8_t> sealed) {
+                                        std::vector<uint8_t> sealed) -> pp::Roe<void> {
       (void)qos;
       if (!did_burst) {
         did_burst = true;
@@ -319,6 +319,7 @@ bool RunC4(const int warmup, const int iters) {
         }
       }
       (void)link.responder.mux.OnSealedInbound(channel_id, channel_seq, sealed);
+      return pp::Roe<void>();
     });
 
     session->Bind(link.initiator.mux, *ch, policy, [](pp::Roe<std::vector<uint8_t>>) { return true; });

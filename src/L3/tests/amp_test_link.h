@@ -63,9 +63,11 @@ private:
     initiator.mux.SetTransport([this](uint32_t ch, uint32_t seq, adp::QosClass, std::vector<uint8_t> sealed) {
       (void)initiator.mux.LastSendQos();
       (void)responder.mux.OnSealedInbound(ch, seq, sealed);
+      return Roe<void>();
     });
     responder.mux.SetTransport([this](uint32_t ch, uint32_t seq, adp::QosClass, std::vector<uint8_t> sealed) {
       (void)initiator.mux.OnSealedInbound(ch, seq, sealed);
+      return Roe<void>();
     });
   }
 };

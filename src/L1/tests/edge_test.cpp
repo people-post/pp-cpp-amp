@@ -229,6 +229,7 @@ TEST_F(AdpEdgeTest, ReliableWindowFull) {
     const uint8_t b = static_cast<uint8_t>('0' + i);
     ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(&b, 1)));
   }
+  EXPECT_EQ((*ca)->ReliableCreditsRemaining(), 0u);
   const uint8_t extra = 'x';
   const auto err = (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(&extra, 1));
   EXPECT_FALSE(err);

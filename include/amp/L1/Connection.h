@@ -57,6 +57,14 @@ public:
 
   Roe<void> Send(QosClass qos, std::span<const uint8_t> payload);
 
+  /** Slots left before the next Reliable Send returns WindowFull. */
+  size_t ReliableCreditsRemaining() const {
+    if (outstanding_.size() >= params_.reliable_window) {
+      return 0;
+    }
+    return params_.reliable_window - outstanding_.size();
+  }
+
   void OnMessage(MessageHandler handler) { on_message_ = std::move(handler); }
   void OnPathChange(PathChangeHandler handler) { on_path_change_ = std::move(handler); }
 

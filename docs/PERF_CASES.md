@@ -26,7 +26,7 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 | **D2** | Hub fan-in data 4×64 KiB | **scaffold** |
 | **E1** | Paced 512 KiB bulk (900 B frames) | **scaffold** |
 | **E2** | Paced call-media 40 B @ 50 pps | **scaffold** |
-| **E3** | Paced 4 MiB FRAG (8×900 B msgs, window-safe) | **scaffold** |
+| **E3** | Paced 4 MiB FRAG (64×900 B msgs, window-safe) | **scaffold** |
 | **F** | Sealed-garbage reject cost | **scaffold** |
 | **C5** | Mux 3-channel interleave (control/bulk/rt) | **scaffold** |
 | **D3** | Hot/warm keepalive B/hour (simulated) | **scaffold** |
@@ -59,3 +59,5 @@ tests/perf/
 | `PP_AMP_PERF_WARMUP` | `50` | warm-up |
 
 Matrix complete for the documented A–F / C5 / D3 / E4 / OsUdpAmp set. Heavier D1 link counts remain opt-in via `PP_AMP_PERF_MAX_LINKS`.
+
+ADP bulk throughput notes: default `kDefaultReliableWindow` is **128** (was 16). `ChannelMux::SendData` preflights reliable FRAG against transport credits and propagates transport `WindowFull` so callers can pump/retry without stranding partial FRAG. OsUdp recv uses a reusable scratch buffer (no alloc on empty poll).
