@@ -347,17 +347,24 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
   for (uint16_t i = 0; i < frag_count; ++i) {
     const size_t offset = static_cast<size_t>(i) * kMaxSingleDataBytes;
     const size_t chunk_len = std::min(kMaxSingleDataBytes, payload.size() - offset);
-    ChannelFrame frame;
-    frame.header.frame_type = ChannelFrameType::Frag;
-    frame.header.channel_id = channel_id;
-    frame.header.channel_seq = channel->tx_seq;
-    frame.frag.msg_id = msg_id;
-    frame.frag.frag_index = i;
-    frame.frag.frag_count = frag_count;
-    frame.frag.total_len = static_cast<uint32_t>(payload.size());
-    frame.frag.chunk.assign(payload.begin() + static_cast<std::ptrdiff_t>(offset),
-                            payload.begin() + static_cast<std::ptrdiff_t>(offset + chunk_len));
-    auto sent = SendFrame(frame, *channel);
+    ChannelHeader header;
+    header.frame_type = ChannelFrameType::Frag;
+    header.channel_id = channel_id;
+    header.channel_seq = channel->tx_seq;
+    auto wire = ChannelWire::EncodeFrag(header, msg_id, i, frag_count, static_cast<uint32_t>(payload.size()),
+                                        std::span<const uint8_t>(payload.data() + offset, chunk_len));
+    if (!wire) {
+      return wire.error();
+    }
+    last_send_qos_ = QosForClass(channel->policy.cls);
+    auto sealed = session_.Seal(channel_id, channel->tx_seq, *wire);
+    if (!sealed) {
+      return sealed.error();
+    }
+    if (!transport_) {
+      return Error("amp mux: no transport");
+    }
+    auto sent = transport_(channel_id, channel->tx_seq, last_send_qos_, std::move(*sealed));
     if (!sent) {
       return sent.error();
     }

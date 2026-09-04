@@ -60,4 +60,4 @@ tests/perf/
 
 Matrix complete for the documented A–F / C5 / D3 / E4 / OsUdpAmp set. Heavier D1 link counts remain opt-in via `PP_AMP_PERF_MAX_LINKS`.
 
-ADP bulk throughput notes: default `kDefaultReliableWindow` is **128** (was 16). `ChannelMux::SendData` preflights reliable FRAG against transport credits and propagates transport `WindowFull` so callers can pump/retry without stranding partial FRAG. OsUdp recv uses a reusable scratch buffer (no alloc on empty poll).
+ADP bulk throughput notes: default `kDefaultReliableWindow` is **128** (was 16). `ChannelMux::SendData` preflights reliable FRAG against transport credits and propagates transport `WindowFull` so callers can pump/retry without stranding partial FRAG. OsUdp recv uses a reusable scratch buffer (no alloc on empty poll). Hot-path Seal/HMAC/FRAG encode avoid extra body copies (stack AAD, encrypt-into-out, in-place HMAC append, `EncodeFrag` from span).

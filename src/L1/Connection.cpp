@@ -115,7 +115,7 @@ Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std:
   if (!encoded) {
     return Failure::Of(Err::WireError, encoded.error().message);
   }
-  auto sealed = binder_.Seal(*encoded);
+  auto sealed = binder_.Seal(std::move(*encoded));
   if (!sealed) {
     return Failure::Of(Err::WireError, sealed.error().message);
   }

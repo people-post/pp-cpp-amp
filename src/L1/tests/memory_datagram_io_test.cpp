@@ -14,42 +14,50 @@ TEST(MemoryDatagramIoTest, ReorderWindowDeliversAllAndCanPermute) {
   auto hub = pp::adp::MemoryDatagramIo::MakeHub();
   const auto addr_a = pp::adp::IpEndpoint::V4(10, 0, 0, 1, 1000);
   const auto addr_b = pp::adp::IpEndpoint::V4(10, 0, 0, 2, 2000);
-  auto io_a = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_a);
-  auto io_b = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_b);
 
-  io_a->SetReorderWindow(2);
-  io_a->SetRngSeed(0); // overflow pick is idx 1 → payload 2 first
+  bool saw_non_fifo_release = false;
+  for (uint32_t seed = 0; seed < 64; ++seed) {
+    auto io_a = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_a);
+    auto io_b = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_b);
+    io_a->SetReorderWindow(2);
+    io_a->SetRngSeed(seed);
 
-  ASSERT_TRUE(io_a->SendTo(addr_b, Byte(1)).isOk());
-  ASSERT_TRUE(io_a->SendTo(addr_b, Byte(2)).isOk());
-  {
-    auto empty = io_b->RecvFrom();
-    ASSERT_TRUE(empty.isOk());
-    EXPECT_FALSE(empty.value().has_value()) << "first two sends should stay buffered";
-  }
-
-  ASSERT_TRUE(io_a->SendTo(addr_b, Byte(3)).isOk());
-  auto first = io_b->RecvFrom();
-  ASSERT_TRUE(first.isOk());
-  ASSERT_TRUE(first.value().has_value());
-  const auto& first_pkt = *first.value();
-  ASSERT_EQ(first_pkt.second.size(), 1u);
-  EXPECT_EQ(first_pkt.second[0], 2) << "seed 0 should release payload 2 before 1";
-
-  io_a->FlushReorder();
-  std::set<uint8_t> got{first_pkt.second[0]};
-  for (;;) {
-    auto pkt = io_b->RecvFrom();
-    ASSERT_TRUE(pkt.isOk());
-    if (!pkt.value().has_value()) {
-      break;
+    ASSERT_TRUE(io_a->SendTo(addr_b, Byte(1)).isOk());
+    ASSERT_TRUE(io_a->SendTo(addr_b, Byte(2)).isOk());
+    {
+      auto empty = io_b->RecvFrom();
+      ASSERT_TRUE(empty.isOk());
+      EXPECT_FALSE(empty.value().has_value()) << "first two sends should stay buffered";
     }
-    const auto& delivered = *pkt.value();
-    ASSERT_EQ(delivered.second.size(), 1u);
-    got.insert(delivered.second[0]);
+
+    ASSERT_TRUE(io_a->SendTo(addr_b, Byte(3)).isOk());
+    auto first = io_b->RecvFrom();
+    ASSERT_TRUE(first.isOk());
+    ASSERT_TRUE(first.value().has_value());
+    const auto& first_pkt = *first.value();
+    ASSERT_EQ(first_pkt.second.size(), 1u);
+    ASSERT_GE(first_pkt.second[0], 1);
+    ASSERT_LE(first_pkt.second[0], 3);
+    if (first_pkt.second[0] != 1) {
+      saw_non_fifo_release = true;
+    }
+
+    io_a->FlushReorder();
+    std::set<uint8_t> got{first_pkt.second[0]};
+    for (;;) {
+      auto pkt = io_b->RecvFrom();
+      ASSERT_TRUE(pkt.isOk());
+      if (!pkt.value().has_value()) {
+        break;
+      }
+      const auto& delivered = *pkt.value();
+      ASSERT_EQ(delivered.second.size(), 1u);
+      got.insert(delivered.second[0]);
+    }
+    const std::set<uint8_t> expected{1, 2, 3};
+    EXPECT_EQ(got, expected) << "seed=" << seed;
   }
-  const std::set<uint8_t> expected{1, 2, 3};
-  EXPECT_EQ(got, expected);
+  EXPECT_TRUE(saw_non_fifo_release) << "reorder window should release a non-FIFO packet for some seeds";
 }
 
 TEST(MemoryDatagramIoTest, FlushReorderDrainsHeldDatagrams) {

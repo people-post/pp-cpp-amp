@@ -65,6 +65,7 @@ Roe<std::vector<std::vector<uint8_t>>> AmpAdpCarrier::EncodeMshChunked(const Msh
 Roe<std::vector<uint8_t>> AmpAdpCarrier::EncodeSealed(const uint32_t channel_id, const uint32_t channel_seq,
                                                       const std::span<const uint8_t> sealed) {
   std::vector<uint8_t> out;
+  out.reserve(1 + 8 + sealed.size());
   out.push_back(static_cast<uint8_t>(AmpAdpPayloadKind::Sealed));
   AppendU32(out, channel_id);
   AppendU32(out, channel_seq);

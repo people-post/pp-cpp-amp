@@ -2,11 +2,18 @@
 
 #include "amp/L2/SessionAead.h"
 
-namespace pp::amp {
+#include "crypto/SodiumUtil.h"
 
-ByteVector SessionCrypto::BuildAad(const uint32_t session_epoch, const uint32_t channel_id, const uint32_t channel_seq,
-                                 const Direction direction) {
-  ByteVector aad(13);
+#include <array>
+#include <cstring>
+
+#include <sodium.h>
+
+namespace pp::amp {
+namespace {
+
+void FillAad(std::array<uint8_t, 13>& aad, const uint32_t session_epoch, const uint32_t channel_id,
+             const uint32_t channel_seq, const Direction direction) {
   aad[0] = static_cast<uint8_t>(session_epoch);
   aad[1] = static_cast<uint8_t>(session_epoch >> 8);
   aad[2] = static_cast<uint8_t>(session_epoch >> 16);
@@ -20,44 +27,47 @@ ByteVector SessionCrypto::BuildAad(const uint32_t session_epoch, const uint32_t 
   aad[10] = static_cast<uint8_t>(channel_seq >> 16);
   aad[11] = static_cast<uint8_t>(channel_seq >> 24);
   aad[12] = static_cast<uint8_t>(direction);
-  return aad;
+}
+
+} // namespace
+
+ByteVector SessionCrypto::BuildAad(const uint32_t session_epoch, const uint32_t channel_id, const uint32_t channel_seq,
+                                   const Direction direction) {
+  std::array<uint8_t, 13> aad{};
+  FillAad(aad, session_epoch, channel_id, channel_seq, direction);
+  return ByteVector(aad.begin(), aad.end());
 }
 
 Roe<std::vector<uint8_t>> SessionCrypto::Seal(const ByteVector& key, const uint32_t session_epoch,
                                               const uint32_t channel_id, const uint32_t channel_seq,
-                                              const Direction direction, std::span<const uint8_t> plaintext) {
-  auto aad = BuildAad(session_epoch, channel_id, channel_seq, direction);
-  auto nonce = SessionAead::GenerateNonce();
-  if (!nonce) {
-    return nonce.error();
+                                              const Direction direction, const std::span<const uint8_t> plaintext) {
+  std::array<uint8_t, 13> aad{};
+  FillAad(aad, session_epoch, channel_id, channel_seq, direction);
+
+  pp::EnsureSodiumInit();
+  std::array<uint8_t, kAeadNonceSize> nonce{};
+  randombytes_buf(nonce.data(), nonce.size());
+
+  std::vector<uint8_t> out(kAeadNonceSize + plaintext.size() + crypto_aead_xchacha20poly1305_ietf_abytes());
+  std::memcpy(out.data(), nonce.data(), kAeadNonceSize);
+  auto ct_len = SessionAead::EncryptInto(key, plaintext, aad, nonce,
+                                         std::span<uint8_t>(out.data() + kAeadNonceSize, out.size() - kAeadNonceSize));
+  if (!ct_len) {
+    return ct_len.error();
   }
-  ByteVector plain(plaintext.begin(), plaintext.end());
-  auto blob = SessionAead::Encrypt(key, plain, aad, *nonce);
-  if (!blob) {
-    return blob.error();
-  }
-  std::vector<uint8_t> out;
-  out.reserve(blob->nonce.size() + blob->ciphertext.size());
-  out.insert(out.end(), blob->nonce.begin(), blob->nonce.end());
-  out.insert(out.end(), blob->ciphertext.begin(), blob->ciphertext.end());
+  out.resize(kAeadNonceSize + *ct_len);
   return out;
 }
 
 Roe<std::vector<uint8_t>> SessionCrypto::Open(const ByteVector& key, const uint32_t session_epoch,
                                               const uint32_t channel_id, const uint32_t channel_seq,
-                                              const Direction direction, std::span<const uint8_t> sealed) {
+                                              const Direction direction, const std::span<const uint8_t> sealed) {
   if (sealed.size() < kAeadNonceSize) {
     return Error("amp: sealed payload too short");
   }
-  AeadBlob blob;
-  blob.nonce.assign(sealed.begin(), sealed.begin() + kAeadNonceSize);
-  blob.ciphertext.assign(sealed.begin() + kAeadNonceSize, sealed.end());
-  auto aad = BuildAad(session_epoch, channel_id, channel_seq, direction);
-  auto plain = SessionAead::Decrypt(key, blob, aad);
-  if (!plain) {
-    return plain.error();
-  }
-  return std::vector<uint8_t>(plain->begin(), plain->end());
+  std::array<uint8_t, 13> aad{};
+  FillAad(aad, session_epoch, channel_id, channel_seq, direction);
+  return SessionAead::Decrypt(key, sealed.first(kAeadNonceSize), sealed.subspan(kAeadNonceSize), aad);
 }
 
 } // namespace pp::amp
