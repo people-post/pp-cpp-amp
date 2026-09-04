@@ -3,3 +3,4 @@ if(NOT PP_AMP_BUILD_TESTS)
 endif()
 
 add_subdirectory(integration)
+add_subdirectory(perf)
