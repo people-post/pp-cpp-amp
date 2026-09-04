@@ -25,6 +25,7 @@ private:
 
   int fd_ = -1;
   IpEndpoint local_;
+  std::vector<uint8_t> recv_scratch_;
 };
 
 } // namespace pp::adp

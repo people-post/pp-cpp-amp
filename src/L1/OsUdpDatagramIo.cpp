@@ -140,11 +140,13 @@ Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_
 }
 
 Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo::RecvFrom() {
-  std::vector<uint8_t> buf(2048);
+  if (recv_scratch_.size() < 2048) {
+    recv_scratch_.resize(2048);
+  }
   sockaddr_storage ss{};
   socklen_t len = sizeof(ss);
   const auto n =
-      ::recvfrom(fd_, reinterpret_cast<char*>(buf.data()), static_cast<int>(buf.size()), 0,
+      ::recvfrom(fd_, reinterpret_cast<char*>(recv_scratch_.data()), static_cast<int>(recv_scratch_.size()), 0,
                  reinterpret_cast<sockaddr*>(&ss), &len);
   if (n < 0) {
 #if defined(_WIN32)
@@ -159,7 +161,7 @@ Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo:
 #endif
     return IoErr("recvfrom");
   }
-  buf.resize(static_cast<size_t>(n));
+  std::vector<uint8_t> buf(recv_scratch_.begin(), recv_scratch_.begin() + n);
   return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{
       {FromSockAddr(ss), std::move(buf)}};
 }

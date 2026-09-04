@@ -22,8 +22,10 @@ namespace pp::amp {
 /** Multiplexes L3 channels over one AMP Session. Io-thread affine. */
 class ChannelMux {
 public:
-  using TransportSend =
-      std::function<void(uint32_t channel_id, uint32_t channel_seq, adp::QosClass qos, std::vector<uint8_t> sealed)>;
+  using TransportSend = std::function<Roe<void>(uint32_t channel_id, uint32_t channel_seq, adp::QosClass qos,
+                                                 std::vector<uint8_t> sealed)>;
+  /** Remaining ADP reliable slots (SIZE_MAX = unlimited / BestEffort-only transport). */
+  using TransportCredits = std::function<size_t()>;
   using DataHandler = std::function<void(uint32_t channel_id, std::vector<uint8_t> payload)>;
   using TerminalHandler = std::function<void(uint32_t channel_id, const char* reason)>;
   using InboundOpenHandler = std::function<void(uint32_t channel_id, const std::string& protocol_id)>;
@@ -32,6 +34,7 @@ public:
 
   void SetPeerSession(Session* peer_session);
   void SetTransport(TransportSend send);
+  void SetTransportCredits(TransportCredits credits);
   void SetClock(std::function<int64_t()> now_ms);
 
   /** Allocate id and send OPEN (local initiator). Pass fixed_id for reserved channels (e.g. 0). */
@@ -95,6 +98,7 @@ private:
   Session& session_;
   Session* peer_session_ = nullptr;
   TransportSend transport_;
+  TransportCredits transport_credits_;
   std::function<int64_t()> now_ms_;
   std::unordered_map<uint32_t, ChannelRecord> channels_;
   std::unordered_map<uint32_t, DataHandler> pending_handlers_;

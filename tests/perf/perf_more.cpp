@@ -279,7 +279,7 @@ bool RunOsUdp(const int warmup, const int iters) {
 bool RunE1(const int warmup, const int iters) {
   std::printf("\n== E1 Paced ledger-sized bulk (512 KiB, harness) ==\n");
   constexpr size_t kTotal = 512 * 1024;
-  constexpr size_t kChunk = 900; // single DATA frames — avoid mid-FRAG WindowFull
+  constexpr size_t kChunk = 900; // single DATA frames — WindowFull retries at SendData level
   const int case_warmup = std::min(warmup, 1);
   const int case_iters = std::max(1, iters);
   std::vector<double> samples;
@@ -311,28 +311,27 @@ bool RunE1(const int warmup, const int iters) {
     const auto t0 = std::chrono::steady_clock::now();
     size_t sent = 0;
     while (sent < kTotal) {
-      const size_t n = std::min(kChunk, kTotal - sent);
-      std::vector<uint8_t> chunk(n, static_cast<uint8_t>(sent & 0xff));
-      // SendMuxData pumps once; if ADP window is full, retry with pumps.
-      for (int attempt = 0; attempt < 64; ++attempt) {
+      bool made_progress = false;
+      while (sent < kTotal) {
+        const size_t n = std::min(kChunk, kTotal - sent);
+        std::vector<uint8_t> chunk(n, static_cast<uint8_t>(sent & 0xff));
         auto* link = h.mgr_a().FindLink("b");
         if (!link || !link->Mux()) {
           std::fprintf(stderr, "E1 outbound link missing\n");
           return false;
         }
         auto r = link->Mux()->SendData(*ch, chunk);
-        if (r) {
-          h.PumpBoth();
-          break;
+        if (!r) {
+          break; // window full — drain below
         }
-        h.PumpBoth();
-        h.AdvanceMs(pp::adp::kDefaultRtxIntervalMs);
-        if (attempt == 63) {
-          std::fprintf(stderr, "E1 SendData failed: %s\n", r.error().message.c_str());
-          return false;
-        }
+        sent += n;
+        made_progress = true;
       }
-      sent += n;
+      h.PumpBoth();
+      if (!made_progress) {
+        h.AdvanceMs(pp::adp::kDefaultRtxIntervalMs);
+        h.PumpBoth();
+      }
     }
     for (size_t round = 0; round < 5000 && received < kTotal; ++round) {
       h.PumpBoth();
@@ -435,9 +434,9 @@ bool RunE2(const int warmup, const int iters) {
 bool RunE3(const int warmup, const int iters) {
   std::printf("\n== E3 Paced 4 MiB FRAG bulk (harness) ==\n");
   constexpr size_t kTotal = 4ull * 1024ull * 1024ull;
-  // Each SendData must FRAG ( > 900 B ) but stay under ADP reliable_window (16) frames.
+  // FRAG msgs sized under ADP reliable_window (default 128) so preflight admits each SendData.
   constexpr size_t kFragPayload = 900;
-  constexpr size_t kFragsPerMsg = 8; // 8 < kDefaultReliableWindow
+  constexpr size_t kFragsPerMsg = 64;
   constexpr size_t kChunk = kFragPayload * kFragsPerMsg;
   const int case_warmup = std::min(warmup, 1);
   const int case_iters = std::max(1, iters);
@@ -471,37 +470,31 @@ bool RunE3(const int warmup, const int iters) {
     const auto t0 = std::chrono::steady_clock::now();
     size_t sent = 0;
     while (sent < kTotal) {
-      const size_t n = std::min(kChunk, kTotal - sent);
-      std::vector<uint8_t> chunk(n, static_cast<uint8_t>((sent / kChunk) & 0xff));
-      const size_t before = received;
-      for (int attempt = 0; attempt < 128; ++attempt) {
+      bool made_progress = false;
+      while (sent < kTotal) {
+        const size_t n = std::min(kChunk, kTotal - sent);
+        std::vector<uint8_t> chunk(n, static_cast<uint8_t>((sent / kChunk) & 0xff));
         auto* link = h.mgr_a().FindLink("b");
         if (!link || !link->Mux()) {
           std::fprintf(stderr, "E3 outbound link missing\n");
           return false;
         }
         auto r = link->Mux()->SendData(*ch, chunk);
-        h.PumpBoth();
-        if (r) {
-          break;
+        if (!r) {
+          break; // credits / window — drain below
         }
+        sent += n;
+        made_progress = true;
+      }
+      h.PumpBoth();
+      if (!made_progress) {
         h.AdvanceMs(pp::adp::kDefaultRtxIntervalMs);
         h.PumpBoth();
-        if (attempt == 127) {
-          std::fprintf(stderr, "E3 SendData failed: %s\n", r.error().message.c_str());
-          return false;
-        }
       }
-      for (size_t round = 0; round < 2000 && received < before + n; ++round) {
-        h.PumpBoth();
-        h.AdvanceMs(1);
-      }
-      if (received < before + n) {
-        std::fprintf(stderr, "E3 chunk incomplete: got %zu / %zu (total %zu / %zu)\n", received - before, n,
-                     received, kTotal);
-        return false;
-      }
-      sent += n;
+    }
+    for (size_t round = 0; round < 20000 && received < kTotal; ++round) {
+      h.PumpBoth();
+      h.AdvanceMs(1);
     }
     const auto t1 = std::chrono::steady_clock::now();
     if (received != kTotal) {

@@ -474,26 +474,26 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
     const auto t0 = std::chrono::steady_clock::now();
     size_t sent = 0;
     while (sent < kTotal) {
-      const size_t n = std::min(kChunk, kTotal - sent);
-      std::vector<uint8_t> chunk(n, 0x5A);
-      auto* link = rt_a->Links().FindLink("b");
-      if (!link || !link->Mux()) {
-        return false;
-      }
-      for (int attempt = 0; attempt < 128; ++attempt) {
-        auto r = link->Mux()->SendData(*ch, chunk);
-        pump();
-        if (r) {
-          break;
-        }
-        clock->Advance(pp::adp::kDefaultRtxIntervalMs);
-        pump();
-        if (attempt == 127) {
-          std::fprintf(stderr, "OsUdpAmp SendData failed: %s\n", r.error().message.c_str());
+      bool made_progress = false;
+      while (sent < kTotal) {
+        const size_t n = std::min(kChunk, kTotal - sent);
+        std::vector<uint8_t> chunk(n, 0x5A);
+        auto* link = rt_a->Links().FindLink("b");
+        if (!link || !link->Mux()) {
           return false;
         }
+        auto r = link->Mux()->SendData(*ch, chunk);
+        if (!r) {
+          break;
+        }
+        sent += n;
+        made_progress = true;
       }
-      sent += n;
+      pump();
+      if (!made_progress) {
+        clock->Advance(pp::adp::kDefaultRtxIntervalMs);
+        pump();
+      }
     }
     for (size_t round = 0; round < 10000 && received < kTotal; ++round) {
       pump();
