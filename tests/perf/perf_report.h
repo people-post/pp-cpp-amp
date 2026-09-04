@@ -26,6 +26,8 @@ bool RunB3(int warmup, int iters);
 bool RunA3(int warmup, int iters);
 bool RunOsUdp(int warmup, int iters);
 bool RunE1(int warmup, int iters);
+bool RunE2(int warmup, int iters);
+bool RunE3(int warmup, int iters);
 bool RunD1Multi(int warmup, int drive_iters);
 bool RunD2(int warmup, int iters);
 bool RunF(int warmup, int iters);

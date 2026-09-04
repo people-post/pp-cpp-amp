@@ -355,6 +355,171 @@ bool RunE1(const int warmup, const int iters) {
   return true;
 }
 
+bool RunE2(const int warmup, const int iters) {
+  std::printf("\n== E2 Paced call-media (40 B @ 50 pps, harness) ==\n");
+  constexpr size_t kPacketBytes = 40;
+  constexpr size_t kPacketCount = 100; // 2 s @ 50 pps
+  constexpr int64_t kCadenceMs = 20;
+  const int case_warmup = std::min(warmup, 1);
+  const int case_iters = std::max(1, iters);
+  std::vector<double> samples;
+  samples.reserve(static_cast<size_t>(case_iters));
+
+  for (int i = 0; i < case_warmup + case_iters; ++i) {
+    auto created = pbr::test::MakeAmpIntegrationHarness();
+    if (!created || !(*created)->Associate()) {
+      std::fprintf(stderr, "E2 Associate failed\n");
+      return false;
+    }
+    auto& h = **created;
+    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/call-media/1.0.0",
+                                  pp::amp::CallMediaChannelPolicy());
+    if (!ch) {
+      std::fprintf(stderr, "E2 OpenChannel failed\n");
+      return false;
+    }
+
+    size_t received = 0;
+    auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
+    if (!inbound || !inbound->Mux()) {
+      std::fprintf(stderr, "E2 inbound missing\n");
+      return false;
+    }
+    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+      received += payload.size() >= kPacketBytes ? 1 : 0;
+    });
+
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<uint8_t> frame(kPacketBytes, 0xE2);
+    for (size_t n = 0; n < kPacketCount; ++n) {
+      auto* link = h.mgr_a().FindLink("b");
+      if (!link || !link->Mux()) {
+        std::fprintf(stderr, "E2 outbound link missing\n");
+        return false;
+      }
+      for (int attempt = 0; attempt < 32; ++attempt) {
+        auto r = link->Mux()->SendData(*ch, frame);
+        h.PumpBoth();
+        if (r) {
+          break;
+        }
+        // Drop-Oldest Realtime: brief pump/retry is enough under MemoryDatagramIo.
+        if (attempt == 31) {
+          std::fprintf(stderr, "E2 SendData failed: %s\n", r.error().message.c_str());
+          return false;
+        }
+      }
+      h.AdvanceMs(kCadenceMs);
+    }
+    for (size_t round = 0; round < 2000 && received < kPacketCount; ++round) {
+      h.PumpBoth();
+      h.AdvanceMs(1);
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    if (received != kPacketCount) {
+      std::fprintf(stderr, "E2 incomplete: got %zu / %zu frames\n", received, kPacketCount);
+      return false;
+    }
+    if (i >= case_warmup) {
+      samples.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count());
+    }
+  }
+
+  const auto stats = Summarize(std::move(samples));
+  const double pkt_s = OpsPerSec(stats.mean_ns) * static_cast<double>(kPacketCount);
+  PrintHuman("E2", "paced_media_50pps", stats, pkt_s, "pkt/s");
+  PrintCsv("E2", "paced_media_50pps", kPacketBytes * kPacketCount, stats, pkt_s, "pkt/s");
+  return true;
+}
+
+bool RunE3(const int warmup, const int iters) {
+  std::printf("\n== E3 Paced 4 MiB FRAG bulk (harness) ==\n");
+  constexpr size_t kTotal = 4ull * 1024ull * 1024ull;
+  // Each SendData must FRAG ( > 900 B ) but stay under ADP reliable_window (16) frames.
+  constexpr size_t kFragPayload = 900;
+  constexpr size_t kFragsPerMsg = 8; // 8 < kDefaultReliableWindow
+  constexpr size_t kChunk = kFragPayload * kFragsPerMsg;
+  const int case_warmup = std::min(warmup, 1);
+  const int case_iters = std::max(1, iters);
+  std::vector<double> samples;
+  samples.reserve(static_cast<size_t>(case_iters));
+
+  for (int i = 0; i < case_warmup + case_iters; ++i) {
+    auto created = pbr::test::MakeAmpIntegrationHarness();
+    if (!created || !(*created)->Associate()) {
+      std::fprintf(stderr, "E3 Associate failed\n");
+      return false;
+    }
+    auto& h = **created;
+    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0",
+                                  pp::amp::ChatBlobChannelPolicy());
+    if (!ch) {
+      std::fprintf(stderr, "E3 OpenChannel failed\n");
+      return false;
+    }
+
+    size_t received = 0;
+    auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
+    if (!inbound || !inbound->Mux()) {
+      std::fprintf(stderr, "E3 inbound missing\n");
+      return false;
+    }
+    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+      received += payload.size();
+    });
+
+    const auto t0 = std::chrono::steady_clock::now();
+    size_t sent = 0;
+    while (sent < kTotal) {
+      const size_t n = std::min(kChunk, kTotal - sent);
+      std::vector<uint8_t> chunk(n, static_cast<uint8_t>((sent / kChunk) & 0xff));
+      const size_t before = received;
+      for (int attempt = 0; attempt < 128; ++attempt) {
+        auto* link = h.mgr_a().FindLink("b");
+        if (!link || !link->Mux()) {
+          std::fprintf(stderr, "E3 outbound link missing\n");
+          return false;
+        }
+        auto r = link->Mux()->SendData(*ch, chunk);
+        h.PumpBoth();
+        if (r) {
+          break;
+        }
+        h.AdvanceMs(pp::adp::kDefaultRtxIntervalMs);
+        h.PumpBoth();
+        if (attempt == 127) {
+          std::fprintf(stderr, "E3 SendData failed: %s\n", r.error().message.c_str());
+          return false;
+        }
+      }
+      for (size_t round = 0; round < 2000 && received < before + n; ++round) {
+        h.PumpBoth();
+        h.AdvanceMs(1);
+      }
+      if (received < before + n) {
+        std::fprintf(stderr, "E3 chunk incomplete: got %zu / %zu (total %zu / %zu)\n", received - before, n,
+                     received, kTotal);
+        return false;
+      }
+      sent += n;
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    if (received != kTotal) {
+      std::fprintf(stderr, "E3 incomplete: got %zu / %zu\n", received, kTotal);
+      return false;
+    }
+    if (i >= case_warmup) {
+      samples.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count());
+    }
+  }
+
+  const auto stats = Summarize(std::move(samples));
+  const double mbps = MegaBytesPerSec(stats.mean_ns, kTotal);
+  PrintHuman("E3", "paced_4MiB_frag", stats, mbps, "MB/s");
+  PrintCsv("E3", "paced_4MiB_frag", kTotal, stats, mbps, "MB/s");
+  return true;
+}
+
 bool RunD1Multi(const int warmup, const int drive_iters) {
   std::printf("\n== D1 multi-link Drive (hub fan-in) ==\n");
   // Default ladder stops at 16; set PP_AMP_PERF_MAX_LINKS=32 or 48 for heavier runs.

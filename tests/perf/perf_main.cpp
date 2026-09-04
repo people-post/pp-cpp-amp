@@ -413,6 +413,8 @@ int main() {
   ok = pp::amp::perf::RunD2(std::min(warmup, 1), xfer_iters) && ok;
   ok = pp::amp::perf::RunD3(std::min(warmup, 1), xfer_iters) && ok;
   ok = pp::amp::perf::RunE1(std::min(warmup, 1), xfer_iters) && ok;
+  ok = pp::amp::perf::RunE2(std::min(warmup, 1), media_iters) && ok;
+  ok = pp::amp::perf::RunE3(std::min(warmup, 1), xfer_iters) && ok;
   ok = pp::amp::perf::RunE4(std::min(warmup, 1), assoc_iters) && ok;
   ok = pp::amp::perf::RunF(std::min(warmup, 1), xfer_iters) && ok;
   ok = pp::amp::perf::RunOsUdpAmp(std::min(warmup, 1), xfer_iters) && ok;
