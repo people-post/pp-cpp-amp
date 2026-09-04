@@ -1,5 +1,6 @@
 #include "amp/L3/ChannelMux.h"
 
+#include "amp/L3/AmpChannelLimits.h"
 #include "amp/L3/Capability.h"
 
 namespace pp::amp {
@@ -94,6 +95,9 @@ Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPo
   frame.header.channel_seq = 0;
   frame.open.protocol_id = protocol_id;
   frame.open.channel_class = channels_.at(id).policy.cls;
+  const size_t max_bytes = channels_.at(id).policy.max_message_bytes;
+  frame.open.max_message_bytes =
+      max_bytes > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<uint32_t>(max_bytes);
 
   auto* channel = ChannelById(id);
   if (!channel) {
@@ -112,6 +116,19 @@ void ChannelMux::SetDataHandler(const uint32_t channel_id, DataHandler handler) 
     return;
   }
   pending_handlers_[channel_id] = std::move(handler);
+}
+
+Roe<void> ChannelMux::ApplyChannelPolicy(const uint32_t channel_id, ChannelPolicy policy) {
+  auto* channel = ChannelById(channel_id);
+  if (!channel) {
+    return Error("amp mux: apply policy on unknown channel");
+  }
+  if (policy.max_message_bytes > AmpChannelLimits::kMaxChatBlobFrameBytes) {
+    policy.max_message_bytes = AmpChannelLimits::kMaxChatBlobFrameBytes;
+  }
+  channel->policy = std::move(policy);
+  channel->reassembly = MessageReassembly(channel->policy.max_message_bytes);
+  return Roe<void>();
 }
 
 void ChannelMux::SetTerminalHandler(const uint32_t channel_id, TerminalHandler handler) {
@@ -158,6 +175,11 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
   rec.id = frame.header.channel_id;
   rec.protocol_id = frame.open.protocol_id;
   rec.policy.cls = frame.open.channel_class;
+  if (frame.open.max_message_bytes > 0) {
+    const size_t offered = frame.open.max_message_bytes;
+    rec.policy.max_message_bytes =
+        offered > AmpChannelLimits::kMaxChatBlobFrameBytes ? AmpChannelLimits::kMaxChatBlobFrameBytes : offered;
+  }
   rec.reassembly = MessageReassembly(rec.policy.max_message_bytes);
   rec.state = ChannelState::Open;
   channels_.emplace(rec.id, std::move(rec));

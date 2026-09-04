@@ -106,6 +106,7 @@ Roe<std::vector<uint8_t>> ChannelWire::Encode(const ChannelFrame& frame) {
     out.insert(out.end(), proto->begin(), proto->end());
     out.push_back(static_cast<uint8_t>(frame.open.channel_class));
     AppendU16(out, frame.open.flags);
+    AppendU32(out, frame.open.max_message_bytes);
     break;
   }
   case ChannelFrameType::OpenAck:
@@ -175,6 +176,14 @@ Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
       return flags.error();
     }
     frame.open.flags = *flags;
+    // Optional trailing u32 for forward/backward decode: absent → 0 (peer default).
+    if (!body.empty()) {
+      auto max_bytes = ReadU32(body);
+      if (!max_bytes) {
+        return max_bytes.error();
+      }
+      frame.open.max_message_bytes = *max_bytes;
+    }
     if (auto trailing = ExpectEmpty(body); !trailing) {
       return trailing.error();
     }

@@ -21,6 +21,8 @@ struct ChannelOpenBody {
   std::string protocol_id;
   ChannelClass channel_class = ChannelClass::Control;
   uint16_t flags = 0;
+  /** Receiver reassembly budget; 0 means use ChannelPolicy default on the peer. */
+  uint32_t max_message_bytes = 0;
 };
 
 struct ChannelFragBody {
