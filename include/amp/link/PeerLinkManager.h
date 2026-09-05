@@ -84,8 +84,8 @@ public:
 
   /**
    * Accept inbound nested-Session carrier opens.
-   * `protocol_id` defaults to `kAmpCircuitCarrierProtocolId` (`/amp/circuit-carrier/1.0.0`);
-   * products should pass their own wire id (e.g. `/pp-browser/circuit-carrier/1.0.0`).
+   * `protocol_id` defaults to Amp-owned `kAmpCircuitCarrierProtocolId` (`/amp/circuit-carrier/1.0.0`).
+   * Products should keep the default; override only for Amp-internal tests.
    */
   void EnableNestedCarrierAccept(bool enable,
                                  std::string protocol_id = kAmpCircuitCarrierProtocolId);

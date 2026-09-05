@@ -17,9 +17,9 @@ inline constexpr const char* kAdpMultiaddrProtocol = "adp";
 inline constexpr const char* kAdpMultiaddrVersion = "1.0.0";
 
 /**
- * Library-default outer circuit carrier for nested A↔B Session ([A024]).
- * Product hosts should pass their own id into PeerLinkManager::EnableNestedCarrierAccept
- * (e.g. pp-browser `/pp-browser/circuit-carrier/1.0.0`) — do not hardcode product namespaces here.
+ * Amp-owned outer circuit carrier for nested A↔B Session ([A024]).
+ * Products should use this default via EnableNestedCarrierAccept(true) — do not mint
+ * product-namespace aliases (e.g. `/pp-browser/circuit-carrier/…`).
  */
 inline constexpr const char* kAmpCircuitCarrierProtocolId = "/amp/circuit-carrier/1.0.0";
 
