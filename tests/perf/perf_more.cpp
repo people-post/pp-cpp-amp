@@ -292,7 +292,7 @@ bool RunE1(const int warmup, const int iters) {
       return false;
     }
     auto& h = **created;
-    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-ledger/rpc/1.0.0", pp::amp::ChatBlobChannelPolicy());
+    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-ledger/rpc/1.0.0", pp::amp::BulkChannelPolicy());
     if (!ch) {
       std::fprintf(stderr, "E1 OpenChannel failed\n");
       return false;
@@ -451,7 +451,7 @@ bool RunE3(const int warmup, const int iters) {
     }
     auto& h = **created;
     const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0",
-                                  pp::amp::ChatBlobChannelPolicy());
+                                  pp::amp::BulkChannelPolicy());
     if (!ch) {
       std::fprintf(stderr, "E3 OpenChannel failed\n");
       return false;
@@ -905,7 +905,7 @@ bool RunD2(const int warmup, const int iters) {
     for (auto& c : clients) {
       bool done = false;
       std::optional<uint32_t> ch;
-      c.rt->Links().OpenChannel("hub", "/pp-perf/fanin/1.0.0", pp::amp::ChatBlobChannelPolicy(),
+      c.rt->Links().OpenChannel("hub", "/pp-perf/fanin/1.0.0", pp::amp::BulkChannelPolicy(),
                                 [&](pp::amp::PeerLinkManager::ChannelRoe result) {
                                   if (result.isOk()) {
                                     ch = result.value();

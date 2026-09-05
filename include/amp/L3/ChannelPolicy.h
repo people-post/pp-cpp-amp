@@ -47,15 +47,21 @@ inline ChannelPolicy CapabilityChannelPolicy() {
   return policy;
 }
 
-/** Chat attachment / large binary (FRAG up to AmpChannelLimits::kMaxChatBlobFrameBytes). */
-inline ChannelPolicy ChatBlobChannelPolicy() {
+/**
+ * Core Bulk profile (FRAG up to AmpChannelLimits::kMaxBulkFrameBytes).
+ * Product wrappers may copy this and set read_once / read_timeout.
+ */
+inline ChannelPolicy MakeBulkChannelPolicy() {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Bulk;
   policy.drop = ChannelDropPolicy::Never;
   policy.max_outbound_frames = AmpChannelLimits::kMaxControlOutboundFrames;
-  policy.max_message_bytes = AmpChannelLimits::kMaxChatBlobFrameBytes;
+  policy.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
   return policy;
 }
+
+/** Large Reliable binary / content-addressed object transfer (product-neutral). */
+inline ChannelPolicy BulkChannelPolicy() { return MakeBulkChannelPolicy(); }
 
 /** Call-media / realtime frames: BestEffort + drop Oldest under outbound burst. */
 inline ChannelPolicy CallMediaChannelPolicy(

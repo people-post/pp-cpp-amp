@@ -50,7 +50,7 @@ pp::adp::AssocId AdpAssoc(const uint8_t fill = 0x11) {
 
 pp::amp::ByteVector SessionKey(const uint8_t seed) { return pp::amp::ByteVector(pp::amp::kSessionKeyBytes, seed); }
 
-pp::amp::ChannelPolicy BulkPolicy() { return pp::amp::ChatBlobChannelPolicy(); }
+pp::amp::ChannelPolicy BulkPolicy() { return pp::amp::BulkChannelPolicy(); }
 
 bool RunA1(const int warmup, const int iters) {
   std::printf("\n== A1 WireCodec + HmacBinder ==\n");

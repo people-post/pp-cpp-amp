@@ -124,8 +124,8 @@ Roe<void> ChannelMux::ApplyChannelPolicy(const uint32_t channel_id, ChannelPolic
   if (!channel) {
     return Error("amp mux: apply policy on unknown channel");
   }
-  if (policy.max_message_bytes > AmpChannelLimits::kMaxChatBlobFrameBytes) {
-    policy.max_message_bytes = AmpChannelLimits::kMaxChatBlobFrameBytes;
+  if (policy.max_message_bytes > AmpChannelLimits::kMaxBulkFrameBytes) {
+    policy.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
   }
   channel->policy = std::move(policy);
   channel->reassembly = MessageReassembly(channel->policy.max_message_bytes);
@@ -179,7 +179,7 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
   if (frame.open.max_message_bytes > 0) {
     const size_t offered = frame.open.max_message_bytes;
     rec.policy.max_message_bytes =
-        offered > AmpChannelLimits::kMaxChatBlobFrameBytes ? AmpChannelLimits::kMaxChatBlobFrameBytes : offered;
+        offered > AmpChannelLimits::kMaxBulkFrameBytes ? AmpChannelLimits::kMaxBulkFrameBytes : offered;
   }
   rec.reassembly = MessageReassembly(rec.policy.max_message_bytes);
   rec.state = ChannelState::Open;
