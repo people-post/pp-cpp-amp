@@ -23,7 +23,7 @@ ChannelPolicy TestBulkPolicy() {
   policy.cls = ChannelClass::Bulk;
   policy.drop = ChannelDropPolicy::Never;
   policy.max_outbound_frames = AmpChannelLimits::kMaxControlOutboundFrames;
-  policy.max_message_bytes = AmpChannelLimits::kMaxChatBlobFrameBytes;
+  policy.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
   return policy;
 }
 
@@ -104,7 +104,7 @@ TEST(ChannelMuxTest, OpenCarriesMaxMessageBytesForBlob) {
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
 
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", ChatBlobChannelPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", BulkChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
 
   std::vector<uint8_t> received;
@@ -128,7 +128,7 @@ TEST(ChannelMuxTest, ApplyChannelPolicyRaisesReassemblyBudget) {
   auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
 
-  ASSERT_TRUE(static_cast<bool>(link.responder.mux.ApplyChannelPolicy(*ch, ChatBlobChannelPolicy())));
+  ASSERT_TRUE(static_cast<bool>(link.responder.mux.ApplyChannelPolicy(*ch, BulkChannelPolicy())));
 
   std::vector<uint8_t> received;
   link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
@@ -137,7 +137,7 @@ TEST(ChannelMuxTest, ApplyChannelPolicyRaisesReassemblyBudget) {
 
   std::vector<uint8_t> large(512 * 1024, 0xEE);
   // Initiator still limited by ControlJson until Apply on initiator too.
-  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ApplyChannelPolicy(*ch, ChatBlobChannelPolicy())));
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ApplyChannelPolicy(*ch, BulkChannelPolicy())));
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, large)));
   EXPECT_EQ(received, large);
 }

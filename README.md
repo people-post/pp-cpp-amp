@@ -20,6 +20,8 @@ Consumers include headers as `#include "amp/L1/Clock.h"` (include root is `inclu
 
 NAT / association keepalive: [docs/KEEPALIVE.md](docs/KEEPALIVE.md).
 
+Ownership boundary (what Amp shares vs product L4): [docs/OWNERSHIP.md](docs/OWNERSHIP.md).
+
 Performance case matrix + scaffold: [docs/PERF_CASES.md](docs/PERF_CASES.md) (`pp_amp_perf`).
 
 ## Build

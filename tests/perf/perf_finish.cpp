@@ -48,7 +48,7 @@ bool RunC5(const int warmup, const int iters) {
     auto& link = **link_result;
 
     auto ch_ctrl = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
-    auto ch_bulk = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", pp::amp::ChatBlobChannelPolicy());
+    auto ch_bulk = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", pp::amp::BulkChannelPolicy());
     auto ch_rt = link.initiator.mux.OpenOutbound("/pp-browser/call-media/1.0.0", pp::amp::CallMediaChannelPolicy());
     if (!ch_ctrl || !ch_bulk || !ch_rt) {
       std::fprintf(stderr, "C5 OpenOutbound failed\n");
@@ -447,7 +447,7 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
 
     bool ch_done = false;
     std::optional<uint32_t> ch;
-    rt_a->Links().OpenChannel("b", "/pp-browser/chat-blob/1.0.0", pp::amp::ChatBlobChannelPolicy(),
+    rt_a->Links().OpenChannel("b", "/pp-browser/chat-blob/1.0.0", pp::amp::BulkChannelPolicy(),
                               [&](pp::amp::PeerLinkManager::ChannelRoe r) {
                                 if (r.isOk()) {
                                   ch = r.value();

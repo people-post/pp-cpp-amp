@@ -14,8 +14,13 @@ struct AmpChannelLimits {
   static constexpr size_t kMaxControlJsonFrameBytes = 64 * 1024;
   /** Chat / relay envelope streams (direct chat, chat-history, dial-back). */
   static constexpr size_t kMaxChatStreamJsonBytes = 256 * 1024;
-  /** Chat attachment ciphertext (≤ 4 MiB plaintext + AEAD overhead). */
-  static constexpr size_t kMaxChatBlobFrameBytes = 4ULL * 1024ULL * 1024ULL + 64 * 1024;
+  /**
+   * Large Reliable Bulk messages (FRAG). Default headroom ≈ 4 MiB + 64 KiB.
+   * Product L4 (chat attachments, CA packs) may apply a tighter app cap.
+   */
+  static constexpr size_t kMaxBulkFrameBytes = 4ULL * 1024ULL * 1024ULL + 64 * 1024;
+  /** @deprecated Prefer kMaxBulkFrameBytes. */
+  static constexpr size_t kMaxChatBlobFrameBytes = kMaxBulkFrameBytes;
   /** Media-relay binary data frames. */
   static constexpr size_t kMaxMediaDataFrameBytes = 256 * 1024;
   /** Call-media encrypted Opus / H264 video_lo frames (V034; was 16 KiB audio-only). */

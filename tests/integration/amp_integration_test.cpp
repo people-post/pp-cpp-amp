@@ -13,11 +13,11 @@ namespace pbr::test {
 namespace {
 
 pp::amp::ChannelPolicy BulkPolicy() {
-  return pp::amp::ChatBlobChannelPolicy();
+  return pp::amp::BulkChannelPolicy();
 }
 
 pp::amp::ChannelPolicy RealtimeBulkPolicy() {
-  pp::amp::ChannelPolicy policy = pp::amp::ChatBlobChannelPolicy();
+  pp::amp::ChannelPolicy policy = pp::amp::BulkChannelPolicy();
   policy.cls = pp::amp::ChannelClass::Realtime;
   return policy;
 }
