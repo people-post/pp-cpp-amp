@@ -82,7 +82,7 @@ public:
   void EstablishNestedOverCarrier(const std::string& peer_key, std::shared_ptr<ChannelSession> carrier,
                                   bool initiator, LinkCb on_complete);
 
-  /** Accept inbound `/pp-browser/amp-circuit-carrier/1.0.0` opens as nested Session responders. */
+  /** Accept inbound `/pp-browser/circuit-carrier/1.0.0` opens as nested Session responders. */
   void EnableNestedCarrierAccept(bool enable);
 
   /** L4 entry — applied to every link mux (existing + future). */

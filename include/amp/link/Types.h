@@ -17,7 +17,7 @@ inline constexpr const char* kAdpMultiaddrProtocol = "adp";
 inline constexpr const char* kAdpMultiaddrVersion = "1.0.0";
 
 /** Outer circuit target for nested A↔B Session ([A024]); not an L4 product protocol. */
-inline constexpr const char* kAmpCircuitCarrierProtocolId = "/pp-browser/amp-circuit-carrier/1.0.0";
+inline constexpr const char* kAmpCircuitCarrierProtocolId = "/pp-browser/circuit-carrier/1.0.0";
 
 /** Pre-MSH ADP HMAC key (documented constant; upgraded to K_assoc after handshake). */
 adp::PeerKey PreSessionPeerKey();
