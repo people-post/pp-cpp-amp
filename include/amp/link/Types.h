@@ -16,8 +16,12 @@ namespace pp::amp {
 inline constexpr const char* kAdpMultiaddrProtocol = "adp";
 inline constexpr const char* kAdpMultiaddrVersion = "1.0.0";
 
-/** Outer circuit target for nested A↔B Session ([A024]); not an L4 product protocol. */
-inline constexpr const char* kAmpCircuitCarrierProtocolId = "/pp-browser/amp-circuit-carrier/1.0.0";
+/**
+ * Library-default outer circuit carrier for nested A↔B Session ([A024]).
+ * Product hosts should pass their own id into PeerLinkManager::EnableNestedCarrierAccept
+ * (e.g. pp-browser `/pp-browser/circuit-carrier/1.0.0`) — do not hardcode product namespaces here.
+ */
+inline constexpr const char* kAmpCircuitCarrierProtocolId = "/amp/circuit-carrier/1.0.0";
 
 /** Pre-MSH ADP HMAC key (documented constant; upgraded to K_assoc after handshake). */
 adp::PeerKey PreSessionPeerKey();
