@@ -82,8 +82,13 @@ public:
   void EstablishNestedOverCarrier(const std::string& peer_key, std::shared_ptr<ChannelSession> carrier,
                                   bool initiator, LinkCb on_complete);
 
-  /** Accept inbound `/pp-browser/circuit-carrier/1.0.0` opens as nested Session responders. */
-  void EnableNestedCarrierAccept(bool enable);
+  /**
+   * Accept inbound nested-Session carrier opens.
+   * `protocol_id` defaults to `kAmpCircuitCarrierProtocolId` (`/amp/circuit-carrier/1.0.0`);
+   * products should pass their own wire id (e.g. `/pp-browser/circuit-carrier/1.0.0`).
+   */
+  void EnableNestedCarrierAccept(bool enable,
+                                 std::string protocol_id = kAmpCircuitCarrierProtocolId);
 
   /** L4 entry — applied to every link mux (existing + future). */
   void SetProtocolHandler(const std::string& protocol_id, ProtocolHandler handler);
@@ -162,6 +167,7 @@ private:
   std::vector<std::string> advertised_protocols_;
   CapabilityHandler capability_handler_;
   bool nested_carrier_accept_ = false;
+  std::string nested_carrier_protocol_id_;
 
   std::unordered_map<std::string, EndpointRecord> endpoints_;
   std::unordered_map<std::string, std::unique_ptr<PeerLink>> links_;

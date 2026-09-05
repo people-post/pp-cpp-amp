@@ -848,15 +848,22 @@ void PeerLinkManager::Tick() {
   MaybeSendKeepalives(now);
 }
 
-void PeerLinkManager::EnableNestedCarrierAccept(const bool enable) {
+void PeerLinkManager::EnableNestedCarrierAccept(const bool enable, std::string protocol_id) {
+  if (!nested_carrier_protocol_id_.empty()) {
+    RemoveProtocolHandler(nested_carrier_protocol_id_);
+  }
   nested_carrier_accept_ = enable;
   if (enable) {
-    SetProtocolHandler(kAmpCircuitCarrierProtocolId,
+    if (protocol_id.empty()) {
+      protocol_id = kAmpCircuitCarrierProtocolId;
+    }
+    nested_carrier_protocol_id_ = std::move(protocol_id);
+    SetProtocolHandler(nested_carrier_protocol_id_,
                        [this](PeerLink& link, const uint32_t channel_id) {
                          HandleInboundCarrierChannel(link, channel_id);
                        });
   } else {
-    RemoveProtocolHandler(kAmpCircuitCarrierProtocolId);
+    nested_carrier_protocol_id_.clear();
   }
 }
 
