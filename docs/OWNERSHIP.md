@@ -30,9 +30,8 @@ It is the only mesh transport shared by pp-browser and pp-ledger. It is **not** 
 
 1. **Share transport, not protocols** — Both products call Amp Bulk/FRAG; each keeps its own `protocol_id` and conversation SM.
 2. **Prefer thin product glue twice** over a fat Amp L4 service (no Amp “TorrentService” / “LedgerSync”).
-3. **Product channel policies** may wrap `MakeBulkChannelPolicy()` / zero-arg `ChatBlobChannelPolicy()` (e.g. `read_once`, timeouts). Do not re-copy Bulk class/size defaults in product headers.
+3. **Product channel policies** may wrap `MakeBulkChannelPolicy()` (e.g. `read_once`, timeouts). Do not re-copy Bulk class/size defaults in product headers.
 4. **Ledger embed** links pp-ledger client types and supplies `ILedgerTransport` / Amp OPEN — do not reimplement ledger codecs in Amp or browser.
-5. **Aliases** — `ChatBlobChannelPolicy` / `kMaxChatBlobFrameBytes` remain as deprecated names for `BulkChannelPolicy` / `kMaxBulkFrameBytes`.
 
 ## Related
 

@@ -63,9 +63,6 @@ inline ChannelPolicy MakeBulkChannelPolicy() {
 /** Large Reliable binary / content-addressed object transfer (product-neutral). */
 inline ChannelPolicy BulkChannelPolicy() { return MakeBulkChannelPolicy(); }
 
-/** @deprecated Prefer BulkChannelPolicy / MakeBulkChannelPolicy. */
-inline ChannelPolicy ChatBlobChannelPolicy() { return MakeBulkChannelPolicy(); }
-
 /** Call-media / realtime frames: BestEffort + drop Oldest under outbound burst. */
 inline ChannelPolicy CallMediaChannelPolicy(
     std::chrono::milliseconds read_timeout = std::chrono::milliseconds{8000}) {
