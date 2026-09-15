@@ -85,6 +85,14 @@ struct IpEndpoint {
     return e;
   }
 
+  static IpEndpoint V6(const std::array<uint8_t, 16>& bytes, uint16_t port) {
+    IpEndpoint e;
+    e.family = Family::V6;
+    e.addr = bytes;
+    e.port = port;
+    return e;
+  }
+
   bool operator==(const IpEndpoint& o) const {
     if (family != o.family || port != o.port) {
       return false;

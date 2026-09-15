@@ -3,8 +3,18 @@
 #include "amp/link/Types.h"
 
 #include <charconv>
+#include <cstring>
 #include <sstream>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
 
 namespace pp::amp {
 
@@ -61,6 +71,36 @@ Roe<adp::IpEndpoint> ParseIp4HostPort(std::string_view host, std::string_view po
   return ep;
 }
 
+Roe<adp::IpEndpoint> ParseIp6HostPort(std::string_view host, std::string_view port_text) {
+  std::string host_str(host);
+  if (host_str.size() >= 2 && host_str.front() == '[' && host_str.back() == ']') {
+    host_str = host_str.substr(1, host_str.size() - 2);
+  }
+  // Zone ids are not dialable in ADP multiaddrs.
+  if (host_str.find('%') != std::string::npos) {
+    return Error("amp addr: ipv6 zone id unsupported");
+  }
+  adp::IpEndpoint ep;
+  ep.family = adp::IpEndpoint::Family::V6;
+  if (::inet_pton(AF_INET6, host_str.c_str(), ep.addr.data()) != 1) {
+    return Error("amp addr: bad ipv6 host");
+  }
+  auto port = ParsePort(port_text);
+  if (!port) {
+    return port.error();
+  }
+  ep.port = *port;
+  return ep;
+}
+
+Roe<std::string> FormatIp6Host(const adp::IpEndpoint& endpoint) {
+  char buf[INET6_ADDRSTRLEN] = {};
+  if (!::inet_ntop(AF_INET6, endpoint.addr.data(), buf, sizeof(buf))) {
+    return Error("amp addr: ipv6 format failed");
+  }
+  return std::string(buf);
+}
+
 } // namespace
 
 Roe<ParsedAdpMultiaddr> ParseAdpMultiaddr(const std::string_view multiaddr) {
@@ -71,11 +111,12 @@ Roe<ParsedAdpMultiaddr> ParseAdpMultiaddr(const std::string_view multiaddr) {
   if (parts.size() != 8) {
     return Error("amp addr: expected 8 components");
   }
-  if (parts[0] != "ip4" || parts[2] != "udp" || parts[4] != kAdpMultiaddrProtocol || parts[5] != kAdpMultiaddrVersion
-      || parts[6] != "p2p") {
+  if ((parts[0] != "ip4" && parts[0] != "ip6") || parts[2] != "udp" || parts[4] != kAdpMultiaddrProtocol ||
+      parts[5] != kAdpMultiaddrVersion || parts[6] != "p2p") {
     return Error("amp addr: unsupported multiaddr layout");
   }
-  auto endpoint = ParseIp4HostPort(parts[1], parts[3]);
+  Roe<adp::IpEndpoint> endpoint =
+      parts[0] == "ip4" ? ParseIp4HostPort(parts[1], parts[3]) : ParseIp6HostPort(parts[1], parts[3]);
   if (!endpoint) {
     return endpoint.error();
   }
@@ -89,16 +130,24 @@ Roe<ParsedAdpMultiaddr> ParseAdpMultiaddr(const std::string_view multiaddr) {
 }
 
 Roe<std::string> FormatAdpMultiaddr(const adp::IpEndpoint& endpoint, const std::string_view peer_id) {
-  if (endpoint.family != adp::IpEndpoint::Family::V4) {
-    return Error("amp addr: only ipv4 supported");
-  }
   if (peer_id.empty()) {
     return Error("amp addr: missing peer id");
   }
   std::ostringstream out;
-  out << "/ip4/" << static_cast<int>(endpoint.addr[0]) << '.' << static_cast<int>(endpoint.addr[1]) << '.'
-      << static_cast<int>(endpoint.addr[2]) << '.' << static_cast<int>(endpoint.addr[3]) << "/udp/" << endpoint.port
-      << '/' << kAdpMultiaddrProtocol << '/' << kAdpMultiaddrVersion << "/p2p/" << peer_id;
+  if (endpoint.family == adp::IpEndpoint::Family::V4) {
+    out << "/ip4/" << static_cast<int>(endpoint.addr[0]) << '.' << static_cast<int>(endpoint.addr[1]) << '.'
+        << static_cast<int>(endpoint.addr[2]) << '.' << static_cast<int>(endpoint.addr[3]);
+  } else if (endpoint.family == adp::IpEndpoint::Family::V6) {
+    auto host = FormatIp6Host(endpoint);
+    if (!host) {
+      return host.error();
+    }
+    out << "/ip6/" << *host;
+  } else {
+    return Error("amp addr: unsupported address family");
+  }
+  out << "/udp/" << endpoint.port << '/' << kAdpMultiaddrProtocol << '/' << kAdpMultiaddrVersion << "/p2p/"
+      << peer_id;
   return out.str();
 }
 
