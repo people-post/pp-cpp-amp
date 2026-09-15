@@ -437,6 +437,10 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
       inflight_associations_[peer_key].push_back(std::move(on_complete));
       return;
     }
+    // Stale Backoff/Idle occupant blocks a fresh dial; drop and continue.
+    if (existing->Phase() != PeerLinkPhase::Connected) {
+      DropLink(peer_key);
+    }
   }
 
   if (ep_it == endpoints_.end()) {
@@ -476,6 +480,12 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
   params.mint_id = true;
   params.peer = ep_it->second.endpoint;
   auto opened = endpoint_.Open(params);
+  // Same-ms mint collision (pre-seq fix) or rare id clash — remint once.
+  if (!opened && opened.error().message.find("assoc already open") != std::string::npos) {
+    params.id = {};
+    params.mint_id = true;
+    opened = endpoint_.Open(params);
+  }
   if (!opened) {
     if (on_complete) {
       on_complete(LinkRoe::error(Failure::Of(Err::TransportFailed, opened.error().message)));
