@@ -4,6 +4,7 @@
 #include "amp/L1/WireCodec.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 namespace pp::adp {
@@ -22,15 +23,23 @@ Connection::Roe<std::shared_ptr<Connection>> Connection::Open(Endpoint& endpoint
       }
     }
     if (zero) {
-      // Mint from clock + pointer entropy (tests can set explicit ids).
+      // Mint from clock + pointer entropy + seq (same-ms collision → "adp: assoc already open"
+      // when two EnsureAssociation/Open race — dogfood call-media connect).
+      static std::atomic<uint32_t> mint_seq{1};
       const int64_t now = endpoint.GetClock().NowMs();
+      const uint32_t seq = mint_seq.fetch_add(1, std::memory_order_relaxed);
       for (size_t i = 0; i < 8; ++i) {
         params.id.bytes[i] = static_cast<uint8_t>((now >> (i * 8)) & 0xff);
       }
-      const auto ent = reinterpret_cast<uintptr_t>(&endpoint) ^ static_cast<uintptr_t>(now * 2654435761u);
+      const auto ent = reinterpret_cast<uintptr_t>(&endpoint) ^ static_cast<uintptr_t>(now * 2654435761u) ^
+                       static_cast<uintptr_t>(seq * 0x9e3779b9u);
       for (size_t i = 0; i < 8; ++i) {
         params.id.bytes[8 + i] = static_cast<uint8_t>((ent >> (i * 8)) & 0xff);
       }
+      params.id.bytes[12] ^= static_cast<uint8_t>(seq);
+      params.id.bytes[13] ^= static_cast<uint8_t>(seq >> 8);
+      params.id.bytes[14] ^= static_cast<uint8_t>(seq >> 16);
+      params.id.bytes[15] ^= static_cast<uint8_t>(seq >> 24);
     }
   }
   auto conn = std::shared_ptr<Connection>(new Connection(endpoint, std::move(params)));
