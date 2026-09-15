@@ -101,6 +101,15 @@ Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& lo
   const int flags = fcntl(fd, F_GETFL, 0);
   fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 #endif
+  // Dual-stack: AF_INET6 wildcard (::) should also accept IPv4-mapped when OS allows.
+  if (local.family == IpEndpoint::Family::V6) {
+    int v6only = 0;
+#if defined(_WIN32)
+    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof(v6only));
+#else
+    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+#endif
+  }
   sockaddr_storage ss{};
   socklen_t len = 0;
   ToSockAddr(local, ss, len);

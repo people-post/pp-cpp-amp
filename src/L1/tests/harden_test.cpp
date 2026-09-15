@@ -144,4 +144,11 @@ TEST_F(AdpHardenTest, MultiConnectionStressMemory) {
   EXPECT_EQ(received, static_cast<size_t>(N));
 }
 
+TEST_F(AdpHardenTest, BindIpv6Wildcard) {
+  auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V6({}, 0));
+  ASSERT_TRUE(static_cast<bool>(bound)) << (bound ? "" : bound.error().message);
+  EXPECT_EQ((*bound)->LocalEndpoint().family, pp::adp::IpEndpoint::Family::V6);
+  EXPECT_NE((*bound)->LocalEndpoint().port, 0u);
+}
+
 } // namespace
