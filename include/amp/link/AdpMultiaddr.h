@@ -12,10 +12,10 @@ struct ParsedAdpMultiaddr {
   std::string peer_id;
 };
 
-/** Parse `/ip4/<host>/udp/<port>/adp/1.0.0/p2p/<PeerId>`. */
+/** Parse `/ip4|ip6/<host>/udp/<port>/adp/1.0.0/p2p/<PeerId>`. */
 Roe<ParsedAdpMultiaddr> ParseAdpMultiaddr(std::string_view multiaddr);
 
-/** Format an ADP listen/dial multiaddr. */
+/** Format an ADP listen/dial multiaddr (IPv4 or IPv6). */
 Roe<std::string> FormatAdpMultiaddr(const adp::IpEndpoint& endpoint, std::string_view peer_id);
 
 } // namespace pp::amp

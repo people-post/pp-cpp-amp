@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 #include <sodium.h>
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -444,6 +445,71 @@ TEST(AmpStackTest, CreateAndAssociateViaStacks) {
   }
   EXPECT_TRUE(associated);
   EXPECT_TRUE((*stack_a)->Links().IsConnected("b"));
+}
+
+TEST(MeshLinkTest, EnsureAssociationOverMemoryIoIpv6) {
+  ASSERT_GE(sodium_init(), 0);
+
+  auto clock = std::make_shared<adp::VirtualClock>(1'000'000);
+  auto hub = adp::MemoryDatagramIo::MakeHub();
+  // Distinct documentation-prefix globals so Format/Parse round-trip is non-loopback.
+  std::array<uint8_t, 16> bytes_a{};
+  bytes_a[0] = 0x20;
+  bytes_a[1] = 0x01;
+  bytes_a[2] = 0x0d;
+  bytes_a[3] = 0xb8;
+  bytes_a[15] = 0x01;
+  std::array<uint8_t, 16> bytes_b = bytes_a;
+  bytes_b[15] = 0x02;
+  const auto addr_a = adp::IpEndpoint::V6(bytes_a, 1000);
+  const auto addr_b = adp::IpEndpoint::V6(bytes_b, 2000);
+
+  auto io_a = std::make_shared<adp::MemoryDatagramIo>(hub, addr_a);
+  auto io_b = std::make_shared<adp::MemoryDatagramIo>(hub, addr_b);
+  auto ep_a = std::make_unique<adp::Endpoint>(io_a, clock);
+  auto ep_b = std::make_unique<adp::Endpoint>(io_b, clock);
+  ep_b->SetAcceptEnabled(true);
+
+  auto alice_keys = pp::MlDsa::GenerateKeyPair();
+  auto bob_keys = pp::MlDsa::GenerateKeyPair();
+  ASSERT_TRUE(static_cast<bool>(alice_keys));
+  ASSERT_TRUE(static_cast<bool>(bob_keys));
+  MshIdentity alice;
+  MshIdentity bob;
+  alice.ml_dsa_secret_key = std::move(alice_keys->secret_key);
+  alice.ml_dsa_public_key = std::move(alice_keys->public_key);
+  bob.ml_dsa_secret_key = std::move(bob_keys->secret_key);
+  bob.ml_dsa_public_key = std::move(bob_keys->public_key);
+
+  PeerLinkManager mgr_a(*ep_a, alice, "QmAlice6");
+  PeerLinkManager mgr_b(*ep_b, bob, "QmBob6");
+  MeshPump pump_a(*ep_a, mgr_a);
+  MeshPump pump_b(*ep_b, mgr_b);
+
+  auto bob_addr = FormatAdpMultiaddr(addr_b, "QmBob6");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  EXPECT_NE(bob_addr->find("/ip6/"), std::string::npos);
+  ASSERT_TRUE(static_cast<bool>(mgr_a.RegisterEndpoint("bob", *bob_addr)));
+
+  bool associated = false;
+  std::string assoc_error;
+  mgr_a.EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) {
+    associated = result.isOk();
+    if (!associated) {
+      assoc_error = result.error().message;
+    }
+  });
+
+  for (size_t i = 0; i < 500 && !(associated && mgr_b.FindConnectedInboundLink() != nullptr); ++i) {
+    pump_a.Pump();
+    pump_b.Pump();
+    pump_a.Tick();
+    pump_b.Tick();
+  }
+
+  EXPECT_TRUE(associated) << assoc_error;
+  EXPECT_TRUE(mgr_a.IsConnected("bob"));
+  ASSERT_NE(mgr_b.FindConnectedInboundLink(), nullptr);
 }
 
 } // namespace
