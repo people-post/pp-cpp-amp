@@ -228,6 +228,51 @@ TEST_F(AdpReliableTest, DeliverInOrderAfterGap) {
   EXPECT_EQ(got[1], "b");
 }
 
+/** N2: Seeded probabilistic loss — all Reliable messages eventually arrive in order. */
+TEST_F(AdpReliableTest, DeliverUnderDropRate) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+  p.io_a->SetRngSeed(12345);
+  p.io_a->SetDropRate(0.15);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 40;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+
+  std::vector<std::string> got;
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  (*cb)->OnMessage([&](const pp::adp::Message& m) {
+    if (m.qos == pp::adp::QosClass::Reliable) {
+      got.emplace_back(m.payload.begin(), m.payload.end());
+    }
+  });
+
+  constexpr int kCount = 32;
+  for (int i = 0; i < kCount; ++i) {
+    const char c = static_cast<char>('A' + (i % 26));
+    ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)));
+  }
+  for (int round = 0; round < 200 && static_cast<int>(got.size()) < kCount; ++round) {
+    PumpBoth(p);
+    p.clock->Advance(10);
+  }
+  ASSERT_EQ(got.size(), static_cast<size_t>(kCount));
+  for (int i = 0; i < kCount; ++i) {
+    EXPECT_EQ(got[static_cast<size_t>(i)], std::string(1, static_cast<char>('A' + (i % 26))));
+  }
+}
+
 TEST_F(AdpReliableTest, AckStopsRetransmit) {
   auto p = MakePair();
   pp::adp::OpenParams op;
