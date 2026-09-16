@@ -6,7 +6,9 @@
 
 namespace pp::adp {
 
-/** Out-of-order seq acceptance helper for ADP reliable / best-effort demux. */
+/** Out-of-order seq acceptance helper for ADP reliable / best-effort demux.
+ * Reliable payloads are held and delivered in order by Connection; this window
+ * only gates freshness / replay. */
 class ReplayWindow {
 public:
   explicit ReplayWindow(size_t window_size = 32);
