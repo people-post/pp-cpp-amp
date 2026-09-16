@@ -103,6 +103,88 @@ TEST_F(AdpReliableTest, DeliverUnderLoss) {
   EXPECT_EQ(got[0], "rel");
 }
 
+TEST_F(AdpReliableTest, DeliverUnderDup) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+  p.io_a->SetRngSeed(42);
+  p.io_a->SetDupRate(1.0);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 10;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+
+  std::vector<std::string> got;
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  (*cb)->OnMessage([&](const pp::adp::Message& m) {
+    if (m.qos == pp::adp::QosClass::Reliable) {
+      got.emplace_back(m.payload.begin(), m.payload.end());
+    }
+  });
+
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("dup"), 3)));
+  PumpBoth(p);
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0], "dup");
+}
+
+TEST_F(AdpReliableTest, DeliverUnderReorder) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+  p.io_a->SetRngSeed(9);
+  p.io_a->SetReorderWindow(3);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 10;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+
+  std::vector<std::string> got;
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  (*cb)->OnMessage([&](const pp::adp::Message& m) {
+    if (m.qos == pp::adp::QosClass::Reliable) {
+      got.emplace_back(m.payload.begin(), m.payload.end());
+    }
+  });
+
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r0"), 2)));
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r1"), 2)));
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r2"), 2)));
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r3"), 2)));
+  p.io_a->FlushReorder();
+  PumpBoth(p);
+  p.clock->Advance(10);
+  PumpBoth(p);
+  ASSERT_EQ(got.size(), 4u);
+  EXPECT_EQ(got[0], "r0");
+  EXPECT_EQ(got[1], "r1");
+  EXPECT_EQ(got[2], "r2");
+  EXPECT_EQ(got[3], "r3");
+}
+
 TEST_F(AdpReliableTest, AckStopsRetransmit) {
   auto p = MakePair();
   pp::adp::OpenParams op;

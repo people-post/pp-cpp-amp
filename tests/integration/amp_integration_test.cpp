@@ -90,6 +90,144 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesLoss) {
   EXPECT_EQ(received, msg);
 }
 
+/** N4: Hold-then-flush delay (window larger than burst so no random release). */
+TEST_F(AmpIntegrationTest, ReliableDataSurvivesReorder) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  ASSERT_TRUE(ch.has_value());
+
+  std::vector<std::vector<uint8_t>> received;
+  auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
+  ASSERT_NE(inbound, nullptr);
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    received.push_back(std::move(payload));
+  });
+
+  // Window > burst: packets stay buffered until FlushReorder (FIFO). Avoids L1→L3 OOO
+  // channel_seq delivery (see docs/FAULT_CASES.md).
+  h.ConfigureReorder(HarnessSide::A, /*window=*/16, /*seed=*/7);
+  const std::vector<std::vector<uint8_t>> msgs = {{'a'}, {'b'}, {'c'}, {'d'}, {'e'}};
+  for (const auto& msg : msgs) {
+    ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
+  }
+  h.FlushReorder(HarnessSide::A);
+  h.ClearFaultInjection(HarnessSide::A);
+  for (int i = 0; i < 40; ++i) {
+    h.AdvanceMs(15);
+  }
+  ASSERT_EQ(received.size(), msgs.size());
+  EXPECT_EQ(received, msgs);
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
+/** N5: Bulk FRAG under hold-then-flush delay. */
+TEST_F(AmpIntegrationTest, BulkFragSurvivesReorder) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0", BulkPolicy());
+  ASSERT_TRUE(ch.has_value());
+
+  std::vector<uint8_t> received;
+  auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
+  ASSERT_NE(inbound, nullptr);
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    received = std::move(payload);
+  });
+
+  h.ConfigureReorder(HarnessSide::A, /*window=*/16, /*seed=*/11);
+  std::vector<uint8_t> large(2500, 0xCD);
+  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, large));
+  h.FlushReorder(HarnessSide::A);
+  h.ClearFaultInjection(HarnessSide::A);
+  for (int i = 0; i < 60; ++i) {
+    h.AdvanceMs(15);
+  }
+  EXPECT_EQ(received, large);
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
+/** N6: Duplicate datagrams — app handler fires once. */
+TEST_F(AmpIntegrationTest, ReliableDataSurvivesDup) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  ASSERT_TRUE(ch.has_value());
+
+  std::vector<std::vector<uint8_t>> received;
+  auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
+  ASSERT_NE(inbound, nullptr);
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    received.push_back(std::move(payload));
+  });
+
+  h.ConfigureDup(HarnessSide::A, /*rate=*/1.0, /*seed=*/3);
+  const std::vector<uint8_t> msg = {'d', 'u', 'p'};
+  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
+  h.ClearFaultInjection(HarnessSide::A);
+  for (int i = 0; i < 40; ++i) {
+    h.AdvanceMs(15);
+  }
+  ASSERT_EQ(received.size(), 1u);
+  EXPECT_EQ(received[0], msg);
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
+/**
+ * N13: Both loss and reorder exercised in one test (sequential phases).
+ * Simultaneous multi-datagram loss+reorder is blocked by the L1→L3 OOO gap
+ * (see docs/FAULT_CASES.md).
+ */
+TEST_F(AmpIntegrationTest, ReliableSurvivesLossPlusReorder) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  ASSERT_TRUE(ch.has_value());
+
+  std::vector<std::vector<uint8_t>> received;
+  auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
+  ASSERT_NE(inbound, nullptr);
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    received.push_back(std::move(payload));
+  });
+
+  h.ConfigureReorder(HarnessSide::A, /*window=*/16, /*seed=*/19);
+  const std::vector<uint8_t> a = {'n'};
+  const std::vector<uint8_t> b = {'1'};
+  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, a));
+  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, b));
+  h.FlushReorder(HarnessSide::A);
+  h.ClearFaultInjection(HarnessSide::A);
+  for (int i = 0; i < 40; ++i) {
+    h.AdvanceMs(15);
+  }
+  ASSERT_EQ(received.size(), 2u);
+  EXPECT_EQ(received[0], a);
+  EXPECT_EQ(received[1], b);
+
+  h.ConfigureLoss(HarnessSide::A, 2);
+  const std::vector<uint8_t> c = {'3'};
+  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, c));
+  for (int i = 0; i < 40; ++i) {
+    h.AdvanceMs(15);
+  }
+  ASSERT_EQ(received.size(), 3u);
+  EXPECT_EQ(received[2], c);
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
 TEST_F(AmpIntegrationTest, DualDialChannelsWorkAfterElection) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));
@@ -517,6 +655,7 @@ TEST_F(AmpIntegrationTest, OutboundWarmKeepaliveRefreshesAssociation) {
   EXPECT_TRUE(conn->LooksAlive(h.clock->NowMs()));
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
 }
+
 
 } // namespace
 } // namespace pbr::test
