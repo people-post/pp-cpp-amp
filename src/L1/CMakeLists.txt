@@ -3,6 +3,7 @@ pp_amp_add_library(pp_amp_l1
   Connection.cpp
   Endpoint.cpp
   HmacBinder.cpp
+  LossyDatagramIo.cpp
   MemoryDatagramIo.cpp
   OsUdpDatagramIo.cpp
   ReplayWindow.cpp

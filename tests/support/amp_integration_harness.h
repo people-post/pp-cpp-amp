@@ -150,6 +150,30 @@ struct AmpIntegrationHarness : AmpMeshHarness {
     Io(side)->DropNext(drop_next);
   }
 
+  /** Hold/permute outbound datagrams (seeded). Call FlushReorder before final asserts. */
+  void ConfigureReorder(const HarnessSide side, const size_t window, const uint32_t seed = 1) {
+    Io(side)->SetRngSeed(seed);
+    Io(side)->SetReorderWindow(window);
+  }
+
+  /** Duplicate outbound datagrams with probability rate in [0,1] (seeded). */
+  void ConfigureDup(const HarnessSide side, const double rate, const uint32_t seed = 1) {
+    Io(side)->SetRngSeed(seed);
+    Io(side)->SetDupRate(rate);
+  }
+
+  void ClearFaultInjection(const HarnessSide side) {
+    Io(side)->DropNext(0);
+    Io(side)->SetDropRate(0);
+    Io(side)->SetDupRate(0);
+    Io(side)->SetReorderWindow(0);
+  }
+
+  void FlushReorder(const HarnessSide side) {
+    Io(side)->FlushReorder();
+    PumpBoth();
+  }
+
   void AdvanceMs(const int64_t delta_ms) {
     clock->Advance(delta_ms);
     PumpBoth();

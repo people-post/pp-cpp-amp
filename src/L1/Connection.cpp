@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <utility>
 
 namespace pp::adp {
 
@@ -105,6 +106,26 @@ void Connection::MaybeLearnPath(const IpEndpoint& from) {
   if (from != peer_) {
     // Authenticated packet from a new path — migrate (NAT remap / handoff).
     SetPeerEndpoint(from);
+  }
+}
+
+void Connection::DeliverReliableInOrder() {
+  if (!on_message_) {
+    return;
+  }
+  while (true) {
+    auto it = rx_rel_hold_.find(rx_rel_next_deliver_);
+    if (it == rx_rel_hold_.end()) {
+      break;
+    }
+    Message m;
+    m.assoc = id_;
+    m.seq = it->first;
+    m.qos = QosClass::Reliable;
+    m.payload = std::move(it->second);
+    rx_rel_hold_.erase(it);
+    ++rx_rel_next_deliver_;
+    on_message_(m);
   }
 }
 
@@ -257,14 +278,8 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     if (!fresh) {
       break;
     }
-    if (on_message_) {
-      Message m;
-      m.assoc = id_;
-      m.seq = pkt.seq;
-      m.qos = QosClass::Reliable;
-      m.payload = pkt.payload;
-      on_message_(m);
-    }
+    rx_rel_hold_[pkt.seq] = pkt.payload;
+    DeliverReliableInOrder();
     break;
   }
   }

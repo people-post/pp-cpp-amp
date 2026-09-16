@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace pp::adp {
@@ -94,6 +95,8 @@ private:
   uint32_t TruncTs(int64_t now_ms) const;
   bool AcceptSkew(uint32_t ts, int64_t now_ms) const;
   void MaybeLearnPath(const IpEndpoint& from);
+  /** Deliver contiguous Reliable payloads only (hold OOO until the gap fills). */
+  void DeliverReliableInOrder();
 
   Endpoint* endpoint_ = nullptr;
   AssocId id_{};
@@ -107,6 +110,9 @@ private:
   uint32_t tx_seq_rel_ = 0;
   ReplayWindow rx_be_;
   ReplayWindow rx_rel_;
+  /** Next Reliable seq to deliver to OnMessage (1-based, matches tx). */
+  uint32_t rx_rel_next_deliver_ = 1;
+  std::unordered_map<uint32_t, std::vector<uint8_t>> rx_rel_hold_;
 
   MessageHandler on_message_;
   PathChangeHandler on_path_change_;
