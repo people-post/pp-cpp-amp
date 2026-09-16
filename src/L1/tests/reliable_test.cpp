@@ -185,6 +185,49 @@ TEST_F(AdpReliableTest, DeliverUnderReorder) {
   EXPECT_EQ(got[3], "r3");
 }
 
+/** Gap then fill: later seq held until earlier arrives; OnMessage stays in order. */
+TEST_F(AdpReliableTest, DeliverInOrderAfterGap) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 10;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+
+  std::vector<std::string> got;
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  (*cb)->OnMessage([&](const pp::adp::Message& m) {
+    if (m.qos == pp::adp::QosClass::Reliable) {
+      got.emplace_back(m.payload.begin(), m.payload.end());
+    }
+  });
+
+  // Drop the first datagram so seq 2 can land before seq 1.
+  p.io_a->DropNext(1);
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("a"), 1)));
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("b"), 1)));
+  PumpBoth(p);
+  EXPECT_TRUE(got.empty()) << "OOO Reliable must not deliver past a gap";
+
+  p.clock->Advance(10);
+  PumpBoth(p); // rtx of seq 1
+  ASSERT_EQ(got.size(), 2u);
+  EXPECT_EQ(got[0], "a");
+  EXPECT_EQ(got[1], "b");
+}
+
 TEST_F(AdpReliableTest, AckStopsRetransmit) {
   auto p = MakePair();
   pp::adp::OpenParams op;

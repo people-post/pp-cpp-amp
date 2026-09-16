@@ -90,7 +90,7 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesLoss) {
   EXPECT_EQ(received, msg);
 }
 
-/** N4: Hold-then-flush delay (window larger than burst so no random release). */
+/** N4: UDP reorder under Reliable — app still sees messages in send order. */
 TEST_F(AmpIntegrationTest, ReliableDataSurvivesReorder) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));
@@ -107,9 +107,8 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesReorder) {
     received.push_back(std::move(payload));
   });
 
-  // Window > burst: packets stay buffered until FlushReorder (FIFO). Avoids L1→L3 OOO
-  // channel_seq delivery (see docs/FAULT_CASES.md).
-  h.ConfigureReorder(HarnessSide::A, /*window=*/16, /*seed=*/7);
+  // Small window forces random release (true permute); L1 resequences before L3.
+  h.ConfigureReorder(HarnessSide::A, /*window=*/2, /*seed=*/7);
   const std::vector<std::vector<uint8_t>> msgs = {{'a'}, {'b'}, {'c'}, {'d'}, {'e'}};
   for (const auto& msg : msgs) {
     ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
@@ -124,7 +123,7 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesReorder) {
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
 }
 
-/** N5: Bulk FRAG under hold-then-flush delay. */
+/** N5: Bulk FRAG under true datagram reorder. */
 TEST_F(AmpIntegrationTest, BulkFragSurvivesReorder) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));
@@ -141,12 +140,39 @@ TEST_F(AmpIntegrationTest, BulkFragSurvivesReorder) {
     received = std::move(payload);
   });
 
-  h.ConfigureReorder(HarnessSide::A, /*window=*/16, /*seed=*/11);
+  h.ConfigureReorder(HarnessSide::A, /*window=*/2, /*seed=*/11);
   std::vector<uint8_t> large(2500, 0xCD);
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, large));
   h.FlushReorder(HarnessSide::A);
   h.ClearFaultInjection(HarnessSide::A);
   for (int i = 0; i < 60; ++i) {
+    h.AdvanceMs(15);
+  }
+  EXPECT_EQ(received, large);
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
+/** N5b: Bulk FRAG survives DropNext loss (multi-datagram). */
+TEST_F(AmpIntegrationTest, BulkFragSurvivesLoss) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0", BulkPolicy());
+  ASSERT_TRUE(ch.has_value());
+
+  std::vector<uint8_t> received;
+  auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
+  ASSERT_NE(inbound, nullptr);
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    received = std::move(payload);
+  });
+
+  h.ConfigureLoss(HarnessSide::A, 1);
+  std::vector<uint8_t> large(2500, 0xAB);
+  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, large));
+  for (int i = 0; i < 80; ++i) {
     h.AdvanceMs(15);
   }
   EXPECT_EQ(received, large);
@@ -182,49 +208,43 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesDup) {
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
 }
 
-/**
- * N13: Both loss and reorder exercised in one test (sequential phases).
- * Simultaneous multi-datagram loss+reorder is blocked by the L1→L3 OOO gap
- * (see docs/FAULT_CASES.md).
- */
-TEST_F(AmpIntegrationTest, ReliableSurvivesLossPlusReorder) {
+/** N13: Simultaneous loss + reorder — small Reliable and Bulk FRAG. */
+TEST_F(AmpIntegrationTest, ReliableAndBulkSurviveLossPlusReorder) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
-  ASSERT_TRUE(ch.has_value());
+  const auto ch_ctrl = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch_bulk = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0", BulkPolicy());
+  ASSERT_TRUE(ch_ctrl.has_value());
+  ASSERT_TRUE(ch_bulk.has_value());
 
-  std::vector<std::vector<uint8_t>> received;
+  std::vector<uint8_t> got_ctrl;
+  std::vector<uint8_t> got_bulk;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received.push_back(std::move(payload));
+  inbound->Mux()->SetDataHandler(*ch_ctrl, [&](uint32_t, std::vector<uint8_t> payload) {
+    got_ctrl = std::move(payload);
+  });
+  inbound->Mux()->SetDataHandler(*ch_bulk, [&](uint32_t, std::vector<uint8_t> payload) {
+    got_bulk = std::move(payload);
   });
 
-  h.ConfigureReorder(HarnessSide::A, /*window=*/16, /*seed=*/19);
-  const std::vector<uint8_t> a = {'n'};
-  const std::vector<uint8_t> b = {'1'};
-  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, a));
-  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, b));
+  h.ConfigureReorder(HarnessSide::A, /*window=*/2, /*seed=*/19);
+  h.ConfigureLoss(HarnessSide::A, 2);
+
+  const std::vector<uint8_t> ctrl = {'n', '1', '3'};
+  std::vector<uint8_t> bulk(2500, 0x13);
+  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch_ctrl, ctrl));
+  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch_bulk, bulk));
   h.FlushReorder(HarnessSide::A);
   h.ClearFaultInjection(HarnessSide::A);
-  for (int i = 0; i < 40; ++i) {
+  for (int i = 0; i < 100; ++i) {
     h.AdvanceMs(15);
   }
-  ASSERT_EQ(received.size(), 2u);
-  EXPECT_EQ(received[0], a);
-  EXPECT_EQ(received[1], b);
-
-  h.ConfigureLoss(HarnessSide::A, 2);
-  const std::vector<uint8_t> c = {'3'};
-  ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, c));
-  for (int i = 0; i < 40; ++i) {
-    h.AdvanceMs(15);
-  }
-  ASSERT_EQ(received.size(), 3u);
-  EXPECT_EQ(received[2], c);
+  EXPECT_EQ(got_ctrl, ctrl);
+  EXPECT_EQ(got_bulk, bulk);
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
 }
 
