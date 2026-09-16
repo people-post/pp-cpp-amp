@@ -273,6 +273,60 @@ TEST_F(AdpReliableTest, DeliverUnderDropRate) {
   }
 }
 
+/** N2 soak: several drop rates × fixed seeds; heavier message count. */
+TEST_F(AdpReliableTest, DeliverUnderMultiRateDropSoak) {
+  const double rates[] = {0.05, 0.10, 0.20};
+  const uint32_t seeds[] = {7, 42, 99};
+  constexpr int kCount = 64;
+
+  for (const double rate : rates) {
+    for (const uint32_t seed : seeds) {
+      auto p = MakePair();
+      p.ep_b->SetAcceptKey(Key());
+      p.ep_b->SetAcceptEnabled(true);
+      p.io_a->SetRngSeed(seed);
+      p.io_a->SetDropRate(rate);
+
+      pp::adp::OpenParams op;
+      op.key = Key();
+      op.id = Aid();
+      op.mint_id = false;
+      op.peer = p.addr_b;
+      op.rtx_interval_ms = 10;
+      op.max_rtx = 60;
+      auto ca = p.ep_a->Open(op);
+      ASSERT_TRUE(ca) << "rate=" << rate << " seed=" << seed;
+
+      std::vector<std::string> got;
+      pp::adp::OpenParams opb = op;
+      opb.peer = p.addr_a;
+      auto cb = p.ep_b->Open(opb);
+      ASSERT_TRUE(cb) << "rate=" << rate << " seed=" << seed;
+      (*cb)->OnMessage([&](const pp::adp::Message& m) {
+        if (m.qos == pp::adp::QosClass::Reliable) {
+          got.emplace_back(m.payload.begin(), m.payload.end());
+        }
+      });
+
+      for (int i = 0; i < kCount; ++i) {
+        const char c = static_cast<char>('0' + (i % 10));
+        ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                                std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)))
+            << "rate=" << rate << " seed=" << seed << " i=" << i;
+      }
+      for (int round = 0; round < 400 && static_cast<int>(got.size()) < kCount; ++round) {
+        PumpBoth(p);
+        p.clock->Advance(10);
+      }
+      ASSERT_EQ(got.size(), static_cast<size_t>(kCount)) << "rate=" << rate << " seed=" << seed;
+      for (int i = 0; i < kCount; ++i) {
+        EXPECT_EQ(got[static_cast<size_t>(i)], std::string(1, static_cast<char>('0' + (i % 10))))
+            << "rate=" << rate << " seed=" << seed << " i=" << i;
+      }
+    }
+  }
+}
+
 TEST_F(AdpReliableTest, AckStopsRetransmit) {
   auto p = MakePair();
   pp::adp::OpenParams op;

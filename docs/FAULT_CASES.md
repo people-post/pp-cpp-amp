@@ -15,15 +15,20 @@ Performance under loss lives in [PERF_CASES.md](PERF_CASES.md) (B1). This matrix
    - FRAG reassembly / dup frag → L3 unit
    - “App message still arrives” → `tests/integration/` (`AmpIntegrationTest`)
 
-Injection knobs: `MemoryDatagramIo` (`DropNext`, `SetDropRate`, `SetReorderWindow`, `SetDupRate`, `SetRngSeed`) and
-`AmpIntegrationHarness` (`ConfigureLoss`, `ConfigureReorder`, `ConfigureDup`, `FlushReorder`, `ClearFaultInjection`, inject helpers).
+Injection knobs:
+
+- `MemoryDatagramIo` — in-process hub with drop / dup / reorder
+- `LossyDatagramIo` — same injection API decorating any `DatagramIo` (including `OsUdpDatagramIo`)
+- `AmpIntegrationHarness` — `ConfigureLoss` / `ConfigureReorder` / `ConfigureDup` / `FlushReorder` /
+  `ClearFaultInjection` (Memory path)
 
 ## Case matrix
 
 | ID | Fault | When | Payload | Expect | Layer | Status |
 |----|-------|------|---------|--------|-------|--------|
 | **N1** | Drop next N | Steady | Small Reliable | Survive (rtx) | L1 + integ | **landed** (`DeliverUnderLoss`, `ReliableDataSurvivesLoss`) |
-| **N2** | Drop rate 5/10/15% | Steady | Multi Reliable | Survive | L1 + perf | **landed** (`DeliverUnderDropRate`; perf B1) |
+| **N2** | Drop rate 15% | Steady | Multi Reliable | Survive | L1 + perf | **landed** (`DeliverUnderDropRate`; perf B1) |
+| **N2s** | Drop rate 5/10/20% × seeds | Steady | 64 Reliable | Survive soak | L1 | **landed** (`DeliverUnderMultiRateDropSoak`) |
 | **N3** | Drop BestEffort | Steady | Realtime / BE | No rtx; loss OK | L1 | **landed** (`BestEffortNoRtxOnDrop`) |
 | **N4** | Reorder (permute) | Steady | Multi-packet Reliable | Survive, app-ordered | Integ | **landed** (`ReliableDataSurvivesReorder`) |
 | **N5** | Reorder FRAG | Steady | Multi-frag Bulk | Survive | L3 unit + integ | **landed** (`AssemblesOutOfOrder`, `BulkFragSurvivesReorder`) |
@@ -38,6 +43,7 @@ Injection knobs: `MemoryDatagramIo` (`DropNext`, `SetDropRate`, `SetReorderWindo
 | **N13** | Loss + reorder | Steady | Reliable + Bulk FRAG | Survive | Integ | **landed** (`ReliableAndBulkSurviveLossPlusReorder`) |
 | **N14** | Loss during rekey | Grace window | Mixed epochs | Survive; post-rekey data OK | Integ | **landed** (`RekeySurvivesLoss`) |
 | **N15** | Path migrate + loss | Mid-session | Reliable | Survive on new/primary path | Integ | **landed** (`PathMigrateSurvivesLoss`) |
+| **N16** | OsUdp + DropNext / rate / reorder | Steady | Reliable | Survive (real sockets) | L1 | **landed** (`AdpOsUdpFaultTest.*`; Bind fail → skip) |
 
 ## L1 Reliable in-order delivery
 
@@ -50,12 +56,10 @@ This unlocks multi-FRAG Bulk under loss and true UDP permute E2E (L3 still requi
 ## Priority fill order
 
 1. **N4 / N5 / N6** — done.
-2. **N13** — done (simultaneous loss + reorder).
+2. **N13** — done.
 3. **L1 in-order Reliable** — done.
-4. **N2** — done (`DeliverUnderDropRate`; perf B1 remains for throughput).
-5. **N14 / N15** — done (`RekeySurvivesLoss`, `PathMigrateSurvivesLoss`).
-
-Matrix N1–N15 correctness rows are landed. Optional follow-ups: heavier multi-rate soak, OsUdp under loss.
+4. **N2 / N14 / N15** — done.
+5. **N2s multi-rate soak + N16 OsUdp under loss** — done.
 
 ## Case template
 
@@ -72,7 +76,8 @@ Assert:
 
 - Apply fault injection **after** associate / channel open (handshake needs a clean path).
 - Prefer **fixed seeds** in CI; log seed on failure for soak runs.
-- After the fault burst, call `ClearFaultInjection` so retransmits are not stranded in a reorder window.
+- After the fault burst, call `ClearFaultInjection` / clear reorder so retransmits are not stranded.
+- OsUdp fault tests soft-skip when `Bind` fails (restricted environments).
 - Do not re-test HMAC bit-flip at integration if L1 already owns that invariant.
 
 ## Layout
@@ -84,4 +89,5 @@ Assert:
 | L3 unit | `src/L3/tests/` |
 | Integration | `tests/integration/amp_integration_test.cpp` |
 | Harness | `tests/support/amp_integration_harness.h` |
+| Lossy decorator | `include/amp/L1/LossyDatagramIo.h` |
 | Perf under loss | `tests/perf/` + [PERF_CASES.md](PERF_CASES.md) B1 |
