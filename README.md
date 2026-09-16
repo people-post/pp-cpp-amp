@@ -24,7 +24,7 @@ Ownership boundary (what Amp shares vs product L4): [docs/OWNERSHIP.md](docs/OWN
 
 Performance case matrix + scaffold: [docs/PERF_CASES.md](docs/PERF_CASES.md) (`pp_amp_perf`).
 
-Fault / bad-network correctness matrix: [docs/FAULT_CASES.md](docs/FAULT_CASES.md) (N1–N15).
+Fault / bad-network correctness matrix: [docs/FAULT_CASES.md](docs/FAULT_CASES.md) (N1–N16).
 
 ## Build
 
