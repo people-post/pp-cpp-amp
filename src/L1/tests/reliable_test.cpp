@@ -103,6 +103,230 @@ TEST_F(AdpReliableTest, DeliverUnderLoss) {
   EXPECT_EQ(got[0], "rel");
 }
 
+TEST_F(AdpReliableTest, DeliverUnderDup) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+  p.io_a->SetRngSeed(42);
+  p.io_a->SetDupRate(1.0);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 10;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+
+  std::vector<std::string> got;
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  (*cb)->OnMessage([&](const pp::adp::Message& m) {
+    if (m.qos == pp::adp::QosClass::Reliable) {
+      got.emplace_back(m.payload.begin(), m.payload.end());
+    }
+  });
+
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("dup"), 3)));
+  PumpBoth(p);
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0], "dup");
+}
+
+TEST_F(AdpReliableTest, DeliverUnderReorder) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+  p.io_a->SetRngSeed(9);
+  p.io_a->SetReorderWindow(3);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 10;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+
+  std::vector<std::string> got;
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  (*cb)->OnMessage([&](const pp::adp::Message& m) {
+    if (m.qos == pp::adp::QosClass::Reliable) {
+      got.emplace_back(m.payload.begin(), m.payload.end());
+    }
+  });
+
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r0"), 2)));
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r1"), 2)));
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r2"), 2)));
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r3"), 2)));
+  p.io_a->FlushReorder();
+  PumpBoth(p);
+  p.clock->Advance(10);
+  PumpBoth(p);
+  ASSERT_EQ(got.size(), 4u);
+  EXPECT_EQ(got[0], "r0");
+  EXPECT_EQ(got[1], "r1");
+  EXPECT_EQ(got[2], "r2");
+  EXPECT_EQ(got[3], "r3");
+}
+
+/** Gap then fill: later seq held until earlier arrives; OnMessage stays in order. */
+TEST_F(AdpReliableTest, DeliverInOrderAfterGap) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 10;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+
+  std::vector<std::string> got;
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  (*cb)->OnMessage([&](const pp::adp::Message& m) {
+    if (m.qos == pp::adp::QosClass::Reliable) {
+      got.emplace_back(m.payload.begin(), m.payload.end());
+    }
+  });
+
+  // Drop the first datagram so seq 2 can land before seq 1.
+  p.io_a->DropNext(1);
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("a"), 1)));
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("b"), 1)));
+  PumpBoth(p);
+  EXPECT_TRUE(got.empty()) << "OOO Reliable must not deliver past a gap";
+
+  p.clock->Advance(10);
+  PumpBoth(p); // rtx of seq 1
+  ASSERT_EQ(got.size(), 2u);
+  EXPECT_EQ(got[0], "a");
+  EXPECT_EQ(got[1], "b");
+}
+
+/** N2: Seeded probabilistic loss — all Reliable messages eventually arrive in order. */
+TEST_F(AdpReliableTest, DeliverUnderDropRate) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+  p.io_a->SetRngSeed(12345);
+  p.io_a->SetDropRate(0.15);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 40;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+
+  std::vector<std::string> got;
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  (*cb)->OnMessage([&](const pp::adp::Message& m) {
+    if (m.qos == pp::adp::QosClass::Reliable) {
+      got.emplace_back(m.payload.begin(), m.payload.end());
+    }
+  });
+
+  constexpr int kCount = 32;
+  for (int i = 0; i < kCount; ++i) {
+    const char c = static_cast<char>('A' + (i % 26));
+    ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)));
+  }
+  for (int round = 0; round < 200 && static_cast<int>(got.size()) < kCount; ++round) {
+    PumpBoth(p);
+    p.clock->Advance(10);
+  }
+  ASSERT_EQ(got.size(), static_cast<size_t>(kCount));
+  for (int i = 0; i < kCount; ++i) {
+    EXPECT_EQ(got[static_cast<size_t>(i)], std::string(1, static_cast<char>('A' + (i % 26))));
+  }
+}
+
+/** N2 soak: several drop rates × fixed seeds; heavier message count. */
+TEST_F(AdpReliableTest, DeliverUnderMultiRateDropSoak) {
+  const double rates[] = {0.05, 0.10, 0.20};
+  const uint32_t seeds[] = {7, 42, 99};
+  constexpr int kCount = 64;
+
+  for (const double rate : rates) {
+    for (const uint32_t seed : seeds) {
+      auto p = MakePair();
+      p.ep_b->SetAcceptKey(Key());
+      p.ep_b->SetAcceptEnabled(true);
+      p.io_a->SetRngSeed(seed);
+      p.io_a->SetDropRate(rate);
+
+      pp::adp::OpenParams op;
+      op.key = Key();
+      op.id = Aid();
+      op.mint_id = false;
+      op.peer = p.addr_b;
+      op.rtx_interval_ms = 10;
+      op.max_rtx = 60;
+      auto ca = p.ep_a->Open(op);
+      ASSERT_TRUE(ca) << "rate=" << rate << " seed=" << seed;
+
+      std::vector<std::string> got;
+      pp::adp::OpenParams opb = op;
+      opb.peer = p.addr_a;
+      auto cb = p.ep_b->Open(opb);
+      ASSERT_TRUE(cb) << "rate=" << rate << " seed=" << seed;
+      (*cb)->OnMessage([&](const pp::adp::Message& m) {
+        if (m.qos == pp::adp::QosClass::Reliable) {
+          got.emplace_back(m.payload.begin(), m.payload.end());
+        }
+      });
+
+      for (int i = 0; i < kCount; ++i) {
+        const char c = static_cast<char>('0' + (i % 10));
+        ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
+                                std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)))
+            << "rate=" << rate << " seed=" << seed << " i=" << i;
+      }
+      for (int round = 0; round < 400 && static_cast<int>(got.size()) < kCount; ++round) {
+        PumpBoth(p);
+        p.clock->Advance(10);
+      }
+      ASSERT_EQ(got.size(), static_cast<size_t>(kCount)) << "rate=" << rate << " seed=" << seed;
+      for (int i = 0; i < kCount; ++i) {
+        EXPECT_EQ(got[static_cast<size_t>(i)], std::string(1, static_cast<char>('0' + (i % 10))))
+            << "rate=" << rate << " seed=" << seed << " i=" << i;
+      }
+    }
+  }
+}
+
 TEST_F(AdpReliableTest, AckStopsRetransmit) {
   auto p = MakePair();
   pp::adp::OpenParams op;

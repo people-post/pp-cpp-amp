@@ -24,6 +24,8 @@ Ownership boundary (what Amp shares vs product L4): [docs/OWNERSHIP.md](docs/OWN
 
 Performance case matrix + scaffold: [docs/PERF_CASES.md](docs/PERF_CASES.md) (`pp_amp_perf`).
 
+Fault / bad-network correctness matrix: [docs/FAULT_CASES.md](docs/FAULT_CASES.md) (N1–N16).
+
 ## Build
 
 ```bash
@@ -45,6 +47,8 @@ Sibling checkouts (`../pp-cpp-common`, `../pp-cpp-crypto`) are used automaticall
 
 ## Tests
 
-126 tests across five ctest targets (`pp_amp_l1_test` … `pp_amp_integration_test`). Unit tests are co-located per layer; integration tests live under `tests/integration/`.
+155 tests across five ctest targets (`pp_amp_l1_test` … `pp_amp_integration_test`). Unit tests are co-located per layer; integration tests live under `tests/integration/`.
 
 Performance harness (A–F matrix + C5/D3/E4/OsUdpAmp): `pp_amp_perf` under `tests/perf/` — see [docs/PERF_CASES.md](docs/PERF_CASES.md).
+
+Bad-network / adversarial correctness IDs: [docs/FAULT_CASES.md](docs/FAULT_CASES.md).
