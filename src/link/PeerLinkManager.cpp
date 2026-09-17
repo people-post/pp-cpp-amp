@@ -376,6 +376,7 @@ PeerLinkSnapshot PeerLinkManager::GetLinkSnapshot(const std::string& peer_key) c
   snap.has_endpoint = endpoints_.contains(peer_key);
   if (const auto* link = FindLink(peer_key); link && link->Phase() == PeerLinkPhase::Connected) {
     snap.phase = PeerLinkPhase::Connected;
+    snap.carrier_backed = link->IsCarrierBacked();
     if (snap.has_endpoint) {
       snap.multiaddr = endpoints_.at(peer_key).multiaddr;
     }
