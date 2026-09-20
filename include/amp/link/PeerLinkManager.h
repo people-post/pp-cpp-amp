@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace pp::amp {
@@ -108,7 +109,11 @@ public:
    * dial_failure_backoff (default 30s) and StartSfu hammers "dial in backoff".
    */
   void ClearDialBackoff(const std::string& peer_key);
-  /** Cancel in-flight EnsureAssociation waiters without arming a new dial-failure backoff. */
+  /**
+   * Cancel in-flight EnsureAssociation waiters without arming dial-failure backoff.
+   * Forces outbound handshake failure so FinishDial drops the link after the PeerLink
+   * stack unwinds — never DropLink mid-handshake (that races FinishDial → SIGSEGV).
+   */
   void AbortInflightDial(const std::string& peer_key);
 
   PeerLink* FindLink(const std::string& peer_key);
@@ -185,6 +190,8 @@ private:
   std::unordered_map<std::string, std::vector<LinkCb>> inflight_associations_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> dial_failed_until_;
   std::unordered_map<std::string, Failure> last_error_;
+  /** Peer keys whose next FinishDial must not arm dial_failed_until_ (AbortInflightDial). */
+  std::unordered_set<std::string> suppress_dial_backoff_;
   size_t concurrent_dials_ = 0;
   /** Erase after PeerLink stack unwinds (dual-dial loser must not destroy `this` mid-callback). */
   std::vector<std::string> pending_drop_keys_;

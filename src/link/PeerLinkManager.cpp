@@ -592,9 +592,12 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, LinkRoe result) {
   if (concurrent_dials_ > 0) {
     --concurrent_dials_;
   }
+  const bool suppress_backoff = suppress_dial_backoff_.erase(peer_key) > 0;
   if (!result) {
     last_error_[peer_key] = result.error();
-    dial_failed_until_[peer_key] = std::chrono::steady_clock::now() + config_.dial_failure_backoff;
+    if (!suppress_backoff) {
+      dial_failed_until_[peer_key] = std::chrono::steady_clock::now() + config_.dial_failure_backoff;
+    }
     ScheduleDropLink(peer_key);
   } else {
     last_error_.erase(peer_key);
@@ -614,22 +617,39 @@ void PeerLinkManager::ClearDialBackoff(const std::string& peer_key) {
 }
 
 void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
-  if (inflight_associations_.contains(peer_key)) {
-    if (concurrent_dials_ > 0) {
-      --concurrent_dials_;
-    }
-    auto waiters = std::move(inflight_associations_[peer_key]);
-    inflight_associations_.erase(peer_key);
-    const auto aborted = LinkRoe::error(Failure::Of(Err::Generic, "amp link: dial aborted"));
-    for (auto& waiter : waiters) {
-      if (waiter) {
-        waiter(aborted);
-      }
-    }
-    ScheduleDropLink(peer_key);
-  }
   dial_failed_until_.erase(peer_key);
   last_error_.erase(peer_key);
+
+  std::vector<LinkCb> waiters;
+  if (auto it = inflight_associations_.find(peer_key); it != inflight_associations_.end()) {
+    waiters = std::move(it->second);
+    inflight_associations_.erase(it);
+  }
+  suppress_dial_backoff_.insert(peer_key);
+
+  // FailAssociation → establish_cb → FinishDial (ScheduleDropLink, no backoff). Do not
+  // DropLink/ScheduleDrop here: destroying a Handshaking PeerLink races the handshake path.
+  if (auto* link = FindLink(peer_key)) {
+    const auto phase = link->Phase();
+    if (link->IsOutbound() &&
+        (phase == PeerLinkPhase::Handshaking || phase == PeerLinkPhase::Dialing)) {
+      link->FailHandshakeTimeout();
+    } else if (phase != PeerLinkPhase::Connected) {
+      ScheduleDropLink(peer_key);
+      suppress_dial_backoff_.erase(peer_key);
+    } else {
+      suppress_dial_backoff_.erase(peer_key);
+    }
+  } else {
+    suppress_dial_backoff_.erase(peer_key);
+  }
+
+  const auto aborted = LinkRoe::error(Failure::Of(Err::Generic, "amp link: dial aborted"));
+  for (auto& waiter : waiters) {
+    if (waiter) {
+      waiter(aborted);
+    }
+  }
 }
 
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
@@ -857,11 +877,11 @@ void PeerLinkManager::Tick() {
   }
   for (const auto& key : timed_out) {
     if (auto* link = FindLink(key)) {
-      const bool outbound = link->IsOutbound();
-      link->FailHandshakeTimeout();
-      if (outbound) {
-        FinishDial(key, LinkRoe::error(Failure::Of(Err::DialTimeout, "amp link: dial timeout")));
+      // FailHandshakeTimeout → establish_cb → FinishDial for outbound; do not FinishDial twice.
+      if (link->IsOutbound()) {
+        link->FailHandshakeTimeout();
       } else {
+        link->FailHandshakeTimeout();
         ScheduleDropLink(key);
       }
     }
@@ -881,7 +901,9 @@ void PeerLinkManager::Tick() {
     }
   }
   for (const auto& key : evict) {
-    links_.erase(key);
+    // DropLink (not raw erase) so Mux/handlers/peer_id maps stay consistent — raw erase after a
+    // concurrent dial left MeshRuntime Io racing a half-dead hop (dirty-book StartBridge SIGSEGV).
+    DropLink(key);
   }
 
   MaybeSendKeepalives(now);
