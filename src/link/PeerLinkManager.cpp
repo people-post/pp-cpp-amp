@@ -609,6 +609,29 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, LinkRoe result) {
   }
 }
 
+void PeerLinkManager::ClearDialBackoff(const std::string& peer_key) {
+  dial_failed_until_.erase(peer_key);
+}
+
+void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
+  if (inflight_associations_.contains(peer_key)) {
+    if (concurrent_dials_ > 0) {
+      --concurrent_dials_;
+    }
+    auto waiters = std::move(inflight_associations_[peer_key]);
+    inflight_associations_.erase(peer_key);
+    const auto aborted = LinkRoe::error(Failure::Of(Err::Generic, "amp link: dial aborted"));
+    for (auto& waiter : waiters) {
+      if (waiter) {
+        waiter(aborted);
+      }
+    }
+    ScheduleDropLink(peer_key);
+  }
+  dial_failed_until_.erase(peer_key);
+  last_error_.erase(peer_key);
+}
+
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
   if (links_.size() >= config_.max_links) {
     return;

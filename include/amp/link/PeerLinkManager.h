@@ -102,6 +102,15 @@ public:
   void MarkHot(const std::string& peer_key);
   void ClearWarm(const std::string& peer_key);
 
+  /**
+   * Clear dial-failure cooldown so EnsureAssociation may dial again.
+   * Call-media retries / SoftMigrate must call this — otherwise DialInBackoff sticks for
+   * dial_failure_backoff (default 30s) and StartSfu hammers "dial in backoff".
+   */
+  void ClearDialBackoff(const std::string& peer_key);
+  /** Cancel in-flight EnsureAssociation waiters without arming a new dial-failure backoff. */
+  void AbortInflightDial(const std::string& peer_key);
+
   PeerLink* FindLink(const std::string& peer_key);
   const PeerLink* FindLink(const std::string& peer_key) const;
   PeerLink* FindLinkByPeerId(const std::string& peer_id);
