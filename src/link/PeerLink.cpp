@@ -353,6 +353,17 @@ void PeerLink::FailHandshakeTimeout() {
   FailAssociation(Failure::Of(Err::DialTimeout, "amp link: dial timeout"));
 }
 
+void PeerLink::DemoteForScheduledDrop() {
+  if (phase_ == PeerLinkPhase::Connected || phase_ == PeerLinkPhase::Handshaking ||
+      phase_ == PeerLinkPhase::Dialing) {
+    phase_ = PeerLinkPhase::Backoff;
+  }
+  if (mux_) {
+    mux_->ClearProtocolHandlers();
+  }
+}
+
+
 void PeerLink::AttachMuxTransport() {
   mux_->SetTransportCredits([this]() -> size_t {
     if (IsCarrierBacked() || !connection_) {

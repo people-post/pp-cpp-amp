@@ -6,7 +6,9 @@ MeshRuntime::MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, st
                          PeerLinkConfig config)
     : endpoint_(endpoint),
       links_(endpoint, std::move(local_identity), std::move(local_peer_id), std::move(config), io_mu_),
-      pump_(endpoint, links_) {}
+      pump_(endpoint, links_) {
+  links_.SetCompletionPoster([this](std::function<void()> fn) { PostToIo(std::move(fn)); });
+}
 
 void MeshRuntime::Start() {
   std::lock_guard lock(io_mu_);
@@ -22,13 +24,10 @@ void MeshRuntime::Stop() {
 
 void MeshRuntime::PumpLocked() {
   if (pumping_) {
-    // Nested wait loops (OpenChannel callbacks in AmpDirectChat / dial-back / history)
-    // need ADP I/O progress without re-entering io ticks or the PostToIo drain.
     pump_.Pump();
     return;
   }
   pumping_ = true;
-  // Copy ids so a tick may RemoveIoTick without invalidating iteration.
   std::vector<IoTickId> ids;
   ids.reserve(io_ticks_.size());
   for (const auto& entry : io_ticks_) {
@@ -103,6 +102,52 @@ void MeshRuntime::RemoveIoTick(const IoTickId id) {
       return;
     }
   }
+}
+
+void MeshRuntime::EnsureAssociation(const DialKey& peer_key, PeerLinkManager::LinkCb on_complete) {
+  links_.EnsureAssociation(peer_key, std::move(on_complete));
+}
+
+void MeshRuntime::OpenChannel(const DialKey& peer_key, const std::string& protocol_id, ChannelPolicy policy,
+                              PeerLinkManager::ChannelCb on_complete) {
+  links_.OpenChannel(peer_key, protocol_id, std::move(policy), std::move(on_complete));
+}
+
+void MeshRuntime::WhenChannelOpen(const DialKey& peer_key, uint32_t channel_id, int64_t deadline_ms,
+                                  std::function<void(bool ok)> done) {
+  links_.WhenChannelOpen(peer_key, channel_id, deadline_ms, std::move(done));
+}
+
+std::shared_ptr<ChannelSession> MeshRuntime::BindChannel(const DialKey& peer_key, uint32_t channel_id,
+                                                         ChannelPolicy policy,
+                                                         ChannelSession::FrameHandler on_frame,
+                                                         ChannelSession::ClosedCallback on_closed) {
+  return links_.BindChannel(peer_key, channel_id, std::move(policy), std::move(on_frame),
+                            std::move(on_closed));
+}
+
+LinkSnapshotEx MeshRuntime::SnapshotByDialKey(const DialKey& key) const {
+  return links_.GetSnapshotByDialKey(key);
+}
+
+LinkSnapshotEx MeshRuntime::SnapshotByPeerId(const std::string& peer_id, TransportClass prefer) const {
+  return links_.GetSnapshotByPeerId(peer_id, prefer);
+}
+
+bool MeshRuntime::IsReachable(const std::string& peer_id) const {
+  return links_.IsReachable(peer_id);
+}
+
+Roe<void> MeshRuntime::RegisterEndpoint(const DialKey& peer_key, const std::string& multiaddr) {
+  return links_.RegisterEndpoint(peer_key, multiaddr);
+}
+
+void MeshRuntime::SetProtocolHandler(const std::string& protocol_id, PeerLinkManager::ProtocolHandler handler) {
+  links_.SetProtocolHandler(protocol_id, std::move(handler));
+}
+
+void MeshRuntime::RemoveProtocolHandler(const std::string& protocol_id) {
+  links_.RemoveProtocolHandler(protocol_id);
 }
 
 } // namespace pp::amp

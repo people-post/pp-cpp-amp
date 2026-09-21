@@ -5,12 +5,11 @@
 #include "amp/L3/ChannelMux.h"
 #include "amp/L3/ChannelSession.h"
 #include "amp/link/CodedFailure.h"
+#include "amp/link/LinkIdentity.h"
 #include "amp/link/MshAdpHandshake.h"
 #include "amp/link/Types.h"
 #include "amp/L2/Session.h"
 
-
-#include <functional>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -21,6 +20,7 @@
 namespace pp::amp {
 
 class PeerLinkManager;
+class LinkTable;
 
 /** One ADP association + AMP session + channel mux to a remote peer. Io-thread affine.
  *  Carrier-backed links ([A024]) use a bridged ChannelSession instead of ADP Connection. */
@@ -66,6 +66,12 @@ public:
   PeerLinkPhase Phase() const { return phase_; }
   bool IsOutbound() const { return outbound_; }
   bool IsCarrierBacked() const { return carrier_ != nullptr; }
+  TransportClass Transport() const {
+    return IsCarrierBacked() ? TransportClass::Carrier : TransportClass::Adp;
+  }
+  LinkId Id() const { return link_id_; }
+  uint32_t Generation() const { return generation_; }
+  LinkHandle Handle() const { return LinkHandle{link_id_, generation_}; }
   const std::string& PeerKey() const { return peer_key_; }
   const std::string& RemotePeerId() const { return remote_peer_id_; }
   const ByteVector& RemoteIdentityPublicKey() const { return remote_identity_public_key_; }
@@ -96,9 +102,17 @@ public:
   int64_t HandshakeStartedMs() const { return handshake_started_ms_; }
   void FailHandshakeTimeout();
 
+  /** Dual-dial / scheduled-drop demotion — manager schedules erase; link owns phase_. */
+  void DemoteForScheduledDrop();
+
 private:
   friend class PeerLinkManager;
+  friend class LinkTable;
 
+  void AssignIdentity(LinkId id, uint32_t generation) {
+    link_id_ = id;
+    generation_ = generation;
+  }
   void SetPeerKey(std::string peer_key) { peer_key_ = std::move(peer_key); }
   void SetRemoteCapability(CapabilityPayload payload) { remote_capability_ = std::move(payload); }
   bool CapabilityExchangeStarted() const { return capability_exchange_started_; }
@@ -120,6 +134,8 @@ private:
 
   static Failure WrapConnectionFailure(const adp::Connection::Failure& child);
 
+  LinkId link_id_;
+  uint32_t generation_ = 0;
   std::string peer_key_;
   std::string remote_peer_id_;
   ByteVector remote_identity_public_key_;

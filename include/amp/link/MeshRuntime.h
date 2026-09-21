@@ -4,10 +4,14 @@
 #include "amp/link/MeshPump.h"
 #include "amp/link/PeerLinkManager.h"
 #include "amp/L2/Types.h"
+#include "amp/L3/ChannelPolicy.h"
+#include "amp/L3/ChannelSession.h"
+#include "amp/link/LinkIdentity.h"
 
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -16,24 +20,23 @@ namespace pp::amp {
 
 /**
  * Io-thread composer for Endpoint + PeerLinkManager + MeshPump.
- * L4 services must not touch ChannelSession/Mux off-thread except via PostToIo().
- *
- * Pump/Tick/Drive/PostToIo are serialized (recursive_mutex): product may pump from the
- * coordinator Tick and from worker Connect wait loops without data races.
- * Off-strand PeerLinkManager access must use WithIoLock (same mutex) — Links() alone is
- * not thread-safe against Drive. PeerLinkManager locks the same strand mutex on every
- * public method when constructed via MeshRuntime.
+ * Sole product entry for link ops (ADR_LINK_PLANE). Prefer EnsureAssociation / OpenChannel /
+ * WhenChannelOpen / BindChannel / Snapshot* over bare Links().
  */
 class MeshRuntime {
 public:
   using IoTask = std::function<void()>;
-  /** Opaque id from AddIoTick; 0 is never assigned. */
   using IoTickId = uint64_t;
 
   MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
               PeerLinkConfig config = {});
 
   adp::Endpoint& GetEndpoint() { return endpoint_; }
+
+  /**
+   * Amp-internal / tests. Product L4 should use MeshRuntime helpers or IChatPeerLinks.
+   * Still required for punch/circuit gradual migration.
+   */
   PeerLinkManager& Links() { return links_; }
   const PeerLinkManager& Links() const { return links_; }
 
@@ -41,25 +44,11 @@ public:
   void Stop();
   bool IsStarted() const { return started_; }
 
-  /**
-   * ADP pump + link tick + drain PostToIo (io entry).
-   * Reentrant: a nested Pump from an in-pump callback still drives ADP I/O
-   * (needed by L4 OpenChannel wait loops) but does not re-enter ticks/queue.
-   */
   void Pump();
   void Tick();
-  /** Pump then Tick under one lock — prefer for MeshHost product ticks. */
   void Drive();
-
-  /** Queue work for the next Pump(); one queued task runs per Pump() before ADP I/O. */
   void PostToIo(IoTask task);
 
-  /**
-   * Run `fn` while holding the same recursive lock as Pump/Tick/Drive/PostToIo.
-   * Product façades (e.g. AmpChatPeerLinks) must use this for any PeerLinkManager access
-   * off the MeshPump strand — bare Links() from another thread races FinishDial /
-   * ScheduleDropLink.
-   */
   template <typename Fn>
   auto WithIoLock(Fn&& fn) -> decltype(fn()) {
     std::lock_guard lock(io_mu_);
@@ -71,12 +60,26 @@ public:
     return std::forward<Fn>(fn)();
   }
 
-  /**
-   * Register a Pump()-start hook (e.g. L4 connect deadlines). Multiple L4 coordinators
-   * on one runtime must each AddIoTick — a single slot would overwrite peers.
-   */
   IoTickId AddIoTick(IoTask tick);
   void RemoveIoTick(IoTickId id);
+
+  // --- Product-facing link plane (forwards to PeerLinkManager under strand) ---
+  void EnsureAssociation(const DialKey& peer_key, PeerLinkManager::LinkCb on_complete);
+  void OpenChannel(const DialKey& peer_key, const std::string& protocol_id, ChannelPolicy policy,
+                   PeerLinkManager::ChannelCb on_complete);
+  void WhenChannelOpen(const DialKey& peer_key, uint32_t channel_id, int64_t deadline_ms,
+                       std::function<void(bool ok)> done);
+  std::shared_ptr<ChannelSession> BindChannel(const DialKey& peer_key, uint32_t channel_id,
+                                              ChannelPolicy policy,
+                                              ChannelSession::FrameHandler on_frame,
+                                              ChannelSession::ClosedCallback on_closed = {});
+  LinkSnapshotEx SnapshotByDialKey(const DialKey& key) const;
+  LinkSnapshotEx SnapshotByPeerId(const std::string& peer_id,
+                                  TransportClass prefer = TransportClass::Adp) const;
+  bool IsReachable(const std::string& peer_id) const;
+  Roe<void> RegisterEndpoint(const DialKey& peer_key, const std::string& multiaddr);
+  void SetProtocolHandler(const std::string& protocol_id, PeerLinkManager::ProtocolHandler handler);
+  void RemoveProtocolHandler(const std::string& protocol_id);
 
 private:
   void PumpLocked();
@@ -88,7 +91,6 @@ private:
   };
 
   adp::Endpoint& endpoint_;
-  /** Declared before links_ so PeerLinkManager can share this mutex with Drive/WithIoLock. */
   mutable std::recursive_mutex io_mu_;
   PeerLinkManager links_;
   MeshPump pump_;
