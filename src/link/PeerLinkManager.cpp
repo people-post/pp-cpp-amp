@@ -254,18 +254,25 @@ bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
     StartCapabilityExchange(link);
   }
   const std::string peer_id = link.RemotePeerId();
-  if (!peer_id.empty() && peer_connected_listener_) {
-    // Off establish stack — L4 waiters must not run under association mutation.
-    PostCompletion([this, peer_id]() {
-      PeerConnectedListener listener;
-      {
-        std::lock_guard lock(strand_mu_);
-        listener = peer_connected_listener_;
+  if (!peer_id.empty()) {
+    std::vector<PeerConnectedListener> listeners;
+    {
+      // Copy under lock — already hold strand_mu_.
+      listeners.reserve(peer_connected_listeners_.size());
+      for (const auto& [_, fn] : peer_connected_listeners_) {
+        if (fn) {
+          listeners.push_back(fn);
+        }
       }
-      if (listener) {
-        listener(peer_id);
-      }
-    });
+    }
+    if (!listeners.empty()) {
+      // Off establish stack — L4 waiters must not run under association mutation.
+      PostCompletion([listeners = std::move(listeners), peer_id]() {
+        for (const auto& fn : listeners) {
+          fn(peer_id);
+        }
+      });
+    }
   }
   return true;
 }
@@ -1087,14 +1094,33 @@ void PeerLinkManager::SetCompletionPoster(CompletionPoster poster) {
   completion_poster_ = std::move(poster);
 }
 
-void PeerLinkManager::SetPeerConnectedListener(PeerConnectedListener listener) {
+PeerLinkManager::PeerConnectedListenerId PeerLinkManager::AddPeerConnectedListener(
+    PeerConnectedListener listener) {
   std::lock_guard lock(strand_mu_);
-  peer_connected_listener_ = std::move(listener);
+  const auto id = next_peer_connected_listener_id_.fetch_add(1, std::memory_order_relaxed);
+  if (listener) {
+    peer_connected_listeners_[id] = std::move(listener);
+  }
+  return id;
 }
 
-void PeerLinkManager::ClearPeerConnectedListener() {
+void PeerLinkManager::RemovePeerConnectedListener(const PeerConnectedListenerId id) {
   std::lock_guard lock(strand_mu_);
-  peer_connected_listener_ = nullptr;
+  peer_connected_listeners_.erase(id);
+}
+
+void PeerLinkManager::SetPeerConnectedListener(PeerConnectedListener listener) {
+  std::lock_guard lock(strand_mu_);
+  peer_connected_listeners_.clear();
+  if (listener) {
+    const auto id = next_peer_connected_listener_id_.fetch_add(1, std::memory_order_relaxed);
+    peer_connected_listeners_[id] = std::move(listener);
+  }
+}
+
+void PeerLinkManager::ClearPeerConnectedListeners() {
+  std::lock_guard lock(strand_mu_);
+  peer_connected_listeners_.clear();
 }
 
 void PeerLinkManager::PostCompletion(std::function<void()> fn) {

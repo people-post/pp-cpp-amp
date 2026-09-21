@@ -12,6 +12,7 @@
 #include "amp/link/PeerLink.h"
 #include "amp/link/Types.h"
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -64,9 +65,10 @@ public:
   using CompletionPoster = std::function<void(std::function<void()>)>;
   /**
    * Fired (via CompletionPoster / PostToIo) when a PeerLink reaches Connected for a PeerId.
-   * L4 may arm waiters (e.g. circuit ServeDial) without polling Tick.
+   * Multiple listeners supported (circuit ServeDial waiters + product seed park).
    */
   using PeerConnectedListener = std::function<void(const std::string& remote_peer_id)>;
+  using PeerConnectedListenerId = uint64_t;
 
   PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
                   PeerLinkConfig config = {});
@@ -79,8 +81,11 @@ public:
 
   /** Wire MeshRuntime::PostToIo so FinishDial waiters never run under association mutation. */
   void SetCompletionPoster(CompletionPoster poster);
+  PeerConnectedListenerId AddPeerConnectedListener(PeerConnectedListener listener);
+  void RemovePeerConnectedListener(PeerConnectedListenerId id);
   void SetPeerConnectedListener(PeerConnectedListener listener);
-  void ClearPeerConnectedListener();
+  void ClearPeerConnectedListeners();
+  void ClearPeerConnectedListener() { ClearPeerConnectedListeners(); }
 
   adp::Endpoint& GetEndpoint() { return endpoint_; }
   const std::string& LocalPeerId() const { return local_peer_id_; }
@@ -230,7 +235,8 @@ private:
   std::vector<std::string> advertised_protocols_;
   CapabilityHandler capability_handler_;
   CompletionPoster completion_poster_;
-  PeerConnectedListener peer_connected_listener_;
+  std::unordered_map<PeerConnectedListenerId, PeerConnectedListener> peer_connected_listeners_;
+  std::atomic<PeerConnectedListenerId> next_peer_connected_listener_id_{1};
   bool nested_carrier_accept_ = false;
   std::string nested_carrier_protocol_id_;
 
