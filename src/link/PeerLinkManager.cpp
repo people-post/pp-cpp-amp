@@ -67,14 +67,13 @@ PeerLinkManager::PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_iden
 PeerLinkManager::~PeerLinkManager() {
   std::lock_guard lock(strand_mu_);
   // Nested carriers Bind to an outer link's Mux ([A024]). Unbind while every Mux still
-  // exists — unordered_map destroy order is arbitrary and ~ChannelSession would UAF.
-  for (auto& [_, link] : table_.LegacyDialMap()) {
-    if (link && link->Carrier()) {
-      link->Carrier()->ReleaseHandlers();
+  // exists — LinkTable Clear order is arbitrary and ~ChannelSession would UAF.
+  table_.ForEach([](PeerLink& link) {
+    if (link.Carrier()) {
+      link.Carrier()->ReleaseHandlers();
     }
-  }
-  table_.LegacyDialMap().clear();
-  table_.SyncIndexesFromLegacy();
+  });
+  table_.Clear();
 }
 
 void PeerLinkManager::SetLocalListenMultiaddrs(std::vector<std::string> multiaddrs) {
@@ -131,37 +130,17 @@ Roe<void> PeerLinkManager::RegisterEndpoint(const std::string& peer_key, const s
 
 PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
-  auto it = table_.LegacyDialMap().find(peer_key);
-  if (it == table_.LegacyDialMap().end()) {
-    return nullptr;
-  }
-  return it->second.get();
+  return table_.FindByDialKey(peer_key);
 }
 
 const PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) const {
   std::lock_guard lock(strand_mu_);
-  auto it = table_.LegacyDialMap().find(peer_key);
-  if (it == table_.LegacyDialMap().end()) {
-    return nullptr;
-  }
-  return it->second.get();
+  return table_.FindByDialKey(peer_key);
 }
 
 PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) {
   std::lock_guard lock(strand_mu_);
-  if (peer_id.empty()) {
-    return nullptr;
-  }
-  if (const auto it = peer_id_to_key_.find(peer_id); it != peer_id_to_key_.end()) {
-    return FindLink(it->second);
-  }
-  for (auto& [key, link] : table_.LegacyDialMap()) {
-    if (link->Phase() == PeerLinkPhase::Connected && link->RemotePeerId() == peer_id) {
-      peer_id_to_key_[peer_id] = key;
-      return link.get();
-    }
-  }
-  return nullptr;
+  return table_.FindByPeerId(peer_id);
 }
 
 const PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) const {
@@ -171,10 +150,9 @@ const PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) co
 
 PeerLink* PeerLinkManager::FindConnectedLinkForPeerId(const std::string& peer_id) {
   std::lock_guard lock(strand_mu_);
-  if (auto* link = FindLinkByPeerId(peer_id)) {
-    if (link->Phase() == PeerLinkPhase::Connected) {
-      return link;
-    }
+  auto* link = table_.FindByPeerId(peer_id);
+  if (link && link->Phase() == PeerLinkPhase::Connected) {
+    return link;
   }
   return nullptr;
 }
@@ -184,12 +162,16 @@ PeerLink* PeerLinkManager::FindAnyConnectedLinkForRemotePeerId(const std::string
   if (remote_peer_id.empty()) {
     return nullptr;
   }
-  for (auto& [_, link] : table_.LegacyDialMap()) {
-    if (link && link->Phase() == PeerLinkPhase::Connected && link->RemotePeerId() == remote_peer_id) {
-      return link.get();
+  PeerLink* found = nullptr;
+  table_.ForEach([&](PeerLink& link) {
+    if (found) {
+      return;
     }
-  }
-  return nullptr;
+    if (link.Phase() == PeerLinkPhase::Connected && link.RemotePeerId() == remote_peer_id) {
+      found = &link;
+    }
+  });
+  return found;
 }
 
 PeerLink* PeerLinkManager::ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const {
@@ -199,7 +181,7 @@ PeerLink* PeerLinkManager::ElectDualDialWinner(PeerLink& existing, PeerLink& can
 
 void PeerLinkManager::DropLink(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
-  auto* link = FindLink(peer_key);
+  auto* link = table_.FindByDialKey(peer_key);
   if (!link) {
     return;
   }
@@ -210,29 +192,17 @@ void PeerLinkManager::DropLink(const std::string& peer_key) {
   ChannelMux* dying_mux = link->Mux();
   if (dying_mux) {
     // Other nested carriers may still point at this Mux — orphan before it dies.
-    for (auto& [_, other] : table_.LegacyDialMap()) {
-      if (!other || other.get() == link) {
-        continue;
+    table_.ForEach([&](PeerLink& other) {
+      if (&other == link) {
+        return;
       }
-      if (other->Carrier() && other->Carrier()->Mux() == dying_mux) {
-        other->Carrier()->OrphanFromMux();
+      if (other.Carrier() && other.Carrier()->Mux() == dying_mux) {
+        other.Carrier()->OrphanFromMux();
       }
-    }
+    });
     dying_mux->ClearProtocolHandlers();
   }
-  const std::string remote = link->RemotePeerId();
-  const LinkId id = link->Id();
-  const TransportClass transport = link->Transport();
-  table_.LegacyDialMap().erase(peer_key);
-  if (id.valid()) {
-    table_.ClearPresence(remote, transport, id);
-  }
-  if (!remote.empty()) {
-    if (auto it = peer_id_to_key_.find(remote); it != peer_id_to_key_.end() && it->second == peer_key) {
-      peer_id_to_key_.erase(it);
-    }
-  }
-  table_.SyncIndexesFromLegacy();
+  table_.EraseByDialKey(peer_key);
 }
 
 void PeerLinkManager::ScheduleDropLink(std::string peer_key) {
@@ -254,11 +224,11 @@ size_t PeerLinkManager::CountConnectedLinksForPeerId(const std::string& peer_id)
     return 0;
   }
   size_t n = 0;
-  for (const auto& [_, link] : table_.LegacyDialMap()) {
-    if (link && link->Phase() == PeerLinkPhase::Connected && link->RemotePeerId() == peer_id) {
+  table_.ForEach([&](const PeerLink& link) {
+    if (link.Phase() == PeerLinkPhase::Connected && link.RemotePeerId() == peer_id) {
       ++n;
     }
-  }
+  });
   return n;
 }
 
@@ -269,13 +239,6 @@ bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
       link.Mux()->ClearProtocolHandlers();
     }
     return false;
-  }
-  if (!link.RemotePeerId().empty()) {
-    const auto it = peer_id_to_key_.find(link.RemotePeerId());
-    // Prefer ADP (non-carrier) as the primary PeerId index; nested carriers coexist ([A024]).
-    if (it == peer_id_to_key_.end() || !link.IsCarrierBacked()) {
-      peer_id_to_key_[link.RemotePeerId()] = link.PeerKey();
-    }
   }
   ApplyProtocolHandlers(link);
   RefreshPresence(link);
@@ -293,50 +256,40 @@ bool PeerLinkManager::AdoptInboundOrDropDuplicate(PeerLink& candidate) {
   }
   const std::string remote = candidate.RemotePeerId();
 
-  // Find another Connected link to the same PeerId (map may still point at candidate).
+  // Find another Connected link to the same PeerId (same PeerId may already be present).
   PeerLink* existing = nullptr;
-  for (auto& [key, link] : table_.LegacyDialMap()) {
-    if (!link || link.get() == &candidate || link->Phase() != PeerLinkPhase::Connected) {
-      continue;
+  table_.ForEach([&](PeerLink& link) {
+    if (existing || &link == &candidate || link.Phase() != PeerLinkPhase::Connected) {
+      return;
     }
-    if (link->RemotePeerId() == remote) {
-      existing = link.get();
-      break;
+    if (link.RemotePeerId() == remote) {
+      existing = &link;
     }
-  }
+  });
 
   if (!existing) {
     if (!candidate.IsOutbound()) {
       for (const auto& [alias, rec] : book_.Endpoints()) {
-        if (rec.peer_id == remote && !table_.LegacyDialMap().contains(alias)) {
-          RekeyLink(candidate.PeerKey(), alias);
-          peer_id_to_key_[remote] = alias;
+        if (rec.peer_id == remote && !table_.ContainsDialKey(alias)) {
+          BindDialAlias(candidate.Id(), alias);
           return true;
         }
       }
     }
-    peer_id_to_key_[remote] = candidate.PeerKey();
     return true;
   }
 
   // [A024] ADP Session and nested carrier Session to the same PeerId coexist.
   if (existing->IsCarrierBacked() != candidate.IsCarrierBacked()) {
-    if (!existing->IsCarrierBacked()) {
-      peer_id_to_key_[remote] = existing->PeerKey();
-    } else if (!candidate.IsCarrierBacked()) {
-      peer_id_to_key_[remote] = candidate.PeerKey();
-    }
     return true;
   }
 
   // Dual-dial ([A026]): elect one Session per PeerId — reject keep-both.
   PeerLink* winner = ElectDualDialWinner(*existing, candidate);
   PeerLink* loser = (winner == existing) ? &candidate : existing;
-  const std::string winner_key = winner->PeerKey();
 
   if (loser == &candidate) {
     // Do not erase `candidate` here — PeerLink is still on the stack ([A026]).
-    peer_id_to_key_[remote] = winner_key;
     return false;
   }
 
@@ -350,14 +303,12 @@ bool PeerLinkManager::AdoptInboundOrDropDuplicate(PeerLink& candidate) {
   // Winner is the new candidate — prefer dial alias when free.
   if (!candidate.IsOutbound()) {
     for (const auto& [alias, rec] : book_.Endpoints()) {
-      if (rec.peer_id == remote && !table_.LegacyDialMap().contains(alias) && candidate.PeerKey() != alias) {
-        RekeyLink(candidate.PeerKey(), alias);
-        peer_id_to_key_[remote] = alias;
+      if (rec.peer_id == remote && !table_.ContainsDialKey(alias) && candidate.PeerKey() != alias) {
+        BindDialAlias(candidate.Id(), alias);
         return true;
       }
     }
   }
-  peer_id_to_key_[remote] = candidate.PeerKey();
   return true;
 }
 
@@ -371,17 +322,21 @@ std::string PeerLinkManager::DeriveRemotePeerId(const ByteVector& identity_publi
 
 PeerLink* PeerLinkManager::FindConnectedInboundLink() {
   std::lock_guard lock(strand_mu_);
-  for (auto& [_, link] : table_.LegacyDialMap()) {
-    if (!link->IsOutbound() && link->Phase() == PeerLinkPhase::Connected) {
-      return link.get();
+  PeerLink* found = nullptr;
+  table_.ForEach([&](PeerLink& link) {
+    if (found) {
+      return;
     }
-  }
-  return nullptr;
+    if (!link.IsOutbound() && link.Phase() == PeerLinkPhase::Connected) {
+      found = &link;
+    }
+  });
+  return found;
 }
 
 bool PeerLinkManager::IsConnected(const std::string& peer_key) const {
   std::lock_guard lock(strand_mu_);
-  if (const auto* link = FindLink(peer_key)) {
+  if (const auto* link = table_.FindByDialKey(peer_key)) {
     return link->Phase() == PeerLinkPhase::Connected;
   }
   return false;
@@ -420,7 +375,8 @@ PeerLinkSnapshot PeerLinkManager::GetLinkSnapshot(const std::string& peer_key) c
 
 void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_complete) {
   std::lock_guard lock(strand_mu_);
-  if (IsConnected(peer_key)) {
+  if (auto* connected = table_.FindByDialKey(peer_key);
+      connected && connected->Phase() == PeerLinkPhase::Connected) {
     if (on_complete) {
       on_complete(LinkRoe());
     }
@@ -429,23 +385,20 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
 
   const auto ep_it = book_.Endpoints().find(peer_key);
   if (ep_it != book_.Endpoints().end()) {
-    if (auto* existing = FindConnectedLinkForPeerId(ep_it->second.peer_id)) {
-      // Nested/circuit carrier Sessions coexist with ADP ([A024]). A carrier-backed
-      // link must not satisfy EnsureAssociation for a new ADP dial alias — otherwise
-      // upgrade-from-circuit punch rekeys the nested Session and never opens direct.
-      if (!existing->IsCarrierBacked()) {
-        if (existing->PeerKey() != peer_key) {
-          RekeyLink(existing->PeerKey(), peer_key);
-        }
-        if (on_complete) {
-          on_complete(LinkRoe());
-        }
-        return;
+    // Prefer Connected ADP for this PeerId ([A024]/[A026]); carriers must not satisfy ADP dials.
+    if (auto* existing = table_.FindByPeerId(ep_it->second.peer_id, TransportClass::Adp);
+        existing && existing->Phase() == PeerLinkPhase::Connected && !existing->IsCarrierBacked()) {
+      if (existing->PeerKey() != peer_key) {
+        BindDialAlias(existing->Id(), peer_key);
       }
+      if (on_complete) {
+        on_complete(LinkRoe());
+      }
+      return;
     }
   }
 
-  if (auto* existing = FindLink(peer_key)) {
+  if (auto* existing = table_.FindByDialKey(peer_key)) {
     if (existing->Phase() == PeerLinkPhase::Handshaking || existing->Phase() == PeerLinkPhase::Dialing) {
       inflight_associations_[peer_key].push_back(std::move(on_complete));
       return;
@@ -479,7 +432,7 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
     return;
   }
 
-  if (table_.LegacyDialMap().size() >= book_.Config().max_links) {
+  if (table_.size() >= book_.Config().max_links) {
     if (on_complete) {
       on_complete(LinkRoe::error(Failure::Of(Err::MaxLinksReached, "amp link: max links reached")));
     }
@@ -513,8 +466,7 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
     FinishDial(peer_key, WrapPeerLinkResult(result));
   });
   AssignLinkIdentity(*link);
-  table_.LegacyDialMap()[peer_key] = std::move(link);
-  table_.SyncIndexesFromLegacy();
+  table_.Insert(std::move(link));
 }
 
 void PeerLinkManager::OpenChannelOnLink(PeerLink& link, const std::string& protocol_id, ChannelPolicy policy,
@@ -562,29 +514,27 @@ void PeerLinkManager::OpenChannel(const std::string& peer_key, const std::string
 void PeerLinkManager::SetProtocolHandler(const std::string& protocol_id, ProtocolHandler handler) {
   std::lock_guard lock(strand_mu_);
   protocol_handlers_[protocol_id] = std::move(handler);
-  for (auto& [_, link] : table_.LegacyDialMap()) {
-    ApplyProtocolHandlers(*link);
-  }
+  table_.ForEach([&](PeerLink& link) { ApplyProtocolHandlers(link); });
 }
 
 void PeerLinkManager::RemoveProtocolHandler(const std::string& protocol_id) {
   std::lock_guard lock(strand_mu_);
   protocol_handlers_.erase(protocol_id);
-  for (auto& [_, link] : table_.LegacyDialMap()) {
-    if (link->Mux()) {
-      link->Mux()->SetProtocolHandler(protocol_id, {});
+  table_.ForEach([&](PeerLink& link) {
+    if (link.Mux()) {
+      link.Mux()->SetProtocolHandler(protocol_id, {});
     }
-  }
+  });
 }
 
 void PeerLinkManager::ClearProtocolHandlers() {
   std::lock_guard lock(strand_mu_);
   protocol_handlers_.clear();
-  for (auto& [_, link] : table_.LegacyDialMap()) {
-    if (link->Mux()) {
-      link->Mux()->ClearProtocolHandlers();
+  table_.ForEach([&](PeerLink& link) {
+    if (link.Mux()) {
+      link.Mux()->ClearProtocolHandlers();
     }
-  }
+  });
 }
 
 void PeerLinkManager::ApplyProtocolHandlers(PeerLink& link) {
@@ -688,7 +638,7 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
 
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
   std::lock_guard lock(strand_mu_);
-  if (table_.LegacyDialMap().size() >= book_.Config().max_links) {
+  if (table_.size() >= book_.Config().max_links) {
     return;
   }
   std::string peer_key = "inbound:";
@@ -696,42 +646,39 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
     peer_key.push_back(static_cast<char>('0' + (connection->Id().bytes[i] >> 4)));
     peer_key.push_back(static_cast<char>('0' + (connection->Id().bytes[i] & 0x0f)));
   }
-  if (table_.LegacyDialMap().contains(peer_key)) {
+  if (table_.ContainsDialKey(peer_key)) {
     return;
   }
   auto link = std::make_unique<PeerLink>(peer_key, std::string{}, false, std::move(connection), local_identity_,
                                          MakeHostPorts());
   AssignLinkIdentity(*link);
   link->StartInboundHandshake({});
-  table_.LegacyDialMap()[peer_key] = std::move(link);
-  table_.SyncIndexesFromLegacy();
+  table_.Insert(std::move(link));
 }
 
-void PeerLinkManager::RekeyLink(const std::string& from_key, const std::string& to_key) {
+void PeerLinkManager::BindDialAlias(LinkId id, DialKey to_key) {
   std::lock_guard lock(strand_mu_);
+  auto* link = table_.FindById(id);
+  if (!link) {
+    return;
+  }
+  const DialKey from_key = link->PeerKey();
   if (from_key == to_key) {
     return;
   }
-  if (table_.LegacyDialMap().contains(to_key)) {
-    auto* occupant = FindLink(to_key);
+  if (table_.ContainsDialKey(to_key)) {
+    auto* occupant = table_.FindByDialKey(to_key);
     // Dual-dial losers stay until Tick; displace non-Connected corpses so inbound can adopt alias.
-    if (occupant && occupant->Phase() != PeerLinkPhase::Connected) {
+    if (occupant && occupant->Phase() != PeerLinkPhase::Connected && occupant->Id() != id) {
       DropLink(to_key);
-    } else {
+    } else if (occupant && occupant->Id() != id) {
       return;
     }
   }
-  auto node = table_.LegacyDialMap().extract(from_key);
-  if (node.empty()) {
+  if (!table_.BindDialKey(id, to_key)) {
     return;
   }
-  node.mapped()->RebindDialKey(to_key);
-  if (!node.mapped()->RemotePeerId().empty()) {
-    peer_id_to_key_[node.mapped()->RemotePeerId()] = to_key;
-  }
-  auto* link = node.mapped().get();
-  table_.LegacyDialMap().emplace(to_key, std::move(node.mapped()));
-  // Protocol handlers capture peer_key; refresh after rekey so FindLink succeeds.
+  // Protocol handlers capture dial key via HostPorts; refresh after rebind.
   ApplyProtocolHandlers(*link);
 }
 
@@ -796,7 +743,7 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
     IngestRemoteCapabilityAddrs(*link, *decoded);
     if (capability_handler_) {
       if (const auto* remote = link->RemoteCapability()) {
-        capability_handler_(*link, *remote);
+        capability_handler_(link->Handle(), link->RemotePeerId(), *remote);
       }
     }
   }
@@ -834,24 +781,24 @@ void PeerLinkManager::ClearWarm(const std::string& peer_key) {
 
 void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
   std::lock_guard lock(strand_mu_);
-  for (auto& [_, link] : table_.LegacyDialMap()) {
-    if (link->Phase() != PeerLinkPhase::Connected || link->IsCarrierBacked() || !link->IsOutbound()) {
-      continue;
+  table_.ForEach([&](PeerLink& link) {
+    if (link.Phase() != PeerLinkPhase::Connected || link.IsCarrierBacked() || !link.IsOutbound()) {
+      return;
     }
-    const auto tier = link->GetKeepaliveTier();
+    const auto tier = link.GetKeepaliveTier();
     if (tier == KeepaliveTier::None) {
-      continue;
+      return;
     }
     const int64_t interval_ms = tier == KeepaliveTier::Hot ? book_.Config().keepalive_hot_interval.count()
                                                            : book_.Config().keepalive_warm_interval.count();
     if (interval_ms <= 0) {
-      continue;
+      return;
     }
-    if (link->LastKeepaliveTxMs() != 0 && now_ms - link->LastKeepaliveTxMs() < interval_ms) {
-      continue;
+    if (link.LastKeepaliveTxMs() != 0 && now_ms - link.LastKeepaliveTxMs() < interval_ms) {
+      return;
     }
-    (void)link->SendKeepalive(now_ms);
-  }
+    (void)link.SendKeepalive(now_ms);
+  });
 }
 
 void PeerLinkManager::Tick() {
@@ -869,9 +816,7 @@ void PeerLinkManager::Tick() {
     for (auto& [remote, alias] : pending) {
       if (auto* winner = FindAnyConnectedLinkForRemotePeerId(remote)) {
         if (winner->PeerKey() != alias) {
-          RekeyLink(winner->PeerKey(), alias);
-        } else {
-          peer_id_to_key_[remote] = alias;
+          BindDialAlias(winner->Id(), alias);
         }
       }
     }
@@ -880,18 +825,18 @@ void PeerLinkManager::Tick() {
   const int64_t now = endpoint_.GetClock().NowMs();
   const int64_t dial_timeout_ms = book_.Config().dial_timeout.count();
   std::vector<std::string> timed_out;
-  for (auto& [key, link] : table_.LegacyDialMap()) {
-    if (link->IsCarrierBacked()) {
-      continue;
+  table_.ForEach([&](PeerLink& link) {
+    if (link.IsCarrierBacked()) {
+      return;
     }
-    const auto phase = link->Phase();
+    const auto phase = link.Phase();
     if (phase != PeerLinkPhase::Handshaking && phase != PeerLinkPhase::Dialing) {
-      continue;
+      return;
     }
-    if (link->HandshakeStartedMs() > 0 && now - link->HandshakeStartedMs() > dial_timeout_ms) {
-      timed_out.push_back(key);
+    if (link.HandshakeStartedMs() > 0 && now - link.HandshakeStartedMs() > dial_timeout_ms) {
+      timed_out.push_back(link.PeerKey());
     }
-  }
+  });
   for (const auto& key : timed_out) {
     if (auto* link = FindLink(key)) {
       // FailHandshakeTimeout → establish_cb → FinishDial for outbound; do not FinishDial twice.
@@ -905,18 +850,18 @@ void PeerLinkManager::Tick() {
   }
 
   std::vector<std::string> evict;
-  for (auto& [key, link] : table_.LegacyDialMap()) {
-    if (link->IsCarrierBacked()) {
-      if (link->Carrier() && link->Carrier()->IsClosed() && link->Phase() == PeerLinkPhase::Connected) {
-        evict.push_back(key);
+  table_.ForEach([&](PeerLink& link) {
+    if (link.IsCarrierBacked()) {
+      if (link.Carrier() && link.Carrier()->IsClosed() && link.Phase() == PeerLinkPhase::Connected) {
+        evict.push_back(link.PeerKey());
       }
-      continue;
+      return;
     }
-    auto* conn = link->ConnectionOrNull();
-    if (conn && !conn->LooksAlive(now) && !link->IsWarm() && link->Phase() == PeerLinkPhase::Connected) {
-      evict.push_back(key);
+    auto* conn = link.ConnectionOrNull();
+    if (conn && !conn->LooksAlive(now) && !link.IsWarm() && link.Phase() == PeerLinkPhase::Connected) {
+      evict.push_back(link.PeerKey());
     }
-  }
+  });
   for (const auto& key : evict) {
     // DropLink (not raw erase) so Mux/handlers/peer_id maps stay consistent — raw erase after a
     // concurrent dial left MeshRuntime Io racing a half-dead hop (dirty-book StartBridge SIGSEGV).
@@ -928,13 +873,10 @@ void PeerLinkManager::Tick() {
     std::vector<std::tuple<DialKey, uint32_t, int64_t, std::function<void(bool)>>> remaining;
     std::vector<std::function<void()>> completions;
     for (auto& [key, ch, deadline, done] : channel_open_waiters_) {
-      auto* link = FindLink(key);
+      auto* link = table_.FindByDialKey(key);
       bool open = false;
-      if (link && link->Mux()) {
-        // Channel is "open" once mux has the channel id registered as open outbound/inbound.
-        // Best-effort: treat Connected link + valid mux as ready when channel_id is non-zero
-        // and OpenChannel already succeeded (caller polls after OpenChannel).
-        open = link->Phase() == PeerLinkPhase::Connected && ch != 0;
+      if (link && link->Mux() && link->Phase() == PeerLinkPhase::Connected && ch != 0) {
+        open = link->Mux()->State(ch) == ChannelState::Open;
       }
       if (open) {
         if (done) {
@@ -1002,7 +944,7 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
     }
   }
 
-  if (table_.LegacyDialMap().size() >= book_.Config().max_links) {
+  if (table_.size() >= book_.Config().max_links) {
     if (on_complete) {
       on_complete(LinkRoe::error(Failure::Of(Err::MaxLinksReached, "amp link: max links reached")));
     }
@@ -1021,7 +963,8 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
       FinishNestedCarrier(peer_key, WrapPeerLinkResult(result));
     });
   }
-  table_.LegacyDialMap()[peer_key] = std::move(link);
+  AssignLinkIdentity(*link);
+  table_.Insert(std::move(link));
 }
 
 void PeerLinkManager::FinishNestedCarrier(const std::string& provisional_key, LinkRoe result) {
@@ -1029,23 +972,20 @@ void PeerLinkManager::FinishNestedCarrier(const std::string& provisional_key, Li
   auto* link = FindLink(provisional_key);
   if (result && link && !link->RemotePeerId().empty() && link->RemotePeerId() != provisional_key) {
     PeerLink* adp = nullptr;
-    for (auto& [_, other] : table_.LegacyDialMap()) {
-      if (!other || other.get() == link || other->Phase() != PeerLinkPhase::Connected) {
-        continue;
+    const std::string remote = link->RemotePeerId();
+    table_.ForEach([&](PeerLink& other) {
+      if (adp || &other == link || other.Phase() != PeerLinkPhase::Connected) {
+        return;
       }
-      if (other->RemotePeerId() == link->RemotePeerId() && !other->IsCarrierBacked()) {
-        adp = other.get();
-        break;
+      if (other.RemotePeerId() == remote && !other.IsCarrierBacked()) {
+        adp = &other;
       }
-    }
-    // Prefer authenticated PeerId as the stable key when unused; keep provisional when ADP owns it ([A024]).
-    if (!adp && !table_.LegacyDialMap().contains(link->RemotePeerId())) {
-      RekeyLink(provisional_key, link->RemotePeerId());
-      link = FindLink(link->RemotePeerId());
-    } else if (adp) {
-      peer_id_to_key_[link->RemotePeerId()] = adp->PeerKey();
-    } else {
-      peer_id_to_key_[link->RemotePeerId()] = provisional_key;
+    });
+    // Prefer authenticated PeerId as the stable dial alias when unused; keep provisional when ADP
+    // already owns that PeerId key ([A024]).
+    if (!adp && !table_.ContainsDialKey(remote)) {
+      BindDialAlias(link->Id(), remote);
+      link = FindLink(remote);
     }
   }
 
@@ -1087,9 +1027,9 @@ void PeerLinkManager::HandleInboundCarrierChannel(PeerLink& via_link, const uint
   provisional += via_link.RemotePeerId().empty() ? via_link.PeerKey() : via_link.RemotePeerId();
   provisional.push_back(':');
   provisional += std::to_string(channel_id);
-  if (table_.LegacyDialMap().contains(provisional)) {
+  if (table_.ContainsDialKey(provisional)) {
     provisional += ":";
-    provisional += std::to_string(table_.LegacyDialMap().size());
+    provisional += std::to_string(table_.size());
   }
 
   EstablishNestedOverCarrier(provisional, std::move(carrier), false, {});
@@ -1097,7 +1037,7 @@ void PeerLinkManager::HandleInboundCarrierChannel(PeerLink& via_link, const uint
 
 size_t PeerLinkManager::CountLinks() const {
   std::lock_guard lock(strand_mu_);
-  return table_.LegacyDialMap().size();
+  return table_.size();
 }
 
 PeerLinkHostPorts PeerLinkManager::MakeHostPorts() {
@@ -1148,12 +1088,6 @@ void PeerLinkManager::RefreshPresence(PeerLink& link) {
     AssignLinkIdentity(link);
   }
   table_.SetPresence(link.RemotePeerId(), link.Transport(), link.Id());
-  // Prefer ADP for peer_id_to_key_ compatibility index.
-  if (!link.IsCarrierBacked()) {
-    peer_id_to_key_[link.RemotePeerId()] = link.PeerKey();
-  } else if (!peer_id_to_key_.contains(link.RemotePeerId())) {
-    peer_id_to_key_[link.RemotePeerId()] = link.PeerKey();
-  }
 }
 
 LinkSnapshotEx PeerLinkManager::SnapshotOf(const PeerLink* link, const DialKey& dial_key, bool has_endpoint,
@@ -1198,8 +1132,7 @@ LinkSnapshotEx PeerLinkManager::GetSnapshotByPeerId(const std::string& peer_id, 
     id = *presence.carrier;
   }
   if (!id.valid()) {
-    // Fall back to peer_id_to_key_ / scan for pre-sync links.
-    if (auto* link = const_cast<PeerLinkManager*>(this)->FindLinkByPeerId(peer_id)) {
+    if (auto* link = table_.FindByPeerId(peer_id)) {
       const auto* ep = book_.Find(link->PeerKey());
       return SnapshotOf(link, link->PeerKey(), ep != nullptr, ep ? ep->multiaddr : std::string{});
     }
@@ -1234,13 +1167,15 @@ bool PeerLinkManager::IsReachable(const std::string& peer_id) const {
   if (live(presence.adp) || live(presence.carrier)) {
     return true;
   }
-  return const_cast<PeerLinkManager*>(this)->FindLinkByPeerId(peer_id) != nullptr &&
-         const_cast<PeerLinkManager*>(this)->FindLinkByPeerId(peer_id)->Phase() == PeerLinkPhase::Connected;
+  auto* link = table_.FindByPeerId(peer_id);
+  return link && link->Phase() == PeerLinkPhase::Connected;
 }
 
 void PeerLinkManager::WhenChannelOpen(const DialKey& peer_key, uint32_t channel_id, int64_t deadline_ms,
                                       std::function<void(bool ok)> done) {
   std::lock_guard lock(strand_mu_);
+  // deadline_ms is absolute Amp clock (Endpoint::GetClock().NowMs()). Use MeshRuntime::WhenChannelOpenIn
+  // when converting from a steady_clock wall deadline.
   channel_open_waiters_.emplace_back(peer_key, channel_id, deadline_ms, std::move(done));
 }
 

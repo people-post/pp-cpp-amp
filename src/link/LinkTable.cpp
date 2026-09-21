@@ -4,22 +4,24 @@ namespace pp::amp {
 
 PeerLink* LinkTable::FindById(LinkId id) {
   auto it = by_id_.find(id);
-  return it == by_id_.end() ? nullptr : it->second;
+  return it == by_id_.end() ? nullptr : it->second.get();
 }
 
 const PeerLink* LinkTable::FindById(LinkId id) const {
   auto it = by_id_.find(id);
-  return it == by_id_.end() ? nullptr : it->second;
+  return it == by_id_.end() ? nullptr : it->second.get();
 }
 
 PeerLink* LinkTable::FindByDialKey(const DialKey& key) {
-  auto it = legacy_dial_.find(key);
-  return it == legacy_dial_.end() ? nullptr : it->second.get();
+  auto it = by_dial_key_.find(key);
+  if (it == by_dial_key_.end()) {
+    return nullptr;
+  }
+  return FindById(it->second);
 }
 
 const PeerLink* LinkTable::FindByDialKey(const DialKey& key) const {
-  auto it = legacy_dial_.find(key);
-  return it == legacy_dial_.end() ? nullptr : it->second.get();
+  return const_cast<LinkTable*>(this)->FindByDialKey(key);
 }
 
 PeerLink* LinkTable::FindLive(LinkHandle handle) {
@@ -34,40 +36,84 @@ const PeerLink* LinkTable::FindLive(LinkHandle handle) const {
   return const_cast<LinkTable*>(this)->FindLive(handle);
 }
 
+PeerLink* LinkTable::FindByPeerId(const std::string& peer_id, TransportClass prefer) {
+  if (peer_id.empty()) {
+    return nullptr;
+  }
+  const auto presence = Presence(peer_id);
+  auto pick = [&](const std::optional<LinkId>& id) -> PeerLink* {
+    if (!id) {
+      return nullptr;
+    }
+    auto* link = FindById(*id);
+    if (link && link->Phase() == PeerLinkPhase::Connected) {
+      return link;
+    }
+    return nullptr;
+  };
+  if (prefer == TransportClass::Carrier) {
+    if (auto* c = pick(presence.carrier)) {
+      return c;
+    }
+    if (auto* a = pick(presence.adp)) {
+      return a;
+    }
+  } else {
+    if (auto* a = pick(presence.adp)) {
+      return a;
+    }
+    if (auto* c = pick(presence.carrier)) {
+      return c;
+    }
+  }
+  // Fallback scan (presence not yet refreshed).
+  PeerLink* found = nullptr;
+  ForEach([&](PeerLink& link) {
+    if (found) {
+      return;
+    }
+    if (link.Phase() == PeerLinkPhase::Connected && link.RemotePeerId() == peer_id) {
+      found = &link;
+    }
+  });
+  return found;
+}
+
+const PeerLink* LinkTable::FindByPeerId(const std::string& peer_id, TransportClass prefer) const {
+  return const_cast<LinkTable*>(this)->FindByPeerId(peer_id, prefer);
+}
+
 PeerLink& LinkTable::Insert(std::unique_ptr<PeerLink> link) {
   const DialKey key = link->PeerKey();
-  const LinkId id = AllocId();
-  const uint32_t gen = NextGeneration();
-  link->SetLinkIdentity(id, gen);
+  if (!link->Id().valid()) {
+    link->SetLinkIdentity(AllocId(), NextGeneration());
+  }
+  const LinkId id = link->Id();
   PeerLink* raw = link.get();
-  by_id_[id] = raw;
+  by_id_[id] = std::move(link);
   by_dial_key_[key] = id;
-  legacy_dial_[key] = std::move(link);
   return *raw;
 }
 
-void LinkTable::EraseByDialKey(const DialKey& key) {
-  auto it = legacy_dial_.find(key);
-  if (it == legacy_dial_.end()) {
+void LinkTable::EraseById(LinkId id) {
+  auto it = by_id_.find(id);
+  if (it == by_id_.end() || !it->second) {
     return;
   }
-  PeerLink* link = it->second.get();
-  if (link) {
-    by_id_.erase(link->Id());
-    if (!link->RemotePeerId().empty()) {
-      ClearPresence(link->RemotePeerId(), link->Transport(), link->Id());
-    }
+  PeerLink& link = *it->second;
+  by_dial_key_.erase(link.PeerKey());
+  if (!link.RemotePeerId().empty()) {
+    ClearPresence(link.RemotePeerId(), link.Transport(), id);
   }
-  by_dial_key_.erase(key);
-  legacy_dial_.erase(it);
+  by_id_.erase(it);
 }
 
-void LinkTable::EraseById(LinkId id) {
-  auto* link = FindById(id);
-  if (!link) {
+void LinkTable::EraseByDialKey(const DialKey& key) {
+  auto it = by_dial_key_.find(key);
+  if (it == by_dial_key_.end()) {
     return;
   }
-  EraseByDialKey(link->PeerKey());
+  EraseById(it->second);
 }
 
 bool LinkTable::BindDialKey(LinkId id, DialKey key) {
@@ -80,17 +126,14 @@ bool LinkTable::BindDialKey(LinkId id, DialKey key) {
     by_dial_key_[key] = id;
     return true;
   }
-  if (legacy_dial_.contains(key)) {
+  if (auto existing = by_dial_key_.find(key); existing != by_dial_key_.end() && existing->second != id) {
     return false;
   }
-  auto node = legacy_dial_.extract(from);
-  if (node.empty()) {
-    return false;
+  // Only drop the old index when it still names this LinkId (avoid erasing a rebound alias).
+  if (auto it = by_dial_key_.find(from); it != by_dial_key_.end() && it->second == id) {
+    by_dial_key_.erase(it);
   }
-  by_dial_key_.erase(from);
   link->RebindDialKey(key);
-  node.key() = key;
-  legacy_dial_.insert(std::move(node));
   by_dial_key_[key] = id;
   return true;
 }
@@ -129,25 +172,6 @@ void LinkTable::ClearPresence(const std::string& peer_id, TransportClass transpo
 PeerPresence LinkTable::Presence(const std::string& peer_id) const {
   auto it = by_peer_.find(peer_id);
   return it == by_peer_.end() ? PeerPresence{} : it->second;
-}
-
-void LinkTable::SyncIndexesFromLegacy() {
-  by_id_.clear();
-  by_dial_key_.clear();
-  by_peer_.clear();
-  for (auto& [key, link] : legacy_dial_) {
-    if (!link) {
-      continue;
-    }
-    if (!link->Id().valid()) {
-      link->SetLinkIdentity(AllocId(), NextGeneration());
-    }
-    by_id_[link->Id()] = link.get();
-    by_dial_key_[key] = link->Id();
-    if (!link->RemotePeerId().empty() && link->Phase() == PeerLinkPhase::Connected) {
-      SetPresence(link->RemotePeerId(), link->Transport(), link->Id());
-    }
-  }
 }
 
 } // namespace pp::amp

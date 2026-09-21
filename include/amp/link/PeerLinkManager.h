@@ -57,7 +57,9 @@ public:
   /** Product/L4 inbound OPEN — no PeerLink& (ADR_LINK_PLANE). */
   using ProtocolHandler =
       std::function<void(LinkHandle handle, const std::string& remote_peer_id, uint32_t channel_id)>;
-  using CapabilityHandler = std::function<void(PeerLink& link, const CapabilityPayload& remote)>;
+  /** Product capability observer — no PeerLink& (ADR_LINK_PLANE). */
+  using CapabilityHandler =
+      std::function<void(LinkHandle handle, const std::string& remote_peer_id, const CapabilityPayload& remote)>;
   /** Queue association/channel completions off the establish stack (MeshRuntime::PostToIo). */
   using CompletionPoster = std::function<void(std::function<void()>)>;
 
@@ -188,7 +190,8 @@ private:
   void HandleInboundCarrierChannel(PeerLink& via_link, uint32_t channel_id);
   std::string DeriveRemotePeerId(const ByteVector& identity_public_key) const;
   bool AdoptInboundOrDropDuplicate(PeerLink& inbound);
-  void RekeyLink(const std::string& from_key, const std::string& to_key);
+  /** Rebind dial alias for a live LinkId (index-only; replaces map-key RekeyLink). */
+  void BindDialAlias(LinkId id, DialKey to_key);
   PeerLink* FindConnectedLinkForPeerId(const std::string& peer_id);
   PeerLink* FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id);
   PeerLink* ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const;
@@ -217,7 +220,6 @@ private:
   std::string nested_carrier_protocol_id_;
 
   std::unordered_map<std::string, ProtocolHandler> protocol_handlers_;
-  std::unordered_map<std::string, std::string> peer_id_to_key_;
   std::unordered_map<std::string, std::vector<LinkCb>> inflight_associations_;
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;
