@@ -26,8 +26,9 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    when MeshPump runs.
 5. **Index bind** (dial alias ↔ LinkId) replaces map-key rename (`RekeyLink` surgery).
    Session crypto rekey on ch0 remains separate.
-6. **Internals split:** DialBook, LinkTable, AssociationController, DualDialElector,
-   CarrierInstaller, CapabilityPlane, KeepalivePolicy behind a thin façade.
+6. **Internals split:** DialBook, LinkTable, DualDialElector are extracted; association /
+   carrier / capability / keepalive remain on the PeerLinkManager façade until a second
+   consumer needs them (no empty placeholder types).
 7. **Strand mutex is non-recursive** once completions are deferred; affinity is
    “called only from MeshRuntime Drive/PostToIo.”
 
