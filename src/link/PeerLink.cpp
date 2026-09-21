@@ -3,7 +3,6 @@
 #include "amp/link/CodedFailure.h"
 #include "amp/L3/Types.h"
 #include "amp/link/AmpAdpCarrier.h"
-#include "amp/link/PeerLinkManager.h"
 #include "amp/link/Types.h"
 #include "amp/L2/SessionControl.h"
 
@@ -28,18 +27,19 @@ PeerLink::Failure PeerLink::WrapConnectionFailure(const adp::Connection::Failure
 }
 
 PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool outbound,
-                   std::shared_ptr<adp::Connection> connection, MshIdentity local_identity, PeerLinkManager& owner)
+                   std::shared_ptr<adp::Connection> connection, MshIdentity local_identity,
+                   PeerLinkHostPorts host)
     : peer_key_(std::move(peer_key)), remote_peer_id_(std::move(remote_peer_id)), outbound_(outbound),
-      connection_(std::move(connection)), identity_(std::move(local_identity)), owner_(owner) {
+      connection_(std::move(connection)), identity_(std::move(local_identity)), host_(std::move(host)) {
   connection_->OnMessage([this](const adp::Message& message) {
     HandleAdpPayload(message.payload);
   });
 }
 
 PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool outbound,
-                   std::shared_ptr<ChannelSession> carrier, MshIdentity local_identity, PeerLinkManager& owner)
+                   std::shared_ptr<ChannelSession> carrier, MshIdentity local_identity, PeerLinkHostPorts host)
     : peer_key_(std::move(peer_key)), remote_peer_id_(std::move(remote_peer_id)), outbound_(outbound),
-      carrier_(std::move(carrier)), identity_(std::move(local_identity)), owner_(owner) {
+      carrier_(std::move(carrier)), identity_(std::move(local_identity)), host_(std::move(host)) {
   AttachCarrierFrameHandler();
 }
 
@@ -76,7 +76,7 @@ void PeerLink::AttachCarrierFrameHandler() {
 void PeerLink::StartHandshakeCommon(const MshAdpHandshake::Role role, CompleteCb on_established) {
   establish_cb_ = std::move(on_established);
   phase_ = PeerLinkPhase::Handshaking;
-  handshake_started_ms_ = owner_.GetEndpoint().GetClock().NowMs();
+  handshake_started_ms_ = host_.now_ms ? host_.now_ms() : 0;
   const bool chunked = !IsCarrierBacked();
   handshake_ = std::make_unique<MshAdpHandshake>(
       role, identity_,
@@ -285,8 +285,12 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   transcript_hash_ = std::move(established.transcript_hash);
   remote_identity_public_key_ = std::move(established.remote_identity_public_key);
   if (!remote_identity_public_key_.empty()) {
-    if (auto derived = owner_.DeriveRemotePeerId(remote_identity_public_key_); !derived.empty()) {
-      remote_peer_id_ = std::move(derived);
+    if (host_.derive_peer_id) {
+      if (auto derived = host_.derive_peer_id(remote_identity_public_key_); !derived.empty()) {
+        remote_peer_id_ = std::move(derived);
+      } else if (remote_peer_id_.empty()) {
+        remote_peer_id_ = IdentityPublicKeyFingerprint(remote_identity_public_key_);
+      }
     } else if (remote_peer_id_.empty()) {
       remote_peer_id_ = IdentityPublicKeyFingerprint(remote_identity_public_key_);
     }
@@ -303,21 +307,23 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   }
   session_ = std::make_unique<Session>(std::move(*session));
   mux_ = std::make_unique<ChannelMux>(*session_);
-  mux_->SetClock([this]() { return owner_.GetEndpoint().GetClock().NowMs(); });
+  mux_->SetClock([this]() { return host_.now_ms ? host_.now_ms() : 0; });
   AttachMuxTransport();
   handshake_.reset();
   phase_ = PeerLinkPhase::Connected;
-  if (!owner_.OnLinkEstablished(*this)) {
+  if (!host_.on_established || !host_.on_established(*this)) {
     // Dual-dial loser ([A026]): tear down this link after stack unwinds. If another Connected
     // Session to the same remote remains, association still succeeded for waiters.
     phase_ = PeerLinkPhase::Backoff;
     const std::string drop_key = peer_key_;
     const std::string remote = remote_peer_id_;
     const bool assoc_ok =
-        !remote.empty() && owner_.FindAnyConnectedLinkForRemotePeerId(remote) != nullptr;
-    owner_.ScheduleDropLink(drop_key);
-    if (assoc_ok && outbound_) {
-      owner_.ScheduleAdoptDialAlias(remote, drop_key);
+        !remote.empty() && host_.has_other_connected && host_.has_other_connected(remote);
+    if (host_.schedule_drop) {
+      host_.schedule_drop(drop_key);
+    }
+    if (assoc_ok && outbound_ && host_.schedule_adopt_alias) {
+      host_.schedule_adopt_alias(remote, drop_key);
     }
     if (establish_cb_) {
       if (assoc_ok) {
@@ -352,6 +358,17 @@ void PeerLink::FailAssociationMessage(const Error& error, const Err code) {
 void PeerLink::FailHandshakeTimeout() {
   FailAssociation(Failure::Of(Err::DialTimeout, "amp link: dial timeout"));
 }
+
+void PeerLink::DemoteForScheduledDrop() {
+  if (phase_ == PeerLinkPhase::Connected || phase_ == PeerLinkPhase::Handshaking ||
+      phase_ == PeerLinkPhase::Dialing) {
+    phase_ = PeerLinkPhase::Backoff;
+  }
+  if (mux_) {
+    mux_->ClearProtocolHandlers();
+  }
+}
+
 
 void PeerLink::AttachMuxTransport() {
   mux_->SetTransportCredits([this]() -> size_t {
@@ -444,7 +461,7 @@ void PeerLink::HandleSessionControl(const std::span<const uint8_t> payload) {
   if (!decoded) {
     return;
   }
-  const int64_t now_ms = owner_.GetEndpoint().GetClock().NowMs();
+  const int64_t now_ms = host_.now_ms ? host_.now_ms() : 0;
   const uint32_t expected = session_->Material().session_epoch + 1;
 
   if (decoded->kind == SessionControlKind::RekeyRequest) {

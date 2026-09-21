@@ -9,8 +9,10 @@
 #include <gtest/gtest.h>
 #include <sodium.h>
 
+#include <chrono>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -77,6 +79,8 @@ TEST_F(AdpHardenTest, OsUdpLoopbackSmoke) {
   op.id = Aid();
   op.mint_id = false;
   op.peer = addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = 30;
   auto ca = ep_a->Open(op);
   ASSERT_TRUE(ca);
 
@@ -91,15 +95,16 @@ TEST_F(AdpHardenTest, OsUdpLoopbackSmoke) {
 
   ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
                           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("udp"), 3)));
-  for (int i = 0; i < 50; ++i) {
-    ep_a->Pump();
-    ep_b->Pump();
-    ep_a->Tick();
-    ep_b->Tick();
-    if (!got.empty()) {
-      break;
+  // OS UDP needs wall time for kernel delivery / RTX; virtual Advance alone can finish in 0ms.
+  for (int i = 0; i < 80 && got.empty(); ++i) {
+    for (int j = 0; j < 8; ++j) {
+      ep_a->Pump();
+      ep_b->Pump();
+      ep_a->Tick();
+      ep_b->Tick();
     }
-    clock->Advance(5);
+    clock->Advance(10);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   EXPECT_EQ(got, "udp");
 }

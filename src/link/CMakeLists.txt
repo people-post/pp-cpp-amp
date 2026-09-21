@@ -1,6 +1,9 @@
-pp_amp_add_library(pp_amp_link
+  pp_amp_add_library(pp_amp_link
   AdpMultiaddr.cpp
   AmpAdpCarrier.cpp
+  DialBook.cpp
+  DualDialElector.cpp
+  LinkTable.cpp
   MeshPump.cpp
   MeshRuntime.cpp
   AmpStack.cpp

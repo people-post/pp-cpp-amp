@@ -843,14 +843,18 @@ bool RunD2(const int warmup, const int iters) {
     }
 
     size_t received = 0;
-    hub_rt->Links().SetProtocolHandler("/pp-perf/fanin/1.0.0", [&](pp::amp::PeerLink& link, uint32_t channel_id) {
-      if (!link.Mux()) {
-        return;
-      }
-      link.Mux()->SetDataHandler(channel_id, [&](uint32_t, std::vector<uint8_t> payload) {
-        received += payload.size();
-      });
-    });
+    hub_rt->Links().SetProtocolHandler(
+        "/pp-perf/fanin/1.0.0",
+        [&](pp::amp::LinkHandle handle, const std::string&, uint32_t channel_id) {
+          hub_rt->Links().WithLiveLink(handle, [&](pp::amp::PeerLink& link) {
+            if (!link.Mux()) {
+              return;
+            }
+            link.Mux()->SetDataHandler(channel_id, [&](uint32_t, std::vector<uint8_t> payload) {
+              received += payload.size();
+            });
+          });
+        });
 
     struct Client {
       std::unique_ptr<pp::adp::Endpoint> ep;

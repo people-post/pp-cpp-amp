@@ -229,11 +229,11 @@ TEST(MeshLinkTest, CapabilityExchangeAfterAssociation) {
   int caps_b = 0;
   CapabilityPayload seen_on_a;
   CapabilityPayload seen_on_b;
-  h.mgr_a().SetCapabilityHandler([&](PeerLink&, const CapabilityPayload& remote) {
+  h.mgr_a().SetCapabilityHandler([&](LinkHandle, const std::string&, const CapabilityPayload& remote) {
     ++caps_a;
     seen_on_a = remote;
   });
-  h.mgr_b().SetCapabilityHandler([&](PeerLink&, const CapabilityPayload& remote) {
+  h.mgr_b().SetCapabilityHandler([&](LinkHandle, const std::string&, const CapabilityPayload& remote) {
     ++caps_b;
     seen_on_b = remote;
   });

@@ -5,8 +5,9 @@ namespace pp::amp {
 MeshPump::MeshPump(adp::Endpoint& endpoint, PeerLinkManager& links) : endpoint_(endpoint), links_(links) {}
 
 void MeshPump::Pump() {
+  // ADP I/O only — PeerLinkManager::Tick is owned by MeshRuntime::TickLocked
+  // (exactly once per Drive). Do not call links_.Tick() here.
   endpoint_.Pump();
-  links_.Tick();
 }
 
 void MeshPump::Tick() {

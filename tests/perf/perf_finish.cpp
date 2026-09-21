@@ -233,12 +233,17 @@ bool RunE4(const int warmup, const int iters) {
 
     // Nested: open carrier, establish nested MSH, open chat on nested mux, DATA.
     std::vector<uint8_t> nested_received;
-    h.mgr_b().SetProtocolHandler("/pp-browser/chat/1.0.0", [&](pp::amp::PeerLink& link, uint32_t channel_id) {
-      if (!link.IsCarrierBacked() || !link.Mux()) {
-        return;
-      }
-      link.Mux()->SetDataHandler(channel_id, [&](uint32_t, std::vector<uint8_t> p) { nested_received = std::move(p); });
-    });
+    h.mgr_b().SetProtocolHandler(
+        "/pp-browser/chat/1.0.0",
+        [&](pp::amp::LinkHandle handle, const std::string&, uint32_t channel_id) {
+          h.mgr_b().WithLiveLink(handle, [&](pp::amp::PeerLink& link) {
+            if (!link.IsCarrierBacked() || !link.Mux()) {
+              return;
+            }
+            link.Mux()->SetDataHandler(channel_id,
+                                       [&](uint32_t, std::vector<uint8_t> p) { nested_received = std::move(p); });
+          });
+        });
 
     const auto t_nested0 = std::chrono::steady_clock::now();
     bool open_done = false;

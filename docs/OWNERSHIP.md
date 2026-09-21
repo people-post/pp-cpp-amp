@@ -14,6 +14,14 @@ It is the only mesh transport shared by pp-browser and pp-ledger. It is **not** 
 | Amp-owned plumbing ids | e.g. `/amp/circuit-carrier/1.0.0` |
 | Link dial / warm / keepalive | `PeerLinkManager`, `AmpStack` |
 
+## Link composition vocabulary
+
+Same rule as pp-browser composition vocabulary (lower peers must not embed higher concepts):
+
+- **`PeerLink` (lower)** speaks its own language and defines `PeerLinkHostPorts` (clock, derive PeerId, on_established, schedule_drop).
+- **`PeerLinkManager` (higher)** installs those ports via `MakeHostPorts()` — no `PeerLink` → `PeerLinkManager` include, no mutual `friend`.
+- Index helpers (`SetLinkIdentity`, `RebindDialKey`) are public on `PeerLink` so `LinkTable` needs no friendship.
+
 ## Does not own (product L4)
 
 | Concern | Home |
@@ -37,3 +45,4 @@ It is the only mesh transport shared by pp-browser and pp-ledger. It is **not** 
 
 - pp-browser: `docs/contracts/L4_PROTOCOL_KINDS.md`, `docs/contracts/AMP-CHANNEL.md`
 - pp-ledger: `docs/amp-transport.md`, `docs/platform-integration.md`
+- Link plane: [ADR_LINK_PLANE.md](ADR_LINK_PLANE.md)

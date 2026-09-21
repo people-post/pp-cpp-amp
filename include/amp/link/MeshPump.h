@@ -5,7 +5,11 @@
 
 namespace pp::amp {
 
-/** Io-thread driver: ADP Endpoint pump/tick for PeerLinkManager links. */
+/**
+ * ADP Endpoint pump/tick adapter.
+ * Pump() is ADP-only; PeerLinkManager::Tick runs solely from MeshRuntime::TickLocked
+ * so each Drive executes link housekeeping exactly once.
+ */
 class MeshPump {
 public:
   MeshPump(adp::Endpoint& endpoint, PeerLinkManager& links);
