@@ -20,6 +20,8 @@ namespace pp::amp {
  *
  * Pump/Tick/Drive/PostToIo are serialized (recursive_mutex): product may pump from the
  * coordinator Tick and from worker Connect wait loops without data races.
+ * Off-strand PeerLinkManager access must use WithIoLock (same mutex) — Links() alone is
+ * not thread-safe against Drive.
  */
 class MeshRuntime {
 public:
@@ -50,6 +52,23 @@ public:
 
   /** Queue work for the next Pump(); one queued task runs per Pump() before ADP I/O. */
   void PostToIo(IoTask task);
+
+  /**
+   * Run `fn` while holding the same recursive lock as Pump/Tick/Drive/PostToIo.
+   * Product façades (e.g. AmpChatPeerLinks) must use this for any PeerLinkManager access
+   * off the MeshPump strand — bare Links() from another thread races FinishDial /
+   * ScheduleDropLink.
+   */
+  template <typename Fn>
+  auto WithIoLock(Fn&& fn) -> decltype(fn()) {
+    std::lock_guard lock(io_mu_);
+    return std::forward<Fn>(fn)();
+  }
+  template <typename Fn>
+  auto WithIoLock(Fn&& fn) const -> decltype(fn()) {
+    std::lock_guard lock(io_mu_);
+    return std::forward<Fn>(fn)();
+  }
 
   /**
    * Register a Pump()-start hook (e.g. L4 connect deadlines). Multiple L4 coordinators
