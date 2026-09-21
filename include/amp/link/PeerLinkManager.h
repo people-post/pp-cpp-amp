@@ -136,13 +136,17 @@ public:
   }
 
   /**
-   * Poll until mux channel is open or deadline; invokes done on strand via completion poster.
-   * Prefer over FindLink + PostIo loops (product H1/H2).
+   * Poll until mux channel is open or Amp-clock deadline; invokes done via completion poster.
+   * `deadline_ms` is absolute `Endpoint::GetClock().NowMs()` — prefer WhenChannelOpenIn.
    */
   void WhenChannelOpen(const DialKey& peer_key, uint32_t channel_id, int64_t deadline_ms,
                        std::function<void(bool ok)> done);
+  /** Remaining duration from Amp clock now → absolute deadline for WhenChannelOpen. */
+  void WhenChannelOpenIn(const DialKey& peer_key, uint32_t channel_id, std::chrono::milliseconds remaining,
+                         std::function<void(bool ok)> done);
   /**
    * Bind ChannelSession under strand lock; returns empty if link/mux missing.
+   * `peer_key` may be a dial alias or authenticated PeerId.
    */
   std::shared_ptr<ChannelSession> BindChannel(const DialKey& peer_key, uint32_t channel_id,
                                               ChannelPolicy policy,
@@ -156,7 +160,10 @@ public:
   void ClearDialBackoff(const std::string& peer_key);
   void AbortInflightDial(const std::string& peer_key);
 
-  /** Amp-internal / tests — prefer WithLiveLink / snapshots for product. */
+  /**
+   * Amp-internal / tests — prefer WithLiveLink / snapshots for product.
+   * Resolves dial alias first, then Connected PeerId presence (inbound handlers pass PeerId).
+   */
   PeerLink* FindLink(const std::string& peer_key);
   const PeerLink* FindLink(const std::string& peer_key) const;
   PeerLink* FindLinkByPeerId(const std::string& peer_id);

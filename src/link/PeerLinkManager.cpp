@@ -130,12 +130,19 @@ Roe<void> PeerLinkManager::RegisterEndpoint(const std::string& peer_key, const s
 
 PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
-  return table_.FindByDialKey(peer_key);
+  if (auto* by_dial = table_.FindByDialKey(peer_key)) {
+    return by_dial;
+  }
+  // Inbound protocol handlers / BindChannel often pass authenticated PeerId, not dial alias.
+  return table_.FindByPeerId(peer_key);
 }
 
 const PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) const {
   std::lock_guard lock(strand_mu_);
-  return table_.FindByDialKey(peer_key);
+  if (const auto* by_dial = table_.FindByDialKey(peer_key)) {
+    return by_dial;
+  }
+  return table_.FindByPeerId(peer_key);
 }
 
 PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) {
@@ -336,10 +343,11 @@ PeerLink* PeerLinkManager::FindConnectedInboundLink() {
 
 bool PeerLinkManager::IsConnected(const std::string& peer_key) const {
   std::lock_guard lock(strand_mu_);
-  if (const auto* link = table_.FindByDialKey(peer_key)) {
-    return link->Phase() == PeerLinkPhase::Connected;
+  const PeerLink* link = table_.FindByDialKey(peer_key);
+  if (!link) {
+    link = table_.FindByPeerId(peer_key);
   }
-  return false;
+  return link && link->Phase() == PeerLinkPhase::Connected;
 }
 
 PeerLinkSnapshot PeerLinkManager::GetLinkSnapshot(const std::string& peer_key) const {
@@ -874,6 +882,9 @@ void PeerLinkManager::Tick() {
     std::vector<std::function<void()>> completions;
     for (auto& [key, ch, deadline, done] : channel_open_waiters_) {
       auto* link = table_.FindByDialKey(key);
+      if (!link) {
+        link = table_.FindByPeerId(key);
+      }
       bool open = false;
       if (link && link->Mux() && link->Phase() == PeerLinkPhase::Connected && ch != 0) {
         open = link->Mux()->State(ch) == ChannelState::Open;
@@ -1174,9 +1185,17 @@ bool PeerLinkManager::IsReachable(const std::string& peer_id) const {
 void PeerLinkManager::WhenChannelOpen(const DialKey& peer_key, uint32_t channel_id, int64_t deadline_ms,
                                       std::function<void(bool ok)> done) {
   std::lock_guard lock(strand_mu_);
-  // deadline_ms is absolute Amp clock (Endpoint::GetClock().NowMs()). Use MeshRuntime::WhenChannelOpenIn
-  // when converting from a steady_clock wall deadline.
+  // deadline_ms is absolute Amp clock (Endpoint::GetClock().NowMs()). Prefer WhenChannelOpenIn
+  // when converting from a steady_clock wall deadline — never pass steady epoch ms here.
   channel_open_waiters_.emplace_back(peer_key, channel_id, deadline_ms, std::move(done));
+}
+
+void PeerLinkManager::WhenChannelOpenIn(const DialKey& peer_key, uint32_t channel_id,
+                                        std::chrono::milliseconds remaining,
+                                        std::function<void(bool ok)> done) {
+  const int64_t now = endpoint_.GetClock().NowMs();
+  const int64_t rem = remaining.count() < 0 ? 0 : remaining.count();
+  WhenChannelOpen(peer_key, channel_id, now + rem, std::move(done));
 }
 
 std::shared_ptr<ChannelSession> PeerLinkManager::BindChannel(const DialKey& peer_key, uint32_t channel_id,

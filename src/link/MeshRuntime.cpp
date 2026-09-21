@@ -129,9 +129,7 @@ void MeshRuntime::WhenChannelOpen(const DialKey& peer_key, uint32_t channel_id, 
 void MeshRuntime::WhenChannelOpenIn(const DialKey& peer_key, uint32_t channel_id,
                                     std::chrono::milliseconds remaining,
                                     std::function<void(bool ok)> done) {
-  const int64_t now = endpoint_.GetClock().NowMs();
-  const int64_t rem = remaining.count() < 0 ? 0 : remaining.count();
-  WhenChannelOpen(peer_key, channel_id, now + rem, std::move(done));
+  links_.WhenChannelOpenIn(peer_key, channel_id, remaining, std::move(done));
 }
 
 std::shared_ptr<ChannelSession> MeshRuntime::BindChannel(const DialKey& peer_key, uint32_t channel_id,
