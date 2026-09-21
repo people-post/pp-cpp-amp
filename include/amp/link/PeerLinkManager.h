@@ -62,6 +62,11 @@ public:
       std::function<void(LinkHandle handle, const std::string& remote_peer_id, const CapabilityPayload& remote)>;
   /** Queue association/channel completions off the establish stack (MeshRuntime::PostToIo). */
   using CompletionPoster = std::function<void(std::function<void()>)>;
+  /**
+   * Fired (via CompletionPoster / PostToIo) when a PeerLink reaches Connected for a PeerId.
+   * L4 may arm waiters (e.g. circuit ServeDial) without polling Tick.
+   */
+  using PeerConnectedListener = std::function<void(const std::string& remote_peer_id)>;
 
   PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
                   PeerLinkConfig config = {});
@@ -74,6 +79,8 @@ public:
 
   /** Wire MeshRuntime::PostToIo so FinishDial waiters never run under association mutation. */
   void SetCompletionPoster(CompletionPoster poster);
+  void SetPeerConnectedListener(PeerConnectedListener listener);
+  void ClearPeerConnectedListener();
 
   adp::Endpoint& GetEndpoint() { return endpoint_; }
   const std::string& LocalPeerId() const { return local_peer_id_; }
@@ -223,6 +230,7 @@ private:
   std::vector<std::string> advertised_protocols_;
   CapabilityHandler capability_handler_;
   CompletionPoster completion_poster_;
+  PeerConnectedListener peer_connected_listener_;
   bool nested_carrier_accept_ = false;
   std::string nested_carrier_protocol_id_;
 

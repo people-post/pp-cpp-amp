@@ -253,6 +253,20 @@ bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
   if (!link.IsCarrierBacked()) {
     StartCapabilityExchange(link);
   }
+  const std::string peer_id = link.RemotePeerId();
+  if (!peer_id.empty() && peer_connected_listener_) {
+    // Off establish stack — L4 waiters must not run under association mutation.
+    PostCompletion([this, peer_id]() {
+      PeerConnectedListener listener;
+      {
+        std::lock_guard lock(strand_mu_);
+        listener = peer_connected_listener_;
+      }
+      if (listener) {
+        listener(peer_id);
+      }
+    });
+  }
   return true;
 }
 
@@ -1071,6 +1085,16 @@ PeerLinkHostPorts PeerLinkManager::MakeHostPorts() {
 void PeerLinkManager::SetCompletionPoster(CompletionPoster poster) {
   std::lock_guard lock(strand_mu_);
   completion_poster_ = std::move(poster);
+}
+
+void PeerLinkManager::SetPeerConnectedListener(PeerConnectedListener listener) {
+  std::lock_guard lock(strand_mu_);
+  peer_connected_listener_ = std::move(listener);
+}
+
+void PeerLinkManager::ClearPeerConnectedListener() {
+  std::lock_guard lock(strand_mu_);
+  peer_connected_listener_ = nullptr;
 }
 
 void PeerLinkManager::PostCompletion(std::function<void()> fn) {
