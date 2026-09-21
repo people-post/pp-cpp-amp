@@ -4,7 +4,8 @@ namespace pp::amp {
 
 MeshRuntime::MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
                          PeerLinkConfig config)
-    : endpoint_(endpoint), links_(endpoint, std::move(local_identity), std::move(local_peer_id), std::move(config)),
+    : endpoint_(endpoint),
+      links_(endpoint, std::move(local_identity), std::move(local_peer_id), std::move(config), io_mu_),
       pump_(endpoint, links_) {}
 
 void MeshRuntime::Start() {

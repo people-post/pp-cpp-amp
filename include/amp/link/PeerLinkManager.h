@@ -12,6 +12,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -50,8 +51,15 @@ public:
   /** Fired once per link when the remote capability payload is first decoded (ch0 / A016). */
   using CapabilityHandler = std::function<void(PeerLink& link, const CapabilityPayload& remote)>;
 
+  /**
+   * Standalone (tests): owns an internal strand mutex.
+   * MeshRuntime: pass Runtime io_mu_ so Links()/Drive/WithIoLock share one lock —
+   * FindLink pointers stay valid for the duration of an outer WithIoLock/Drive hold.
+   */
   PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
                   PeerLinkConfig config = {});
+  PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
+                  PeerLinkConfig config, std::recursive_mutex& strand_mu);
   ~PeerLinkManager();
 
   PeerLinkManager(const PeerLinkManager&) = delete;
@@ -125,7 +133,7 @@ public:
   /** Connected links whose RemotePeerId matches (for dual-dial / A026 tests). */
   size_t CountConnectedLinksForPeerId(const std::string& peer_id) const;
 
-  size_t CountLinks() const { return links_.size(); }
+  size_t CountLinks() const;
 
   static bool IsAssociationNotReady(const Failure& failure) {
     return failure.GetCode() == Err::AssociationNotReady;
@@ -196,6 +204,14 @@ private:
   /** Erase after PeerLink stack unwinds (dual-dial loser must not destroy `this` mid-callback). */
   std::vector<std::string> pending_drop_keys_;
   std::vector<std::pair<std::string, std::string>> pending_alias_adopt_;
+
+  /** Used when constructed without an external strand (unit tests). */
+  std::recursive_mutex owned_mu_;
+  /**
+   * Same mutex as MeshRuntime::io_mu_ when constructed via MeshRuntime — serializes raw
+   * Links() access with Drive/WithIoLock (dogfood call-media dial-timeout AV).
+   */
+  std::recursive_mutex& strand_mu_;
 };
 
 } // namespace pp::amp

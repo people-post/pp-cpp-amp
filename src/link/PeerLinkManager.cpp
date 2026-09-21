@@ -50,12 +50,21 @@ PeerLinkManager::LinkRoe PeerLinkManager::WrapPeerLinkResult(const PeerLink::Lin
 PeerLinkManager::PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
                                  PeerLinkConfig config)
     : endpoint_(endpoint), local_identity_(std::move(local_identity)), local_peer_id_(std::move(local_peer_id)),
-      config_(config) {
+      config_(config), strand_mu_(owned_mu_) {
+  endpoint_.SetAcceptKey(PreSessionPeerKey());
+  InstallAcceptHandler();
+}
+
+PeerLinkManager::PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
+                                 PeerLinkConfig config, std::recursive_mutex& strand_mu)
+    : endpoint_(endpoint), local_identity_(std::move(local_identity)), local_peer_id_(std::move(local_peer_id)),
+      config_(config), strand_mu_(strand_mu) {
   endpoint_.SetAcceptKey(PreSessionPeerKey());
   InstallAcceptHandler();
 }
 
 PeerLinkManager::~PeerLinkManager() {
+  std::lock_guard lock(strand_mu_);
   // Nested carriers Bind to an outer link's Mux ([A024]). Unbind while every Mux still
   // exists — unordered_map destroy order is arbitrary and ~ChannelSession would UAF.
   for (auto& [_, link] : links_) {
@@ -67,18 +76,22 @@ PeerLinkManager::~PeerLinkManager() {
 }
 
 void PeerLinkManager::SetLocalListenMultiaddrs(std::vector<std::string> multiaddrs) {
+  std::lock_guard lock(strand_mu_);
   local_listen_multiaddrs_ = std::move(multiaddrs);
 }
 
 void PeerLinkManager::SetAdvertisedProtocols(std::vector<std::string> protocols) {
+  std::lock_guard lock(strand_mu_);
   advertised_protocols_ = std::move(protocols);
 }
 
 void PeerLinkManager::SetCapabilityHandler(CapabilityHandler handler) {
+  std::lock_guard lock(strand_mu_);
   capability_handler_ = std::move(handler);
 }
 
 CapabilityPayload PeerLinkManager::LocalCapability() const {
+  std::lock_guard lock(strand_mu_);
   CapabilityPayload payload;
   payload.local_peer_id = local_peer_id_;
   payload.listen_multiaddrs = local_listen_multiaddrs_;
@@ -87,6 +100,7 @@ CapabilityPayload PeerLinkManager::LocalCapability() const {
 }
 
 std::optional<std::string> PeerLinkManager::PreferredMultiaddr(const std::string& peer_id) const {
+  std::lock_guard lock(strand_mu_);
   if (peer_id.empty()) {
     return std::nullopt;
   }
@@ -103,11 +117,13 @@ std::optional<std::string> PeerLinkManager::PreferredMultiaddr(const std::string
 
 void PeerLinkManager::InstallAcceptHandler() {
   endpoint_.SetAcceptHandler([this](std::shared_ptr<adp::Connection> connection) {
+    std::lock_guard lock(strand_mu_);
     OnInboundConnection(std::move(connection));
   });
 }
 
 Roe<void> PeerLinkManager::RegisterEndpoint(const std::string& peer_key, const std::string& multiaddr) {
+  std::lock_guard lock(strand_mu_);
   auto parsed = ParseAdpMultiaddr(multiaddr);
   if (!parsed) {
     return parsed.error();
@@ -121,6 +137,7 @@ Roe<void> PeerLinkManager::RegisterEndpoint(const std::string& peer_key, const s
 }
 
 PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
   auto it = links_.find(peer_key);
   if (it == links_.end()) {
     return nullptr;
@@ -129,6 +146,7 @@ PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) {
 }
 
 const PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) const {
+  std::lock_guard lock(strand_mu_);
   auto it = links_.find(peer_key);
   if (it == links_.end()) {
     return nullptr;
@@ -137,6 +155,7 @@ const PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) const {
 }
 
 PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) {
+  std::lock_guard lock(strand_mu_);
   if (peer_id.empty()) {
     return nullptr;
   }
@@ -153,10 +172,12 @@ PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) {
 }
 
 const PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) const {
+  std::lock_guard lock(strand_mu_);
   return const_cast<PeerLinkManager*>(this)->FindLinkByPeerId(peer_id);
 }
 
 PeerLink* PeerLinkManager::FindConnectedLinkForPeerId(const std::string& peer_id) {
+  std::lock_guard lock(strand_mu_);
   if (auto* link = FindLinkByPeerId(peer_id)) {
     if (link->Phase() == PeerLinkPhase::Connected) {
       return link;
@@ -166,6 +187,7 @@ PeerLink* PeerLinkManager::FindConnectedLinkForPeerId(const std::string& peer_id
 }
 
 PeerLink* PeerLinkManager::FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id) {
+  std::lock_guard lock(strand_mu_);
   if (remote_peer_id.empty()) {
     return nullptr;
   }
@@ -178,6 +200,7 @@ PeerLink* PeerLinkManager::FindAnyConnectedLinkForRemotePeerId(const std::string
 }
 
 PeerLink* PeerLinkManager::ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const {
+  std::lock_guard lock(strand_mu_);
   const std::string& remote = existing.RemotePeerId().empty() ? candidate.RemotePeerId() : existing.RemotePeerId();
   const bool existing_keep_out = existing.IsOutbound() && !remote.empty() && local_peer_id_ > remote;
   const bool cand_keep_out = candidate.IsOutbound() && !remote.empty() && local_peer_id_ > remote;
@@ -198,6 +221,7 @@ PeerLink* PeerLinkManager::ElectDualDialWinner(PeerLink& existing, PeerLink& can
 }
 
 void PeerLinkManager::DropLink(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
   auto* link = FindLink(peer_key);
   if (!link) {
     return;
@@ -229,10 +253,12 @@ void PeerLinkManager::DropLink(const std::string& peer_key) {
 }
 
 void PeerLinkManager::ScheduleDropLink(std::string peer_key) {
+  std::lock_guard lock(strand_mu_);
   pending_drop_keys_.push_back(std::move(peer_key));
 }
 
 void PeerLinkManager::ScheduleAdoptDialAlias(std::string remote_peer_id, std::string dial_alias) {
+  std::lock_guard lock(strand_mu_);
   if (remote_peer_id.empty() || dial_alias.empty()) {
     return;
   }
@@ -240,6 +266,7 @@ void PeerLinkManager::ScheduleAdoptDialAlias(std::string remote_peer_id, std::st
 }
 
 size_t PeerLinkManager::CountConnectedLinksForPeerId(const std::string& peer_id) const {
+  std::lock_guard lock(strand_mu_);
   if (peer_id.empty()) {
     return 0;
   }
@@ -253,6 +280,7 @@ size_t PeerLinkManager::CountConnectedLinksForPeerId(const std::string& peer_id)
 }
 
 bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
+  std::lock_guard lock(strand_mu_);
   if (!AdoptInboundOrDropDuplicate(link)) {
     if (link.Mux()) {
       link.Mux()->ClearProtocolHandlers();
@@ -275,6 +303,7 @@ bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
 }
 
 bool PeerLinkManager::AdoptInboundOrDropDuplicate(PeerLink& candidate) {
+  std::lock_guard lock(strand_mu_);
   if (candidate.RemotePeerId().empty()) {
     return true;
   }
@@ -349,6 +378,7 @@ bool PeerLinkManager::AdoptInboundOrDropDuplicate(PeerLink& candidate) {
 }
 
 std::string PeerLinkManager::DeriveRemotePeerId(const ByteVector& identity_public_key) const {
+  std::lock_guard lock(strand_mu_);
   if (config_.peer_id_from_identity) {
     return config_.peer_id_from_identity(identity_public_key);
   }
@@ -356,6 +386,7 @@ std::string PeerLinkManager::DeriveRemotePeerId(const ByteVector& identity_publi
 }
 
 PeerLink* PeerLinkManager::FindConnectedInboundLink() {
+  std::lock_guard lock(strand_mu_);
   for (auto& [_, link] : links_) {
     if (!link->IsOutbound() && link->Phase() == PeerLinkPhase::Connected) {
       return link.get();
@@ -365,6 +396,7 @@ PeerLink* PeerLinkManager::FindConnectedInboundLink() {
 }
 
 bool PeerLinkManager::IsConnected(const std::string& peer_key) const {
+  std::lock_guard lock(strand_mu_);
   if (const auto* link = FindLink(peer_key)) {
     return link->Phase() == PeerLinkPhase::Connected;
   }
@@ -372,6 +404,7 @@ bool PeerLinkManager::IsConnected(const std::string& peer_key) const {
 }
 
 PeerLinkSnapshot PeerLinkManager::GetLinkSnapshot(const std::string& peer_key) const {
+  std::lock_guard lock(strand_mu_);
   PeerLinkSnapshot snap;
   snap.has_endpoint = endpoints_.contains(peer_key);
   if (const auto* link = FindLink(peer_key); link && link->Phase() == PeerLinkPhase::Connected) {
@@ -408,6 +441,7 @@ PeerLinkSnapshot PeerLinkManager::GetLinkSnapshot(const std::string& peer_key) c
 }
 
 void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_complete) {
+  std::lock_guard lock(strand_mu_);
   if (IsConnected(peer_key)) {
     if (on_complete) {
       on_complete(LinkRoe());
@@ -506,6 +540,7 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
 
 void PeerLinkManager::OpenChannelOnLink(PeerLink& link, const std::string& protocol_id, ChannelPolicy policy,
                                         ChannelCb on_complete) {
+  std::lock_guard lock(strand_mu_);
   if (link.Phase() != PeerLinkPhase::Connected || !link.Mux()) {
     if (on_complete) {
       on_complete(ChannelRoe::error(Failure::Of(Err::AssociationNotReady, "amp link: association not ready")));
@@ -525,6 +560,7 @@ void PeerLinkManager::OpenChannelOnLink(PeerLink& link, const std::string& proto
 
 void PeerLinkManager::OpenChannel(const std::string& peer_key, const std::string& protocol_id, ChannelPolicy policy,
                                   ChannelCb on_complete) {
+  std::lock_guard lock(strand_mu_);
   EnsureAssociation(peer_key, [this, peer_key, protocol_id, policy = std::move(policy),
                                  on_complete = std::move(on_complete)](LinkRoe assoc) mutable {
     if (!assoc) {
@@ -545,6 +581,7 @@ void PeerLinkManager::OpenChannel(const std::string& peer_key, const std::string
 }
 
 void PeerLinkManager::SetProtocolHandler(const std::string& protocol_id, ProtocolHandler handler) {
+  std::lock_guard lock(strand_mu_);
   protocol_handlers_[protocol_id] = std::move(handler);
   for (auto& [_, link] : links_) {
     ApplyProtocolHandlers(*link);
@@ -552,6 +589,7 @@ void PeerLinkManager::SetProtocolHandler(const std::string& protocol_id, Protoco
 }
 
 void PeerLinkManager::RemoveProtocolHandler(const std::string& protocol_id) {
+  std::lock_guard lock(strand_mu_);
   protocol_handlers_.erase(protocol_id);
   for (auto& [_, link] : links_) {
     if (link->Mux()) {
@@ -561,6 +599,7 @@ void PeerLinkManager::RemoveProtocolHandler(const std::string& protocol_id) {
 }
 
 void PeerLinkManager::ClearProtocolHandlers() {
+  std::lock_guard lock(strand_mu_);
   protocol_handlers_.clear();
   for (auto& [_, link] : links_) {
     if (link->Mux()) {
@@ -570,6 +609,7 @@ void PeerLinkManager::ClearProtocolHandlers() {
 }
 
 void PeerLinkManager::ApplyProtocolHandlers(PeerLink& link) {
+  std::lock_guard lock(strand_mu_);
   if (!link.Mux()) {
     return;
   }
@@ -589,6 +629,7 @@ void PeerLinkManager::ApplyProtocolHandlers(PeerLink& link) {
 }
 
 void PeerLinkManager::FinishDial(const std::string& peer_key, LinkRoe result) {
+  std::lock_guard lock(strand_mu_);
   if (concurrent_dials_ > 0) {
     --concurrent_dials_;
   }
@@ -613,10 +654,12 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, LinkRoe result) {
 }
 
 void PeerLinkManager::ClearDialBackoff(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
   dial_failed_until_.erase(peer_key);
 }
 
 void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
   dial_failed_until_.erase(peer_key);
   last_error_.erase(peer_key);
 
@@ -653,6 +696,7 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
 }
 
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
+  std::lock_guard lock(strand_mu_);
   if (links_.size() >= config_.max_links) {
     return;
   }
@@ -670,6 +714,7 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
 }
 
 void PeerLinkManager::RekeyLink(const std::string& from_key, const std::string& to_key) {
+  std::lock_guard lock(strand_mu_);
   if (from_key == to_key) {
     return;
   }
@@ -697,6 +742,7 @@ void PeerLinkManager::RekeyLink(const std::string& from_key, const std::string& 
 }
 
 void PeerLinkManager::StartCapabilityExchange(PeerLink& link) {
+  std::lock_guard lock(strand_mu_);
   if (!link.Mux()) {
     return;
   }
@@ -719,6 +765,7 @@ void PeerLinkManager::StartCapabilityExchange(PeerLink& link) {
 }
 
 void PeerLinkManager::OnCh0Data(const std::string& peer_key, std::vector<uint8_t> payload) {
+  std::lock_guard lock(strand_mu_);
   if (SessionControlCodec::LooksLike(payload)) {
     if (auto* link = FindLink(peer_key)) {
       link->HandleSessionControl(payload);
@@ -729,6 +776,7 @@ void PeerLinkManager::OnCh0Data(const std::string& peer_key, std::vector<uint8_t
 }
 
 void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<uint8_t> payload) {
+  std::lock_guard lock(strand_mu_);
   auto* link = FindLink(peer_key);
   if (!link || !link->Mux()) {
     return;
@@ -761,6 +809,7 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
 }
 
 void PeerLinkManager::IngestRemoteCapabilityAddrs(PeerLink& link, const CapabilityPayload& remote) {
+  std::lock_guard lock(strand_mu_);
   // Trust MSH-authenticated PeerId over self-asserted capability peer id.
   const std::string peer_id = !link.RemotePeerId().empty() ? link.RemotePeerId() : remote.local_peer_id;
   if (peer_id.empty()) {
@@ -800,24 +849,28 @@ void PeerLinkManager::IngestRemoteCapabilityAddrs(PeerLink& link, const Capabili
 }
 
 void PeerLinkManager::MarkWarm(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
   if (auto* link = FindLink(peer_key)) {
     link->MarkWarm();
   }
 }
 
 void PeerLinkManager::MarkHot(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
   if (auto* link = FindLink(peer_key)) {
     link->MarkHot();
   }
 }
 
 void PeerLinkManager::ClearWarm(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
   if (auto* link = FindLink(peer_key)) {
     link->ClearWarm();
   }
 }
 
 void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
+  std::lock_guard lock(strand_mu_);
   for (auto& [_, link] : links_) {
     if (link->Phase() != PeerLinkPhase::Connected || link->IsCarrierBacked() || !link->IsOutbound()) {
       continue;
@@ -839,6 +892,7 @@ void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
 }
 
 void PeerLinkManager::Tick() {
+  std::lock_guard lock(strand_mu_);
   if (!pending_drop_keys_.empty()) {
     auto pending = std::move(pending_drop_keys_);
     pending_drop_keys_.clear();
@@ -910,6 +964,7 @@ void PeerLinkManager::Tick() {
 }
 
 void PeerLinkManager::EnableNestedCarrierAccept(const bool enable, std::string protocol_id) {
+  std::lock_guard lock(strand_mu_);
   if (!nested_carrier_protocol_id_.empty()) {
     RemoveProtocolHandler(nested_carrier_protocol_id_);
   }
@@ -931,6 +986,7 @@ void PeerLinkManager::EnableNestedCarrierAccept(const bool enable, std::string p
 void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
                                                  std::shared_ptr<ChannelSession> carrier, const bool initiator,
                                                  LinkCb on_complete) {
+  std::lock_guard lock(strand_mu_);
   if (peer_key.empty() || !carrier) {
     if (on_complete) {
       on_complete(LinkRoe::error(Failure::Of(Err::NestedCarrierIncomplete, "amp link: nested carrier incomplete")));
@@ -972,6 +1028,7 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
 }
 
 void PeerLinkManager::FinishNestedCarrier(const std::string& provisional_key, LinkRoe result) {
+  std::lock_guard lock(strand_mu_);
   auto* link = FindLink(provisional_key);
   if (result && link && !link->RemotePeerId().empty() && link->RemotePeerId() != provisional_key) {
     PeerLink* adp = nullptr;
@@ -1019,6 +1076,7 @@ void PeerLinkManager::FinishNestedCarrier(const std::string& provisional_key, Li
 }
 
 void PeerLinkManager::HandleInboundCarrierChannel(PeerLink& via_link, const uint32_t channel_id) {
+  std::lock_guard lock(strand_mu_);
   if (!nested_carrier_accept_ || !via_link.Mux()) {
     return;
   }
@@ -1037,6 +1095,11 @@ void PeerLinkManager::HandleInboundCarrierChannel(PeerLink& via_link, const uint
   }
 
   EstablishNestedOverCarrier(provisional, std::move(carrier), false, {});
+}
+
+size_t PeerLinkManager::CountLinks() const {
+  std::lock_guard lock(strand_mu_);
+  return links_.size();
 }
 
 } // namespace pp::amp

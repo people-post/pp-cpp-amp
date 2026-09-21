@@ -21,7 +21,8 @@ namespace pp::amp {
  * Pump/Tick/Drive/PostToIo are serialized (recursive_mutex): product may pump from the
  * coordinator Tick and from worker Connect wait loops without data races.
  * Off-strand PeerLinkManager access must use WithIoLock (same mutex) — Links() alone is
- * not thread-safe against Drive.
+ * not thread-safe against Drive. PeerLinkManager locks the same strand mutex on every
+ * public method when constructed via MeshRuntime.
  */
 class MeshRuntime {
 public:
@@ -87,6 +88,8 @@ private:
   };
 
   adp::Endpoint& endpoint_;
+  /** Declared before links_ so PeerLinkManager can share this mutex with Drive/WithIoLock. */
+  mutable std::recursive_mutex io_mu_;
   PeerLinkManager links_;
   MeshPump pump_;
   std::deque<IoTask> io_queue_;
@@ -94,7 +97,6 @@ private:
   IoTickId next_io_tick_id_ = 1;
   bool started_ = false;
   bool pumping_ = false;
-  mutable std::recursive_mutex io_mu_;
 };
 
 } // namespace pp::amp
