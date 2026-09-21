@@ -507,7 +507,8 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
   book_.IncConcurrentDials();
   inflight_associations_[peer_key].push_back(std::move(on_complete));
 
-  auto link = std::make_unique<PeerLink>(peer_key, ep_it->second.peer_id, true, *opened, local_identity_, *this);
+  auto link = std::make_unique<PeerLink>(peer_key, ep_it->second.peer_id, true, *opened, local_identity_,
+                                         MakeHostPorts());
   link->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
     FinishDial(peer_key, WrapPeerLinkResult(result));
   });
@@ -698,7 +699,8 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
   if (table_.LegacyDialMap().contains(peer_key)) {
     return;
   }
-  auto link = std::make_unique<PeerLink>(peer_key, std::string{}, false, std::move(connection), local_identity_, *this);
+  auto link = std::make_unique<PeerLink>(peer_key, std::string{}, false, std::move(connection), local_identity_,
+                                         MakeHostPorts());
   AssignLinkIdentity(*link);
   link->StartInboundHandshake({});
   table_.LegacyDialMap()[peer_key] = std::move(link);
@@ -723,7 +725,7 @@ void PeerLinkManager::RekeyLink(const std::string& from_key, const std::string& 
   if (node.empty()) {
     return;
   }
-  node.mapped()->SetPeerKey(to_key);
+  node.mapped()->RebindDialKey(to_key);
   if (!node.mapped()->RemotePeerId().empty()) {
     peer_id_to_key_[node.mapped()->RemotePeerId()] = to_key;
   }
@@ -779,7 +781,7 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
   }
 
   const bool first = link->RemoteCapability() == nullptr;
-  link->SetRemoteCapability(*decoded);
+  link->ApplyRemoteCapability(*decoded);
 
   // Inbound peer replies once with local caps on the same ch0.
   if (!link->CapabilityOfferSent()) {
@@ -1008,7 +1010,8 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
   }
 
   inflight_associations_[peer_key].push_back(std::move(on_complete));
-  auto link = std::make_unique<PeerLink>(peer_key, peer_key, initiator, std::move(carrier), local_identity_, *this);
+  auto link = std::make_unique<PeerLink>(peer_key, peer_key, initiator, std::move(carrier), local_identity_,
+                                         MakeHostPorts());
   if (initiator) {
     link->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
       FinishNestedCarrier(peer_key, WrapPeerLinkResult(result));
@@ -1097,6 +1100,23 @@ size_t PeerLinkManager::CountLinks() const {
   return table_.LegacyDialMap().size();
 }
 
+PeerLinkHostPorts PeerLinkManager::MakeHostPorts() {
+  return PeerLinkHostPorts{
+      .now_ms = [this]() { return endpoint_.GetClock().NowMs(); },
+      .derive_peer_id = [this](const ByteVector& pk) { return DeriveRemotePeerId(pk); },
+      .on_established = [this](PeerLink& link) { return OnLinkEstablished(link); },
+      .schedule_drop = [this](std::string key) { ScheduleDropLink(std::move(key)); },
+      .schedule_adopt_alias =
+          [this](std::string remote, std::string alias) {
+            ScheduleAdoptDialAlias(std::move(remote), std::move(alias));
+          },
+      .has_other_connected =
+          [this](const std::string& remote) {
+            return FindAnyConnectedLinkForRemotePeerId(remote) != nullptr;
+          },
+  };
+}
+
 void PeerLinkManager::SetCompletionPoster(CompletionPoster poster) {
   std::lock_guard lock(strand_mu_);
   completion_poster_ = std::move(poster);
@@ -1116,7 +1136,7 @@ void PeerLinkManager::PostCompletion(std::function<void()> fn) {
 
 void PeerLinkManager::AssignLinkIdentity(PeerLink& link) {
   if (!link.Id().valid()) {
-    link.AssignIdentity(table_.AllocId(), table_.NextGeneration());
+    link.SetLinkIdentity(table_.AllocId(), table_.NextGeneration());
   }
 }
 

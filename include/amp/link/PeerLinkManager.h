@@ -170,9 +170,10 @@ public:
 
   void Tick();
 
-private:
-  friend class PeerLink;
+  /** Project manager capabilities into PeerLink's host ports (composition root). */
+  PeerLinkHostPorts MakeHostPorts();
 
+private:
   void InstallAcceptHandler();
   void OnInboundConnection(std::shared_ptr<adp::Connection> connection);
   bool OnLinkEstablished(PeerLink& link);

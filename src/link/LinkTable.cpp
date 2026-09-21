@@ -38,7 +38,7 @@ PeerLink& LinkTable::Insert(std::unique_ptr<PeerLink> link) {
   const DialKey key = link->PeerKey();
   const LinkId id = AllocId();
   const uint32_t gen = NextGeneration();
-  link->AssignIdentity(id, gen);
+  link->SetLinkIdentity(id, gen);
   PeerLink* raw = link.get();
   by_id_[id] = raw;
   by_dial_key_[key] = id;
@@ -88,7 +88,7 @@ bool LinkTable::BindDialKey(LinkId id, DialKey key) {
     return false;
   }
   by_dial_key_.erase(from);
-  link->SetPeerKey(key);
+  link->RebindDialKey(key);
   node.key() = key;
   legacy_dial_.insert(std::move(node));
   by_dial_key_[key] = id;
@@ -140,7 +140,7 @@ void LinkTable::SyncIndexesFromLegacy() {
       continue;
     }
     if (!link->Id().valid()) {
-      link->AssignIdentity(AllocId(), NextGeneration());
+      link->SetLinkIdentity(AllocId(), NextGeneration());
     }
     by_id_[link->Id()] = link.get();
     by_dial_key_[key] = link->Id();

@@ -9,7 +9,9 @@
 #include "amp/link/MshAdpHandshake.h"
 #include "amp/link/Types.h"
 #include "amp/L2/Session.h"
+#include "amp/L2/Types.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -19,8 +21,30 @@
 
 namespace pp::amp {
 
-class PeerLinkManager;
-class LinkTable;
+class PeerLink;
+
+/**
+ * Host ports PeerLink needs — owned by the consumer (PeerLink), installed by the
+ * composition root (PeerLinkManager). Speaks link needs, not manager types.
+ * Same idea as pp-browser COMPOSITION_VOCABULARY: lower peer must not `#include` higher.
+ */
+struct PeerLinkHostPorts {
+  /** Wall/clock for handshake start and mux timers. */
+  std::function<int64_t()> now_ms;
+  /** Derive authenticated PeerId from MSH identity public key (empty → fingerprint fallback). */
+  std::function<std::string(const ByteVector& identity_public_key)> derive_peer_id;
+  /**
+   * After mux attach: return false if this link lost dual-dial election and must demote.
+   * Host schedules drop; PeerLink does not call DropLink itself.
+   */
+  std::function<bool(PeerLink& link)> on_established;
+  /** Request parent erase after stack unwinds (A027). */
+  std::function<void(std::string dial_key)> schedule_drop;
+  /** Dual-dial: adopt dial alias onto surviving Connected link. */
+  std::function<void(std::string remote_peer_id, std::string dial_alias)> schedule_adopt_alias;
+  /** True if another Connected Session already exists for remote PeerId. */
+  std::function<bool(const std::string& remote_peer_id)> has_other_connected;
+};
 
 /** One ADP association + AMP session + channel mux to a remote peer. Io-thread affine.
  *  Carrier-backed links ([A024]) use a bridged ChannelSession instead of ADP Connection. */
@@ -46,12 +70,12 @@ public:
   using LinkRoe = CodedRoe<void, Err>;
   using CompleteCb = std::function<void(LinkRoe)>;
 
-  PeerLink(std::string peer_key, std::string remote_peer_id, const bool outbound,
-           std::shared_ptr<adp::Connection> connection, MshIdentity local_identity, PeerLinkManager& owner);
+  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound,
+           std::shared_ptr<adp::Connection> connection, MshIdentity local_identity, PeerLinkHostPorts host);
 
   /** Nested Session over circuit carrier (no ADP Connection). */
-  PeerLink(std::string peer_key, std::string remote_peer_id, const bool outbound,
-           std::shared_ptr<ChannelSession> carrier, MshIdentity local_identity, PeerLinkManager& owner);
+  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound,
+           std::shared_ptr<ChannelSession> carrier, MshIdentity local_identity, PeerLinkHostPorts host);
 
   ~PeerLink();
 
@@ -94,32 +118,27 @@ public:
   int64_t LastKeepaliveTxMs() const { return last_keepalive_tx_ms_; }
   void SetLastKeepaliveTxMs(int64_t ms) { last_keepalive_tx_ms_ = ms; }
 
-  /** Wire-coordinated session rekey on channel 0 (after capability exchange). */
   void RequestSessionRekey(std::function<void(Roe<void>)> on_complete);
-
   void HandleSessionControl(std::span<const uint8_t> payload);
 
   int64_t HandshakeStartedMs() const { return handshake_started_ms_; }
   void FailHandshakeTimeout();
-
-  /** Dual-dial / scheduled-drop demotion — manager schedules erase; link owns phase_. */
   void DemoteForScheduledDrop();
 
-private:
-  friend class PeerLinkManager;
-  friend class LinkTable;
-
-  void AssignIdentity(LinkId id, uint32_t generation) {
+  /** Index / table ops — public so LinkTable needs no friendship into PeerLink. */
+  void SetLinkIdentity(LinkId id, uint32_t generation) {
     link_id_ = id;
     generation_ = generation;
   }
-  void SetPeerKey(std::string peer_key) { peer_key_ = std::move(peer_key); }
-  void SetRemoteCapability(CapabilityPayload payload) { remote_capability_ = std::move(payload); }
+  void RebindDialKey(std::string peer_key) { peer_key_ = std::move(peer_key); }
+
+  void ApplyRemoteCapability(CapabilityPayload payload) { remote_capability_ = std::move(payload); }
   bool CapabilityExchangeStarted() const { return capability_exchange_started_; }
   void MarkCapabilityExchangeStarted() { capability_exchange_started_ = true; }
   bool CapabilityOfferSent() const { return capability_offer_sent_; }
   void MarkCapabilityOfferSent() { capability_offer_sent_ = true; }
 
+private:
   Roe<void> SendAdp(std::vector<uint8_t> payload, adp::QosClass qos);
   LinkRoe SendAdpLink(std::vector<uint8_t> payload, adp::QosClass qos);
   LinkRoe SendCarrierWire(std::vector<uint8_t> payload);
@@ -143,7 +162,7 @@ private:
   std::shared_ptr<adp::Connection> connection_;
   std::shared_ptr<ChannelSession> carrier_;
   MshIdentity identity_;
-  PeerLinkManager& owner_;
+  PeerLinkHostPorts host_;
   PeerLinkPhase phase_ = PeerLinkPhase::Handshaking;
   KeepaliveTier keepalive_tier_ = KeepaliveTier::None;
   int64_t last_keepalive_tx_ms_ = 0;
