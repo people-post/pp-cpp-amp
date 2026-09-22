@@ -168,6 +168,11 @@ Roe<void> MeshRuntime::RegisterEndpoint(const DialKey& peer_key, const std::stri
   return links_.RegisterEndpoint(peer_key, multiaddr);
 }
 
+Roe<void> MeshRuntime::RegisterEndpoints(const DialKey& peer_key,
+                                         const std::vector<std::string>& multiaddrs) {
+  return links_.RegisterEndpoints(peer_key, multiaddrs);
+}
+
 std::optional<std::string> MeshRuntime::PreferredMultiaddr(const std::string& peer_id) const {
   return links_.PreferredMultiaddr(peer_id);
 }

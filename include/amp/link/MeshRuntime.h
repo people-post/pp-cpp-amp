@@ -89,6 +89,7 @@ public:
   bool IsConnectedToPeerId(const std::string& peer_id) const;
   bool IsReachable(const std::string& peer_id) const;
   Roe<void> RegisterEndpoint(const DialKey& peer_key, const std::string& multiaddr);
+  Roe<void> RegisterEndpoints(const DialKey& peer_key, const std::vector<std::string>& multiaddrs);
   std::optional<std::string> PreferredMultiaddr(const std::string& peer_id) const;
 
   void SetProtocolHandler(const std::string& protocol_id, PeerLinkManager::ProtocolHandler handler);

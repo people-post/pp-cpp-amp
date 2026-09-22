@@ -9,6 +9,7 @@
 #include "amp/L2/SessionControl.h"
 #include "amp/link/Types.h"
 
+#include <algorithm>
 #include <iterator>
 
 namespace pp::amp {
@@ -126,6 +127,12 @@ void PeerLinkManager::InstallAcceptHandler() {
 Roe<void> PeerLinkManager::RegisterEndpoint(const std::string& peer_key, const std::string& multiaddr) {
   std::lock_guard lock(strand_mu_);
   return book_.RegisterEndpoint(peer_key, multiaddr);
+}
+
+Roe<void> PeerLinkManager::RegisterEndpoints(const std::string& peer_key,
+                                             const std::vector<std::string>& multiaddrs) {
+  std::lock_guard lock(strand_mu_);
+  return book_.RegisterEndpoints(peer_key, multiaddrs);
 }
 
 PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) {
@@ -477,6 +484,52 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
     return;
   }
 
+  book_.ResetDialIndex(peer_key);
+  inflight_associations_[peer_key].push_back(std::move(on_complete));
+  BeginOutboundDialLocked(peer_key);
+}
+
+void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
+  const auto ep_it = book_.Endpoints().find(peer_key);
+  if (ep_it == book_.Endpoints().end()) {
+    auto waiters = std::move(inflight_associations_[peer_key]);
+    inflight_associations_.erase(peer_key);
+    PostCompletion([waiters = std::move(waiters)]() mutable {
+      for (auto& waiter : waiters) {
+        if (waiter) {
+          waiter(LinkRoe::error(Failure::Of(Err::EndpointNotRegistered, "amp link: peer endpoint not registered")));
+        }
+      }
+    });
+    return;
+  }
+
+  if (book_.ConcurrentDials() >= book_.Config().max_concurrent_dials) {
+    auto waiters = std::move(inflight_associations_[peer_key]);
+    inflight_associations_.erase(peer_key);
+    PostCompletion([waiters = std::move(waiters)]() mutable {
+      for (auto& waiter : waiters) {
+        if (waiter) {
+          waiter(LinkRoe::error(Failure::Of(Err::TooManyConcurrentDials, "amp link: too many concurrent dials")));
+        }
+      }
+    });
+    return;
+  }
+
+  if (table_.size() >= book_.Config().max_links) {
+    auto waiters = std::move(inflight_associations_[peer_key]);
+    inflight_associations_.erase(peer_key);
+    PostCompletion([waiters = std::move(waiters)]() mutable {
+      for (auto& waiter : waiters) {
+        if (waiter) {
+          waiter(LinkRoe::error(Failure::Of(Err::MaxLinksReached, "amp link: max links reached")));
+        }
+      }
+    });
+    return;
+  }
+
   adp::OpenParams params;
   params.key = PreSessionPeerKey();
   params.mint_id = true;
@@ -489,14 +542,19 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
     opened = endpoint_.Open(params);
   }
   if (!opened) {
-    if (on_complete) {
-      on_complete(LinkRoe::error(Failure::Of(Err::TransportFailed, opened.error().message)));
-    }
+    auto waiters = std::move(inflight_associations_[peer_key]);
+    inflight_associations_.erase(peer_key);
+    PostCompletion([waiters = std::move(waiters), msg = opened.error().message]() mutable {
+      for (auto& waiter : waiters) {
+        if (waiter) {
+          waiter(LinkRoe::error(Failure::Of(Err::TransportFailed, msg)));
+        }
+      }
+    });
     return;
   }
 
   book_.IncConcurrentDials();
-  inflight_associations_[peer_key].push_back(std::move(on_complete));
 
   auto link = std::make_unique<PeerLink>(peer_key, ep_it->second.peer_id, true, *opened, local_identity_,
                                          MakeHostPorts());
@@ -607,27 +665,43 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, LinkRoe result) {
     const bool suppress_backoff = suppress_dial_backoff_.erase(peer_key) > 0;
     if (!result) {
       last_error_[peer_key] = result.error();
-      if (!suppress_backoff) {
-        book_.ArmBackoff(peer_key);
+      // B15/B28: try the next DialBook candidate before arming long backoff / failing waiters.
+      // Defer DropLink + redial to Tick — destroying the PeerLink inside its handshake cb segfaults.
+      if (!suppress_backoff && book_.AdvanceDialCandidate(peer_key)) {
+        ScheduleDropLink(peer_key);
+        pending_candidate_retry_.push_back(peer_key);
+      } else {
+        book_.ResetDialIndex(peer_key);
+        if (!suppress_backoff) {
+          book_.ArmBackoff(peer_key);
+        }
+        ScheduleDropLink(peer_key);
+        waiters = std::move(inflight_associations_[peer_key]);
+        inflight_associations_.erase(peer_key);
       }
-      ScheduleDropLink(peer_key);
     } else {
       last_error_.erase(peer_key);
+      if (auto* rec = book_.Find(peer_key)) {
+        book_.PromoteDialWinner(peer_key, rec->multiaddr);
+      } else {
+        book_.ResetDialIndex(peer_key);
+      }
       if (auto* link = FindLink(peer_key)) {
         RefreshPresence(*link);
       }
+      waiters = std::move(inflight_associations_[peer_key]);
+      inflight_associations_.erase(peer_key);
     }
-
-    waiters = std::move(inflight_associations_[peer_key]);
-    inflight_associations_.erase(peer_key);
   }
-  PostCompletion([waiters = std::move(waiters), result]() mutable {
-    for (auto& waiter : waiters) {
-      if (waiter) {
-        waiter(result);
+  if (!waiters.empty()) {
+    PostCompletion([waiters = std::move(waiters), result]() mutable {
+      for (auto& waiter : waiters) {
+        if (waiter) {
+          waiter(result);
+        }
       }
-    }
-  });
+    });
+  }
 }
 
 void PeerLinkManager::ClearDialBackoff(const std::string& peer_key) {
@@ -639,6 +713,9 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   book_.ClearBackoff(peer_key);
   last_error_.erase(peer_key);
+  pending_candidate_retry_.erase(
+      std::remove(pending_candidate_retry_.begin(), pending_candidate_retry_.end(), peer_key),
+      pending_candidate_retry_.end());
 
   std::vector<LinkCb> waiters;
   if (auto it = inflight_associations_.find(peer_key); it != inflight_associations_.end()) {
@@ -848,6 +925,15 @@ void PeerLinkManager::Tick() {
       DropLink(key);
     }
   }
+  if (!pending_candidate_retry_.empty()) {
+    auto retries = std::move(pending_candidate_retry_);
+    pending_candidate_retry_.clear();
+    for (const auto& key : retries) {
+      if (inflight_associations_.contains(key)) {
+        BeginOutboundDialLocked(key);
+      }
+    }
+  }
   if (!pending_alias_adopt_.empty()) {
     auto pending = std::move(pending_alias_adopt_);
     pending_alias_adopt_.clear();
@@ -862,6 +948,7 @@ void PeerLinkManager::Tick() {
 
   const int64_t now = endpoint_.GetClock().NowMs();
   const int64_t dial_timeout_ms = book_.Config().dial_timeout.count();
+  const int64_t dial_attempt_ms = book_.Config().dial_attempt_timeout.count();
   std::vector<std::string> timed_out;
   table_.ForEach([&](PeerLink& link) {
     if (link.IsCarrierBacked()) {
@@ -871,7 +958,15 @@ void PeerLinkManager::Tick() {
     if (phase != PeerLinkPhase::Handshaking && phase != PeerLinkPhase::Dialing) {
       return;
     }
-    if (link.HandshakeStartedMs() > 0 && now - link.HandshakeStartedMs() > dial_timeout_ms) {
+    if (link.HandshakeStartedMs() <= 0) {
+      return;
+    }
+    int64_t budget = dial_timeout_ms;
+    if (const auto* rec = book_.Find(link.PeerKey());
+        rec && rec->dial_index + 1 < rec->candidates.size() && dial_attempt_ms > 0) {
+      budget = std::min(budget, dial_attempt_ms);
+    }
+    if (now - link.HandshakeStartedMs() > budget) {
       timed_out.push_back(link.PeerKey());
     }
   });
