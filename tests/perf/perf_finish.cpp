@@ -117,7 +117,10 @@ bool RunD3(const int warmup, const int iters) {
     return false;
   }
   auto& h = **created;
+  // Keep both ends hot: cold idle DropLink sends ADP Close (B21); B25 then evicts a
+  // hot/warm link whose Connection is already closed — keepalives would stop after ~1 slot.
   h.mgr_a().MarkHot("b");
+  h.mgr_b().MarkHot("a");
   auto* link = h.mgr_a().FindLink("b");
   if (!link) {
     return false;
@@ -158,6 +161,7 @@ bool RunD3(const int warmup, const int iters) {
   }
   auto& hw = **created_w;
   hw.mgr_a().MarkWarm("b");
+  hw.mgr_b().MarkWarm("a");
   auto* link_w = hw.mgr_a().FindLink("b");
   if (!link_w) {
     return false;

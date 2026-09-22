@@ -63,6 +63,20 @@ TEST_F(AdpConnTest, ReplayWindowBasics) {
   EXPECT_FALSE(w.Accept(2));
 }
 
+TEST_F(AdpConnTest, ReplayWindowStrictRejectsFarGap) {
+  pp::adp::ReplayWindow w(8, /*slide_on_gap=*/false);
+  EXPECT_TRUE(w.Accept(1));
+  EXPECT_FALSE(w.Accept(1 + 8 + 1));  // beyond window, no slide
+}
+
+TEST_F(AdpConnTest, ReplayWindowSlideAcceptsFarGap) {
+  pp::adp::ReplayWindow w(8, /*slide_on_gap=*/true);
+  EXPECT_TRUE(w.Accept(1));
+  EXPECT_TRUE(w.Accept(1 + 8 + 5));  // beyond window: slide and accept
+  EXPECT_EQ(w.LastContiguous(), 1u + 8 + 5);
+  EXPECT_TRUE(w.Accept(1 + 8 + 6));
+}
+
 TEST_F(AdpConnTest, BestEffortDeliver) {
   auto p = MakePair();
   p.ep_b->SetAcceptKey(Key());

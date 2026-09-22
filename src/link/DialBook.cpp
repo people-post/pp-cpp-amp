@@ -11,7 +11,13 @@ Roe<void> DialBook::RegisterEndpoint(const DialKey& peer_key, const std::string&
   rec.multiaddr = multiaddr;
   rec.endpoint = parsed->endpoint;
   rec.peer_id = parsed->peer_id.empty() ? peer_key : parsed->peer_id;
+  const auto* existing = Find(peer_key);
+  const bool changed = !existing || existing->multiaddr != multiaddr;
   endpoints_[peer_key] = std::move(rec);
+  // Fresh dial target must not stay blocked by a prior miss on a stale address (B14).
+  if (changed) {
+    ClearBackoff(peer_key);
+  }
   return {};
 }
 
