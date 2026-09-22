@@ -99,8 +99,16 @@ bool Connection::AcceptSkew(uint32_t ts, int64_t now_ms) const {
 }
 
 void Connection::MaybeLearnPath(const IpEndpoint& from) {
-  if (peer_.port == 0 && peer_.addr[0] == 0 && peer_.addr[1] == 0 && peer_.addr[2] == 0 &&
-      peer_.addr[3] == 0) {
+  // Unspecified address (0.0.0.0 / ::) is never dialable regardless of port (A4 / B3).
+  const size_t n = peer_.family == IpEndpoint::Family::V4 ? 4 : 16;
+  bool unspecified = true;
+  for (size_t i = 0; i < n; ++i) {
+    if (peer_.addr[i] != 0) {
+      unspecified = false;
+      break;
+    }
+  }
+  if (unspecified) {
     SetPeerEndpoint(from);
     return;
   }
