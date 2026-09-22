@@ -18,6 +18,11 @@ PeerLink* DualDialElector::Elect(PeerLink& existing, PeerLink& candidate, const 
   if (candidate.IsOutbound() && !existing.IsOutbound()) {
     return &existing;
   }
+  // Both inbound (or both outbound without keep-out): prefer the newer candidate so a redial
+  // after silent peer eviction can replace a stale inbound link (LAN B21 / field duplicate ESTABLISH).
+  if (!existing.IsOutbound() && !candidate.IsOutbound()) {
+    return &candidate;
+  }
   return &existing;
 }
 

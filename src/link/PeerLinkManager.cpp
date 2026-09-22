@@ -192,6 +192,15 @@ void PeerLinkManager::DropLink(const std::string& peer_key) {
   if (!link) {
     return;
   }
+  // Tell the peer to evict too — silent local-only drop left the far side holding a zombie
+  // inbound that rejected redial as "ESTABLISH rejected (duplicate)" (LAN B21).
+  if (!link->IsCarrierBacked()) {
+    if (auto* conn = link->ConnectionOrNull()) {
+      if (!conn->IsClosed()) {
+        conn->Close();
+      }
+    }
+  }
   if (link->Carrier()) {
     // Nested link: unbind from outer Mux while that Mux is still alive.
     link->Carrier()->ReleaseHandlers();

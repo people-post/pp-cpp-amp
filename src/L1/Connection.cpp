@@ -12,7 +12,8 @@ namespace pp::adp {
 
 Connection::Connection(Endpoint& endpoint, OpenParams params)
     : endpoint_(&endpoint), id_(params.id), binder_(params.key), peer_(params.peer),
-      params_(std::move(params)), rx_be_(params_.replay_window), rx_rel_(params_.replay_window) {}
+      params_(std::move(params)), rx_be_(params_.replay_window, /*slide_on_gap=*/true),
+      rx_rel_(params_.replay_window, /*slide_on_gap=*/false) {}
 
 Connection::Roe<std::shared_ptr<Connection>> Connection::Open(Endpoint& endpoint, OpenParams params) {
   if (params.mint_id) {
