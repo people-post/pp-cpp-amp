@@ -723,6 +723,7 @@ TEST_F(AmpIntegrationTest, AdversarialFragPartialBombAdv08) {
   ASSERT_TRUE(h.PumpUntilReceived(received, [&] { return received == msg; }));
 
   h.mgr_a().MarkWarm("b");
+  h.mgr_b().MarkWarm("a");
   h.AdvanceMs(pp::amp::kDefaultFragAssemblyTimeoutMs + 100);
   h.PumpBudget(5);
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
@@ -745,6 +746,7 @@ TEST_F(AmpIntegrationTest, WarmLinkSurvivesIdle) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
   h.mgr_a().MarkWarm("b");
+  h.mgr_b().MarkWarm("a");
   h.AdvanceMs(pp::adp::kAliveTimeoutMs + 500);
   h.PumpBudget(10);
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
@@ -755,7 +757,10 @@ TEST_F(AmpIntegrationTest, OutboundWarmKeepaliveRefreshesAssociation) {
   ASSERT_TRUE(static_cast<bool>(created));
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
+  // Both ends must be warm: cold idle DropLink now sends ADP Close (B21), and B25
+  // evicts a warm link whose Connection is already closed.
   h.mgr_a().MarkWarm("b");
+  h.mgr_b().MarkWarm("a");
   auto* outbound = h.mgr_a().FindLink("b");
   ASSERT_NE(outbound, nullptr);
   auto* conn = outbound->ConnectionOrNull();
