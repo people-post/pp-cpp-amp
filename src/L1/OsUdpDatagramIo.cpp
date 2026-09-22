@@ -23,7 +23,23 @@ using socklen_t = int;
 namespace pp::adp {
 namespace {
 
-Error IoErr(const char* what) { return Error(std::string("adp udp: ") + what); }
+Error IoErr(const char* what) {
+#if defined(_WIN32)
+  const int err = WSAGetLastError();
+#else
+  const int err = errno;
+#endif
+  return Error(std::string("adp udp: ") + what + " errno=" + std::to_string(err));
+}
+
+std::string EndpointLabel(const IpEndpoint& ep) {
+  char buf[INET6_ADDRSTRLEN] = {};
+  const int af = ep.family == IpEndpoint::Family::V4 ? AF_INET : AF_INET6;
+  if (::inet_ntop(af, ep.addr.data(), buf, sizeof(buf)) == nullptr) {
+    return "?:" + std::to_string(ep.port);
+  }
+  return std::string(buf) + ":" + std::to_string(ep.port);
+}
 
 bool ToSockAddr(const IpEndpoint& ep, sockaddr_storage& ss, socklen_t& len) {
   std::memset(&ss, 0, sizeof(ss));
@@ -49,9 +65,14 @@ IpEndpoint FromSockAddr(const sockaddr_storage& ss) {
     const auto* bytes = reinterpret_cast<const uint8_t*>(&a->sin_addr);
     return IpEndpoint::V4(bytes[0], bytes[1], bytes[2], bytes[3], ntohs(a->sin_port));
   }
+  const auto* a = reinterpret_cast<const sockaddr_in6*>(&ss);
+  // Dual-stack (::) sockets deliver IPv4 peers as v4-mapped; keep the dial book in V4 form.
+  if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr)) {
+    const auto* b = reinterpret_cast<const uint8_t*>(&a->sin6_addr) + 12;
+    return IpEndpoint::V4(b[0], b[1], b[2], b[3], ntohs(a->sin6_port));
+  }
   IpEndpoint e;
   e.family = IpEndpoint::Family::V6;
-  const auto* a = reinterpret_cast<const sockaddr_in6*>(&ss);
   std::memcpy(e.addr.data(), &a->sin6_addr, 16);
   e.port = ntohs(a->sin6_port);
   return e;
@@ -138,12 +159,31 @@ Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& lo
 Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_t> datagram) {
   sockaddr_storage ss{};
   socklen_t len = 0;
-  ToSockAddr(peer, ss, len);
+  if (local_.family == IpEndpoint::Family::V6 && peer.family == IpEndpoint::Family::V4) {
+    // Dual-stack socket: an AF_INET sockaddr is rejected (EINVAL on Darwin); send to ::ffff:a.b.c.d.
+    std::memset(&ss, 0, sizeof(ss));
+    auto* a6 = reinterpret_cast<sockaddr_in6*>(&ss);
+    a6->sin6_family = AF_INET6;
+    a6->sin6_port = htons(peer.port);
+    a6->sin6_addr.s6_addr[10] = 0xff;
+    a6->sin6_addr.s6_addr[11] = 0xff;
+    std::memcpy(&a6->sin6_addr.s6_addr[12], peer.addr.data(), 4);
+    len = sizeof(sockaddr_in6);
+  } else {
+    ToSockAddr(peer, ss, len);
+  }
   const auto n = ::sendto(fd_, reinterpret_cast<const char*>(datagram.data()),
                           static_cast<int>(datagram.size()), 0, reinterpret_cast<sockaddr*>(&ss),
                           len);
   if (n < 0 || static_cast<size_t>(n) != datagram.size()) {
-    return IoErr("sendto");
+    return Error(std::string("adp udp: sendto dst=") + EndpointLabel(peer) + " src=" +
+                 EndpointLabel(local_) +
+#if defined(_WIN32)
+                 " errno=" + std::to_string(WSAGetLastError())
+#else
+                 " errno=" + std::to_string(errno)
+#endif
+    );
   }
   return {};
 }

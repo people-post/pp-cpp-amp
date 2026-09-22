@@ -896,7 +896,10 @@ void PeerLinkManager::Tick() {
       return;
     }
     auto* conn = link.ConnectionOrNull();
-    if (conn && !conn->LooksAlive(now) && !link.IsWarm() && link.Phase() == PeerLinkPhase::Connected) {
+    // A closed ADP association is dead whatever the keepalive tier (B25): after a network
+    // change the link object can stay Connected+Warm while Connection is already closed.
+    if (conn && link.Phase() == PeerLinkPhase::Connected &&
+        (conn->IsClosed() || (!conn->LooksAlive(now) && !link.IsWarm()))) {
       evict.push_back(link.PeerKey());
     }
   });
