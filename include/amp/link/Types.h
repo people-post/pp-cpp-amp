@@ -55,6 +55,8 @@ struct PeerLinkConfig {
   size_t max_links = 48;
   size_t max_concurrent_dials = 6;
   std::chrono::milliseconds dial_timeout{8000};
+  /** Per-candidate handshake budget when DialBook has further fallbacks (B15/B28). */
+  std::chrono::milliseconds dial_attempt_timeout{800};
   std::chrono::milliseconds idle_ttl{180000};
   std::chrono::milliseconds dial_failure_backoff{30000};
   /** Outbound keepalive interval for MarkHot links (NAT refresh). */

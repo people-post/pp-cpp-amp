@@ -73,6 +73,8 @@ struct IpEndpoint {
   Family family = Family::V4;
   std::array<uint8_t, 16> addr{};
   uint16_t port = 0;
+  /** IPv6 interface scope (sin6_scope_id). Meaningful for fe80::/10; 0 otherwise (A3). */
+  uint32_t scope_id = 0;
 
   static IpEndpoint V4(uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint16_t port) {
     IpEndpoint e;
@@ -85,16 +87,20 @@ struct IpEndpoint {
     return e;
   }
 
-  static IpEndpoint V6(const std::array<uint8_t, 16>& bytes, uint16_t port) {
+  static IpEndpoint V6(const std::array<uint8_t, 16>& bytes, uint16_t port, uint32_t scope_id = 0) {
     IpEndpoint e;
     e.family = Family::V6;
     e.addr = bytes;
     e.port = port;
+    e.scope_id = scope_id;
     return e;
   }
 
   bool operator==(const IpEndpoint& o) const {
     if (family != o.family || port != o.port) {
+      return false;
+    }
+    if (family == Family::V6 && scope_id != o.scope_id) {
       return false;
     }
     const size_t n = family == Family::V4 ? 4 : 16;
@@ -106,6 +112,8 @@ struct IpEndpoint {
 struct IpEndpointHash {
   size_t operator()(const IpEndpoint& e) const noexcept {
     size_t h = static_cast<size_t>(e.port) * 1315423911u;
+    h ^= static_cast<size_t>(e.scope_id);
+    h *= 16777619u;
     const size_t n = e.family == IpEndpoint::Family::V4 ? 4 : 16;
     for (size_t i = 0; i < n; ++i) {
       h ^= e.addr[i];

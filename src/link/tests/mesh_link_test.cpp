@@ -5,6 +5,7 @@
 #include "amp/L3/ChannelPolicy.h"
 #include "amp/link/AdpMultiaddr.h"
 #include "amp/link/AmpStack.h"
+#include "amp/link/DialBook.h"
 #include "amp/link/MeshPump.h"
 #include "amp/link/PeerLinkManager.h"
 #include "support/mesh_test_harness.h"
@@ -14,6 +15,7 @@
 #include <sodium.h>
 
 #include <array>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -510,6 +512,65 @@ TEST(MeshLinkTest, EnsureAssociationOverMemoryIoIpv6) {
   EXPECT_TRUE(associated) << assoc_error;
   EXPECT_TRUE(mgr_a.IsConnected("bob"));
   ASSERT_NE(mgr_b.FindConnectedInboundLink(), nullptr);
+}
+
+TEST(DialBookTest, RegisterEndpointsKeepsOrderedCandidates) {
+  DialBook book({});
+  const std::string peer = "QmCand";
+  const std::string bad = "/ip4/10.0.0.99/udp/1/adp/1.0.0/p2p/" + peer;
+  const std::string good = "/ip4/10.0.0.1/udp/2/adp/1.0.0/p2p/" + peer;
+  ASSERT_TRUE(static_cast<bool>(book.RegisterEndpoints("k", {bad, good})));
+  ASSERT_EQ(book.Find("k")->candidates.size(), 2u);
+  EXPECT_EQ(book.Find("k")->multiaddr, bad);
+  EXPECT_TRUE(book.AdvanceDialCandidate("k"));
+  EXPECT_EQ(book.Find("k")->multiaddr, good);
+  EXPECT_FALSE(book.AdvanceDialCandidate("k"));
+  book.PromoteDialWinner("k", good);
+  EXPECT_EQ(book.Find("k")->multiaddr, good);
+  EXPECT_EQ(book.Find("k")->candidates.front(), good);
+}
+
+TEST(DialBookTest, RegisterEndpointPromotesWithoutDroppingPrior) {
+  DialBook book({});
+  const std::string peer = "QmProm";
+  const std::string a = "/ip4/10.0.0.1/udp/1/adp/1.0.0/p2p/" + peer;
+  const std::string b = "/ip4/10.0.0.2/udp/2/adp/1.0.0/p2p/" + peer;
+  ASSERT_TRUE(static_cast<bool>(book.RegisterEndpoint("k", a)));
+  ASSERT_TRUE(static_cast<bool>(book.RegisterEndpoint("k", b)));
+  ASSERT_EQ(book.Find("k")->candidates.size(), 2u);
+  EXPECT_EQ(book.Find("k")->multiaddr, b);
+  EXPECT_EQ(book.Find("k")->candidates[1], a);
+}
+
+TEST(MeshLinkTest, EnsureAssociationFallsBackToSecondCandidate) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+
+  auto good = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(good));
+  const std::string blackhole = "/ip4/203.0.113.1/udp/59999/adp/1.0.0/p2p/QmBob";
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoints("bob", {blackhole, *good})));
+
+  fixture->mgr_a->Book().Config().dial_attempt_timeout = std::chrono::milliseconds(30);
+  fixture->mgr_a->Book().Config().dial_timeout = std::chrono::milliseconds(5000);
+
+  bool associated = false;
+  std::string assoc_error;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) {
+    associated = result.isOk();
+    if (!associated) {
+      assoc_error = result.error().message;
+    }
+  });
+
+  for (size_t i = 0; i < 2000 && !associated; ++i) {
+    fixture->PumpBoth();
+    fixture->clock->Advance(5);
+  }
+
+  EXPECT_TRUE(associated) << assoc_error;
+  EXPECT_TRUE(fixture->mgr_a->IsConnected("bob"));
 }
 
 } // namespace

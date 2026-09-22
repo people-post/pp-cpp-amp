@@ -54,6 +54,7 @@ bool ToSockAddr(const IpEndpoint& ep, sockaddr_storage& ss, socklen_t& len) {
   auto* a = reinterpret_cast<sockaddr_in6*>(&ss);
   a->sin6_family = AF_INET6;
   a->sin6_port = htons(ep.port);
+  a->sin6_scope_id = ep.scope_id;
   std::memcpy(&a->sin6_addr, ep.addr.data(), 16);
   len = sizeof(sockaddr_in6);
   return true;
@@ -75,6 +76,7 @@ IpEndpoint FromSockAddr(const sockaddr_storage& ss) {
   e.family = IpEndpoint::Family::V6;
   std::memcpy(e.addr.data(), &a->sin6_addr, 16);
   e.port = ntohs(a->sin6_port);
+  e.scope_id = a->sin6_scope_id; // A3: preserve iface scope for fe80 replies
   return e;
 }
 
