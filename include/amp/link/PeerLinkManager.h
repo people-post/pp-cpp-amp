@@ -101,6 +101,8 @@ public:
 
   std::optional<std::string> PreferredMultiaddr(const std::string& peer_id) const;
   Roe<void> RegisterEndpoint(const std::string& peer_key, const std::string& multiaddr);
+  /** Best-first candidate list (B15/B28). Preferred = first entry. */
+  Roe<void> RegisterEndpoints(const std::string& peer_key, const std::vector<std::string>& multiaddrs);
 
   void EnsureAssociation(const std::string& peer_key, LinkCb on_complete);
   void OpenChannel(const std::string& peer_key, const std::string& protocol_id, ChannelPolicy policy,
@@ -205,6 +207,8 @@ private:
   void OnCh0Data(const std::string& peer_key, std::vector<uint8_t> payload);
   void IngestRemoteCapabilityAddrs(PeerLink& link, const CapabilityPayload& remote);
   void FinishDial(const std::string& peer_key, LinkRoe result);
+  /** Start outbound dial for `peer_key`; waiters must already be queued. Strand-locked. */
+  void BeginOutboundDialLocked(const std::string& peer_key);
   void FinishNestedCarrier(const std::string& provisional_key, LinkRoe result);
   void HandleInboundCarrierChannel(PeerLink& via_link, uint32_t channel_id);
   std::string DeriveRemotePeerId(const ByteVector& identity_public_key) const;
@@ -245,6 +249,8 @@ private:
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;
   std::vector<std::string> pending_drop_keys_;
+  /** After a failed dial, try next DialBook candidate once the link is dropped (Tick). */
+  std::vector<std::string> pending_candidate_retry_;
   std::vector<std::pair<std::string, std::string>> pending_alias_adopt_;
   std::vector<std::tuple<DialKey, uint32_t, int64_t, std::function<void(bool)>>> channel_open_waiters_;
 
