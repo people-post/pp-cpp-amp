@@ -1,5 +1,7 @@
 #include "amp/link/MeshRuntime.h"
 
+#include <utility>
+
 namespace pp::amp {
 
 MeshRuntime::MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
@@ -19,15 +21,23 @@ void MeshRuntime::Stop() {
   std::lock_guard lock(io_mu_);
   started_ = false;
   io_queue_.clear();
+  deferred_queue_.clear();
+  timers_.clear();
   io_ticks_.clear();
 }
 
-void MeshRuntime::PumpLocked() {
-  if (pumping_) {
-    pump_.Pump();
-    return;
+bool MeshRuntime::BeginDriveLocked() {
+  if (driving_) {
+    // Nested Pump/Tick/Drive is forbidden — callers must Post/PostDeferred instead.
+    return false;
   }
-  pumping_ = true;
+  driving_ = true;
+  return true;
+}
+
+void MeshRuntime::EndDriveLocked() { driving_ = false; }
+
+void MeshRuntime::PumpLocked() {
   std::vector<IoTickId> ids;
   ids.reserve(io_ticks_.size());
   for (const auto& entry : io_ticks_) {
@@ -43,7 +53,6 @@ void MeshRuntime::PumpLocked() {
   }
   DrainPostedIoLocked();
   pump_.Pump();
-  pumping_ = false;
 }
 
 void MeshRuntime::TickLocked() { pump_.Tick(); }
@@ -58,24 +67,89 @@ void MeshRuntime::DrainPostedIoLocked() {
   }
 }
 
+void MeshRuntime::DrainDeferredLocked() {
+  // Drain all deferred posted this turn (teardown must not wait on a budget).
+  while (!deferred_queue_.empty()) {
+    auto batch = std::move(deferred_queue_);
+    deferred_queue_.clear();
+    for (auto& task : batch) {
+      if (task) {
+        task();
+      }
+    }
+  }
+}
+
+void MeshRuntime::FireTimersLocked() {
+  const int64_t now = endpoint_.GetClock().NowMs();
+  std::vector<IoTask> due;
+  for (auto it = timers_.begin(); it != timers_.end();) {
+    if (it->deadline_ms <= now) {
+      if (it->task) {
+        due.push_back(std::move(it->task));
+      }
+      it = timers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto& task : due) {
+    if (task) {
+      task();
+    }
+  }
+}
+
+MeshRuntime::TimerId MeshRuntime::ArmTimerLocked(int64_t deadline_ms_abs, IoTask task) {
+  if (!task) {
+    return 0;
+  }
+  const TimerId id = next_timer_id_++;
+  if (next_timer_id_ == 0) {
+    next_timer_id_ = 1;
+  }
+  timers_.push_back(TimerEntry{id, deadline_ms_abs, std::move(task)});
+  return id;
+}
+
 void MeshRuntime::Pump() {
   std::lock_guard lock(io_mu_);
+  if (!BeginDriveLocked()) {
+    return;
+  }
   PumpLocked();
+  DrainDeferredLocked();
+  EndDriveLocked();
 }
 
 void MeshRuntime::Tick() {
   std::lock_guard lock(io_mu_);
+  if (!BeginDriveLocked()) {
+    return;
+  }
   TickLocked();
   // Dial timeout / WhenChannelOpen completions are PostToIo'd from Tick; drain so a
   // single Pump→Tick cycle (harness AdvanceMs / Drive) observes waiter callbacks.
   DrainPostedIoLocked();
+  DrainDeferredLocked();
+  FireTimersLocked();
+  DrainDeferredLocked();
+  EndDriveLocked();
 }
 
 void MeshRuntime::Drive() {
   std::lock_guard lock(io_mu_);
+  if (!BeginDriveLocked()) {
+    return;
+  }
+  // Turn order: work ticks → UDP pump → mux Tick → work drain → deferred → timers → deferred.
   PumpLocked();
   TickLocked();
   DrainPostedIoLocked();
+  DrainDeferredLocked();
+  FireTimersLocked();
+  DrainDeferredLocked();
+  EndDriveLocked();
 }
 
 void MeshRuntime::PostToIo(IoTask task) {
@@ -84,6 +158,45 @@ void MeshRuntime::PostToIo(IoTask task) {
   }
   std::lock_guard lock(io_mu_);
   io_queue_.push_back(std::move(task));
+}
+
+void MeshRuntime::PostDeferred(IoTask task) {
+  if (!task) {
+    return;
+  }
+  std::lock_guard lock(io_mu_);
+  deferred_queue_.push_back(std::move(task));
+}
+
+MeshRuntime::TimerId MeshRuntime::PostAfter(std::chrono::milliseconds delay, IoTask task) {
+  if (!task) {
+    return 0;
+  }
+  std::lock_guard lock(io_mu_);
+  const int64_t now = endpoint_.GetClock().NowMs();
+  const int64_t delay_ms = delay.count() < 0 ? 0 : delay.count();
+  return ArmTimerLocked(now + delay_ms, std::move(task));
+}
+
+MeshRuntime::TimerId MeshRuntime::PostAt(int64_t deadline_ms_abs, IoTask task) {
+  if (!task) {
+    return 0;
+  }
+  std::lock_guard lock(io_mu_);
+  return ArmTimerLocked(deadline_ms_abs, std::move(task));
+}
+
+void MeshRuntime::CancelTimer(TimerId id) {
+  if (id == 0) {
+    return;
+  }
+  std::lock_guard lock(io_mu_);
+  for (auto it = timers_.begin(); it != timers_.end(); ++it) {
+    if (it->id == id) {
+      timers_.erase(it);
+      return;
+    }
+  }
 }
 
 MeshRuntime::IoTickId MeshRuntime::AddIoTick(IoTask tick) {
