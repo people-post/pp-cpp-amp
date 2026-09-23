@@ -201,8 +201,11 @@ void PeerLinkManager::DropLink(const std::string& peer_key) {
   }
   // Tell the peer to evict too — silent local-only drop left the far side holding a zombie
   // inbound that rejected redial as "ESTABLISH rejected (duplicate)" (LAN B21).
+  // Clear OnMessage before Close/erase so Endpoint/Pump cannot UAF into a dying PeerLink
+  // (Windows SEH 0xc0000005 in punch blackhole / dial-timeout teardown).
   if (!link->IsCarrierBacked()) {
     if (auto* conn = link->ConnectionOrNull()) {
+      conn->OnMessage({});
       if (!conn->IsClosed()) {
         conn->Close();
       }
@@ -558,11 +561,15 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
 
   auto link = std::make_unique<PeerLink>(peer_key, ep_it->second.peer_id, true, *opened, local_identity_,
                                          MakeHostPorts());
-  link->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
+  AssignLinkIdentity(*link);
+  // Insert before StartOutboundHandshake: Start may FailAssociation synchronously (send
+  // failure), and FinishDial must FindLink / ScheduleDropLink against a table occupant.
+  // Inserting after Start left a zombie link and raced DropLink on Windows (SEH 0xc0000005).
+  PeerLink* raw = link.get();
+  table_.Insert(std::move(link));
+  raw->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
     FinishDial(peer_key, WrapPeerLinkResult(result));
   });
-  AssignLinkIdentity(*link);
-  table_.Insert(std::move(link));
 }
 
 void PeerLinkManager::OpenChannelOnLink(PeerLink& link, const std::string& protocol_id, ChannelPolicy policy,
@@ -767,8 +774,9 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
   auto link = std::make_unique<PeerLink>(peer_key, std::string{}, false, std::move(connection), local_identity_,
                                          MakeHostPorts());
   AssignLinkIdentity(*link);
-  link->StartInboundHandshake({});
+  PeerLink* raw = link.get();
   table_.Insert(std::move(link));
+  raw->StartInboundHandshake({});
 }
 
 void PeerLinkManager::BindDialAlias(LinkId id, DialKey to_key) {
@@ -1093,17 +1101,18 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
   inflight_associations_[peer_key].push_back(std::move(on_complete));
   auto link = std::make_unique<PeerLink>(peer_key, peer_key, initiator, std::move(carrier), local_identity_,
                                          MakeHostPorts());
+  AssignLinkIdentity(*link);
+  PeerLink* raw = link.get();
+  table_.Insert(std::move(link));
   if (initiator) {
-    link->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
+    raw->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
       FinishNestedCarrier(peer_key, WrapPeerLinkResult(result));
     });
   } else {
-    link->StartInboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
+    raw->StartInboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
       FinishNestedCarrier(peer_key, WrapPeerLinkResult(result));
     });
   }
-  AssignLinkIdentity(*link);
-  table_.Insert(std::move(link));
 }
 
 void PeerLinkManager::FinishNestedCarrier(const std::string& provisional_key, LinkRoe result) {

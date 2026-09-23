@@ -44,6 +44,11 @@ PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool 
 }
 
 PeerLink::~PeerLink() {
+  // Drop the Connection message thunk before releasing shared_ptr — Endpoint may still
+  // hold the Connection briefly after Unregister; a late Pump must not call into `this`.
+  if (connection_) {
+    connection_->OnMessage({});
+  }
   // Carrier is Bound to an outer Mux ([A024]). Orphan without touching mux_ — map destroy
   // order may have already freed that Mux (Windows SEH / SIGFPE on dead unordered_map).
   if (carrier_) {
@@ -100,7 +105,10 @@ void PeerLink::StartHandshakeCommon(const MshAdpHandshake::Role role, CompleteCb
 void PeerLink::StartOutboundHandshake(CompleteCb on_established) {
   StartHandshakeCommon(MshAdpHandshake::Role::Initiator, std::move(on_established));
   if (auto started = handshake_->Start(); !started) {
-    FailAssociationMessage(started.error(), Err::HandshakeFailed);
+    // MshAdpHandshake::Fail may already have invoked on_complete_ → FailAssociation.
+    if (establish_cb_) {
+      FailAssociationMessage(started.error(), Err::HandshakeFailed);
+    }
   }
 }
 
