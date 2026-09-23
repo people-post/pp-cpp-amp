@@ -1324,8 +1324,17 @@ LinkSnapshotEx PeerLinkManager::GetSnapshotByPeerId(const std::string& peer_id, 
 }
 
 bool PeerLinkManager::IsConnectedToPeerId(const std::string& peer_id) const {
-  auto snap = GetSnapshotByPeerId(peer_id, TransportClass::Adp);
-  return snap.base.phase == PeerLinkPhase::Connected;
+  std::lock_guard lock(strand_mu_);
+  if (peer_id.empty()) {
+    return false;
+  }
+  // ADP only — carrier presence must not satisfy EnsureAssociation / BurstDial wins (A024).
+  const auto presence = table_.Presence(peer_id);
+  if (!presence.adp) {
+    return false;
+  }
+  auto* link = table_.FindById(*presence.adp);
+  return link && link->Phase() == PeerLinkPhase::Connected && !link->IsCarrierBacked();
 }
 
 bool PeerLinkManager::IsReachable(const std::string& peer_id) const {

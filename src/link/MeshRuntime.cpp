@@ -1,5 +1,8 @@
 #include "amp/link/MeshRuntime.h"
 
+#include "amp/link/AdpMultiaddr.h"
+
+#include <atomic>
 #include <utility>
 
 namespace pp::amp {
@@ -319,6 +322,174 @@ void MeshRuntime::ClearWarm(const DialKey& peer_key) { links_.ClearWarm(peer_key
 void MeshRuntime::ClearDialBackoff(const DialKey& peer_key) { links_.ClearDialBackoff(peer_key); }
 
 void MeshRuntime::AbortInflightDial(const DialKey& peer_key) { links_.AbortInflightDial(peer_key); }
+
+void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chrono::milliseconds window,
+                            BurstDialCb on_done) {
+  if (!on_done) {
+    return;
+  }
+
+  constexpr size_t kMaxAddrs = 8;
+  std::vector<std::string> addrs;
+  addrs.reserve(std::min(multiaddrs.size(), kMaxAddrs));
+  for (const std::string& ma : multiaddrs) {
+    if (addrs.size() >= kMaxAddrs) {
+      break;
+    }
+    if (ma.empty() || !ParseAdpMultiaddr(ma)) {
+      continue;
+    }
+    bool dup = false;
+    for (const std::string& existing : addrs) {
+      if (existing == ma) {
+        dup = true;
+        break;
+      }
+    }
+    if (!dup) {
+      addrs.push_back(ma);
+    }
+  }
+
+  auto settle = [this](BurstDialResult result, BurstDialCb done,
+                       std::shared_ptr<std::vector<std::string>> keys,
+                       std::shared_ptr<std::vector<std::string>> peer_ids) {
+    PostDeferred([this, result = std::move(result), done = std::move(done), keys = std::move(keys),
+                  peer_ids = std::move(peer_ids)]() mutable {
+      if (keys) {
+        for (size_t i = 0; i < keys->size(); ++i) {
+          const std::string& key = (*keys)[i];
+          // After PeerId adopt the winner may no longer live under amp:burst:*.
+          if (result.ok && peer_ids && i < peer_ids->size() && IsConnectedToPeerId((*peer_ids)[i])) {
+            continue;
+          }
+          auto snap = SnapshotByDialKey(key);
+          if (result.ok && snap.base.phase == PeerLinkPhase::Connected &&
+              snap.transport == TransportClass::Adp) {
+            continue;
+          }
+          AbortInflightDial(key);
+        }
+      }
+      if (done) {
+        done(std::move(result));
+      }
+    });
+  };
+
+  if (addrs.empty()) {
+    BurstDialResult early;
+    early.error = "no peer_addrs";
+    settle(std::move(early), std::move(on_done), nullptr, nullptr);
+    return;
+  }
+
+  const int window_ms = window.count() > 0 ? static_cast<int>(window.count()) : 2000;
+  struct State {
+    std::atomic<bool> settled{false};
+    std::vector<std::string> keys;
+    std::vector<std::string> peer_ids;
+    std::vector<std::string> multiaddrs;
+    std::string last_error;
+    BurstDialCb on_done;
+  };
+  auto state = std::make_shared<State>();
+  state->on_done = std::move(on_done);
+
+  auto finish = [this, state, settle](BurstDialResult result) {
+    if (state->settled.exchange(true, std::memory_order_acq_rel)) {
+      return;
+    }
+    auto keys = std::make_shared<std::vector<std::string>>(state->keys);
+    auto peer_ids = std::make_shared<std::vector<std::string>>(state->peer_ids);
+    settle(std::move(result), std::move(state->on_done), std::move(keys), std::move(peer_ids));
+  };
+
+  for (size_t i = 0; i < addrs.size(); ++i) {
+    const std::string& ma = addrs[i];
+    auto parsed = ParseAdpMultiaddr(ma);
+    if (!parsed) {
+      state->last_error = "peer addr is not an ADP multiaddr";
+      continue;
+    }
+    const std::string peer_id = parsed->peer_id;
+    if (IsConnectedToPeerId(peer_id)) {
+      BurstDialResult ok;
+      ok.ok = true;
+      ok.dialed = ma;
+      finish(std::move(ok));
+      return;
+    }
+    const std::string key =
+        "amp:burst:" + std::to_string(i) + ":" + peer_id.substr(0, std::min<size_t>(peer_id.size(), 12));
+    if (auto registered = RegisterEndpoint(key, ma); !registered) {
+      if (IsConnectedToPeerId(peer_id)) {
+        BurstDialResult ok;
+        ok.ok = true;
+        ok.dialed = ma;
+        finish(std::move(ok));
+        return;
+      }
+      state->last_error = registered.error().message;
+      continue;
+    }
+    state->keys.push_back(key);
+    state->peer_ids.push_back(peer_id);
+    state->multiaddrs.push_back(ma);
+    EnsureAssociation(key, [state](PeerLinkManager::LinkRoe result) {
+      if (state->settled.load(std::memory_order_acquire)) {
+        return;
+      }
+      if (!result) {
+        state->last_error = result.error().message;
+      }
+    });
+  }
+
+  if (state->keys.empty()) {
+    BurstDialResult fail;
+    fail.error = state->last_error.empty() ? "no peer_addrs" : state->last_error;
+    finish(std::move(fail));
+    return;
+  }
+
+  PostAfter(std::chrono::milliseconds(window_ms), [finish, state]() {
+    if (state->settled.load(std::memory_order_acquire)) {
+      return;
+    }
+    BurstDialResult fail;
+    fail.error = state->last_error.empty() ? "punch burst window expired" : state->last_error;
+    if (!state->multiaddrs.empty()) {
+      fail.dialed = state->multiaddrs.back();
+    }
+    finish(std::move(fail));
+  });
+
+  auto poll = std::make_shared<std::function<void()>>();
+  *poll = [this, state, finish, poll]() {
+    if (state->settled.load(std::memory_order_acquire)) {
+      return;
+    }
+    for (size_t i = 0; i < state->peer_ids.size(); ++i) {
+      if (IsConnectedToPeerId(state->peer_ids[i])) {
+        BurstDialResult ok;
+        ok.ok = true;
+        ok.dialed = state->multiaddrs[i];
+        finish(std::move(ok));
+        return;
+      }
+    }
+    if (state->settled.load(std::memory_order_acquire)) {
+      return;
+    }
+    PostToIo([poll, state]() {
+      if (!state->settled.load(std::memory_order_acquire)) {
+        (*poll)();
+      }
+    });
+  };
+  PostToIo([poll]() { (*poll)(); });
+}
 
 void MeshRuntime::EstablishNestedOverCarrier(const DialKey& peer_key, std::shared_ptr<ChannelSession> carrier,
                                              bool initiator, PeerLinkManager::LinkCb on_complete) {

@@ -632,5 +632,56 @@ TEST(MeshRuntimeDriveTest, PostAfterFiresOnAmpClock) {
   EXPECT_TRUE(fired);
 }
 
+TEST(MeshRuntimeDriveTest, BurstDialBlackholeExpiresOnAmpClock) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
+  auto harness = std::move(*created);
+
+  const std::string blackhole =
+      "/ip4/127.0.0.1/udp/1/adp/1.0.0/p2p/" + harness->peer_id_b;
+  std::optional<BurstDialResult> done;
+  harness->runtime_a->BurstDial({blackhole}, std::chrono::milliseconds(100),
+                                [&](BurstDialResult r) { done = std::move(r); });
+
+  for (size_t i = 0; i < 40 && !done; ++i) {
+    harness->runtime_a->Drive();
+    harness->clock->Advance(5);
+  }
+  ASSERT_TRUE(done.has_value());
+  EXPECT_FALSE(done->ok);
+  EXPECT_FALSE(done->error.empty());
+}
+
+TEST(MeshRuntimeDriveTest, BurstDialConnectsPeer) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
+  auto harness = std::move(*created);
+
+  std::optional<BurstDialResult> done;
+  harness->runtime_a->BurstDial({harness->ma_b}, std::chrono::milliseconds(2000),
+                                [&](BurstDialResult r) { done = std::move(r); });
+
+  for (size_t i = 0; i < 500 && !done; ++i) {
+    harness->PumpBoth();
+    harness->clock->Advance(5);
+  }
+  ASSERT_TRUE(done.has_value()) << "BurstDial did not settle";
+  EXPECT_TRUE(done->ok) << done->error;
+  EXPECT_TRUE(harness->runtime_a->IsConnectedToPeerId(harness->peer_id_b));
+}
+
+TEST(MeshRuntimeDriveTest, IsConnectedToPeerIdIgnoresCarrierOnly) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
+  auto harness = std::move(*created);
+
+  // With no ADP association, carrier-only presence must not look "connected" to BurstDial.
+  EXPECT_FALSE(harness->runtime_a->IsConnectedToPeerId(harness->peer_id_b));
+  EXPECT_FALSE(harness->mgr_a().IsConnectedToPeerId(harness->peer_id_b));
+}
+
 } // namespace
 } // namespace pp::amp
