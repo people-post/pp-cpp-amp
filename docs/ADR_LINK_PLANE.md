@@ -27,6 +27,9 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    as Amp). Nested `Drive` is refused. Teardown-class work uses `PostDeferred`
    (Abort / Close / DropLink / `on_done`); deadlines use `PostAfter` on the Amp clock.
    Waiters and L4 must not call `Tick`/`Drive` to make progress.
+   **`BurstDial`** is the product API for parallel ephemeral ADP dials (punch sync
+   windows): Amp-clock `PostAfter` deadline, `PostToIo` win poll, `PostDeferred`
+   Abort + `on_done`. Ephemeral DialKeys `amp:burst:N:…`; win = Connected ADP PeerId.
 5. **Index bind** (dial alias ↔ LinkId) replaces map-key rename (`RekeyLink` surgery).
    `LinkTable` owns `unique_ptr<PeerLink>` by `LinkId`; `BindDialKey` rewrites the
    dial index only. Session crypto rekey on ch0 remains separate.
