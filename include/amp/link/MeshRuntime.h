@@ -23,11 +23,20 @@ namespace pp::amp {
 /**
  * Io-thread composer for Endpoint + PeerLinkManager + MeshPump.
  * Sole product entry for link ops (ADR_LINK_PLANE). Prefer these APIs over bare Links().
+ *
+ * Drive model (exclusive):
+ * - Exactly one driver calls Pump/Tick/Drive (MeshPump thread, or the test harness
+ *   acting as Amp). Nested Pump/Tick/Drive is refused (assert in debug).
+ * - PostToIo — work lane (SM steps, dial start, enqueue). Drained during Drive.
+ * - PostDeferred — teardown lane (Abort, Close, DropLink, on_done). Runs after Tick
+ *   and work drain so mux/session frames are off the stack.
+ * - PostAfter — Amp-clock timers (sync windows, deadlines). Fired each Drive turn.
  */
 class MeshRuntime {
 public:
   using IoTask = std::function<void()>;
   using IoTickId = uint64_t;
+  using TimerId = uint64_t;
 
   MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
               PeerLinkConfig config = {});
@@ -46,10 +55,30 @@ public:
   void Stop();
   bool IsStarted() const { return started_; }
 
+  /** True while Pump/Tick/Drive is on the stack (exclusive-driver guard). */
+  bool IsDriving() const { return driving_; }
+
   void Pump();
   void Tick();
   void Drive();
+
+  /** Work lane — drained during Drive (after io ticks / before or with pump). */
   void PostToIo(IoTask task);
+
+  /**
+   * Teardown lane — AbortInflightDial, ChannelSession::Close, DropLink, completion
+   * callbacks. Drained after Tick + PostToIo so handlers never run under mux delivery.
+   */
+  void PostDeferred(IoTask task);
+
+  /**
+   * Amp-clock delayed task (`Endpoint::GetClock().NowMs()`). Prefer over steady_clock
+   * polls so VirtualClock harnesses stay deterministic.
+   */
+  TimerId PostAfter(std::chrono::milliseconds delay, IoTask task);
+  /** Absolute Amp-clock deadline. */
+  TimerId PostAt(int64_t deadline_ms_abs, IoTask task);
+  void CancelTimer(TimerId id);
 
   template <typename Fn>
   auto WithIoLock(Fn&& fn) -> decltype(fn()) {
@@ -118,14 +147,24 @@ public:
   }
 
 private:
+  bool BeginDriveLocked();
+  void EndDriveLocked();
   void PumpLocked();
   void TickLocked();
-  /** Drain PostToIo tasks posted by Tick (FinishDial / WhenChannelOpen). */
   void DrainPostedIoLocked();
+  void DrainDeferredLocked();
+  void FireTimersLocked();
+  TimerId ArmTimerLocked(int64_t deadline_ms_abs, IoTask task);
 
   struct IoTickEntry {
     IoTickId id = 0;
     IoTask tick;
+  };
+
+  struct TimerEntry {
+    TimerId id = 0;
+    int64_t deadline_ms = 0;
+    IoTask task;
   };
 
   adp::Endpoint& endpoint_;
@@ -133,10 +172,13 @@ private:
   PeerLinkManager links_;
   MeshPump pump_;
   std::deque<IoTask> io_queue_;
+  std::deque<IoTask> deferred_queue_;
+  std::vector<TimerEntry> timers_;
   std::vector<IoTickEntry> io_ticks_;
   IoTickId next_io_tick_id_ = 1;
+  TimerId next_timer_id_ = 1;
   bool started_ = false;
-  bool pumping_ = false;
+  bool driving_ = false;
 };
 
 } // namespace pp::amp
