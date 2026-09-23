@@ -672,5 +672,16 @@ TEST(MeshRuntimeDriveTest, BurstDialConnectsPeer) {
   EXPECT_TRUE(harness->runtime_a->IsConnectedToPeerId(harness->peer_id_b));
 }
 
+TEST(MeshRuntimeDriveTest, IsConnectedToPeerIdIgnoresCarrierOnly) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
+  auto harness = std::move(*created);
+
+  // With no ADP association, carrier-only presence must not look "connected" to BurstDial.
+  EXPECT_FALSE(harness->runtime_a->IsConnectedToPeerId(harness->peer_id_b));
+  EXPECT_FALSE(harness->mgr_a().IsConnectedToPeerId(harness->peer_id_b));
+}
+
 } // namespace
 } // namespace pp::amp
