@@ -20,6 +20,13 @@
 
 namespace pp::amp {
 
+/** Result of MeshRuntime::BurstDial (parallel ephemeral ADP dials). */
+struct BurstDialResult {
+  bool ok = false;
+  std::string dialed;
+  std::string error;
+};
+
 /**
  * Io-thread composer for Endpoint + PeerLinkManager + MeshPump.
  * Sole product entry for link ops (ADR_LINK_PLANE). Prefer these APIs over bare Links().
@@ -37,6 +44,7 @@ public:
   using IoTask = std::function<void()>;
   using IoTickId = uint64_t;
   using TimerId = uint64_t;
+  using BurstDialCb = std::function<void(BurstDialResult)>;
 
   MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
               PeerLinkConfig config = {});
@@ -132,6 +140,16 @@ public:
   void ClearWarm(const DialKey& peer_key);
   void ClearDialBackoff(const DialKey& peer_key);
   void AbortInflightDial(const DialKey& peer_key);
+
+  /**
+   * Parallel ephemeral dials to ADP multiaddrs within an Amp-clock window.
+   * Registers under DialKeys `amp:burst:N:…` so inbound PeerId adopt can own the
+   * live link (A026). Win = IsConnectedToPeerId (Connected ADP, not carrier).
+   * Abort losers + on_done settle via PostDeferred. Prefer calling from PostToIo /
+   * SM work already off the mux stack — do not start under ChannelMux delivery.
+   */
+  void BurstDial(const std::vector<std::string>& multiaddrs, std::chrono::milliseconds window,
+                 BurstDialCb on_done);
 
   void EstablishNestedOverCarrier(const DialKey& peer_key, std::shared_ptr<ChannelSession> carrier,
                                   bool initiator, PeerLinkManager::LinkCb on_complete);
