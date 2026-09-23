@@ -22,8 +22,11 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    `WhenChannelOpen`, `BindChannel`, and protocol handlers that receive
    `(LinkHandle, remote_peer_id, channel_id)`.
 4. **`MeshRuntime` is the sole product entry** for link ops. Completions run via
-   `PostToIo` (never under association mutation). Nested product `Drive` is forbidden
-   when MeshPump runs.
+   `PostToIo` (never under association mutation). **Exclusive Drive:** only one
+   driver may call `Pump`/`Tick`/`Drive` (MeshPump thread or the test harness acting
+   as Amp). Nested `Drive` is refused. Teardown-class work uses `PostDeferred`
+   (Abort / Close / DropLink / `on_done`); deadlines use `PostAfter` on the Amp clock.
+   Waiters and L4 must not call `Tick`/`Drive` to make progress.
 5. **Index bind** (dial alias ↔ LinkId) replaces map-key rename (`RekeyLink` surgery).
    `LinkTable` owns `unique_ptr<PeerLink>` by `LinkId`; `BindDialKey` rewrites the
    dial index only. Session crypto rekey on ch0 remains separate.
@@ -33,7 +36,7 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    carrier / capability / keepalive remain on the PeerLinkManager façade until a second
    consumer needs them (no empty placeholder types).
 8. **Strand mutex is non-recursive** once completions are deferred; affinity is
-   “called only from MeshRuntime Drive/PostToIo.”
+   “called only from MeshRuntime Drive/PostToIo/PostDeferred.”
 
 ## Consequences
 

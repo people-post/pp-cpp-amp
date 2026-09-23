@@ -7,6 +7,7 @@
 #include "amp/link/AmpStack.h"
 #include "amp/link/DialBook.h"
 #include "amp/link/MeshPump.h"
+#include "amp/link/MeshRuntime.h"
 #include "amp/link/PeerLinkManager.h"
 #include "support/mesh_test_harness.h"
 #include "support/mesh_harness_support.h"
@@ -571,6 +572,64 @@ TEST(MeshLinkTest, EnsureAssociationFallsBackToSecondCandidate) {
 
   EXPECT_TRUE(associated) << assoc_error;
   EXPECT_TRUE(fixture->mgr_a->IsConnected("bob"));
+}
+
+TEST(MeshRuntimeDriveTest, PostDeferredRunsAfterWorkLane) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
+  auto harness = std::move(*created);
+
+  std::vector<int> order;
+  harness->runtime_a->PostToIo([&] {
+    order.push_back(1);
+    harness->runtime_a->PostDeferred([&] { order.push_back(3); });
+    order.push_back(2);
+  });
+  harness->runtime_a->Drive();
+  ASSERT_EQ(order.size(), 3u);
+  EXPECT_EQ(order[0], 1);
+  EXPECT_EQ(order[1], 2);
+  EXPECT_EQ(order[2], 3);
+}
+
+TEST(MeshRuntimeDriveTest, NestedDriveIsRefused) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
+  auto harness = std::move(*created);
+
+  int nested_drives = 0;
+  int outer_steps = 0;
+  harness->runtime_a->PostToIo([&] {
+    ++outer_steps;
+    harness->runtime_a->Drive(); // must no-op (exclusive driver)
+    if (harness->runtime_a->IsDriving()) {
+      ++nested_drives; // still in outer Drive — nested refused, flag still true
+    }
+  });
+  harness->runtime_a->Drive();
+  EXPECT_EQ(outer_steps, 1);
+  EXPECT_EQ(nested_drives, 1);
+  EXPECT_FALSE(harness->runtime_a->IsDriving());
+}
+
+TEST(MeshRuntimeDriveTest, PostAfterFiresOnAmpClock) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
+  auto harness = std::move(*created);
+
+  bool fired = false;
+  harness->runtime_a->PostAfter(std::chrono::milliseconds(50), [&] { fired = true; });
+  harness->runtime_a->Drive();
+  EXPECT_FALSE(fired);
+  harness->clock->Advance(49);
+  harness->runtime_a->Drive();
+  EXPECT_FALSE(fired);
+  harness->clock->Advance(1);
+  harness->runtime_a->Drive();
+  EXPECT_TRUE(fired);
 }
 
 } // namespace
