@@ -164,6 +164,70 @@ TEST(MeshLinkTest, OpenChannelDataRoundTrip) {
   EXPECT_EQ(received, msg);
 }
 
+// Dogfood SIGSEGV: far end resets the carrier while the nested handshake is in flight. The failure
+// runs inside the nested link's carrier closed-callback → establish_cb_; the drop must be deferred to
+// Tick, not free the PeerLink (and the running callbacks) synchronously.
+TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] {
+    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
+  });
+  ASSERT_TRUE(associated);
+
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", "/pp-test/carrier/1.0.0", CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  fixture->PumpUntil([&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() &&
+           outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(channel_id.has_value());
+
+  auto* outbound = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(outbound, nullptr);
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*outbound->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+
+  // Bob never answers the nested handshake, so it stays Handshaking until the reset lands.
+  std::optional<PeerLinkManager::LinkRoe> nested;
+  fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", carrier, true,
+                                             [&](PeerLinkManager::LinkRoe result) { nested = result; });
+  carrier.reset();
+  auto* nested_link = fixture->mgr_a->FindLink("nested:bob");
+  ASSERT_NE(nested_link, nullptr);
+  EXPECT_EQ(nested_link->Phase(), PeerLinkPhase::Handshaking);
+
+  auto* inbound = fixture->mgr_b->FindConnectedInboundLink();
+  ASSERT_NE(inbound, nullptr);
+  ASSERT_TRUE(static_cast<bool>(inbound->Mux()->ResetChannel(*channel_id)));
+  fixture->pump_b->Pump();
+  fixture->pump_a->Pump();
+
+  ASSERT_TRUE(nested.has_value());
+  EXPECT_FALSE(nested->isOk());
+  // Still present until Tick drains the scheduled drop.
+  EXPECT_NE(fixture->mgr_a->FindLink("nested:bob"), nullptr);
+
+  fixture->pump_a->Tick();
+  EXPECT_EQ(fixture->mgr_a->FindLink("nested:bob"), nullptr);
+  EXPECT_TRUE(fixture->mgr_a->IsConnected("bob"));
+}
+
 TEST(MeshRuntimeTest, PumpDrivesAssociationRoundTrip) {
   ASSERT_GE(sodium_init(), 0);
   auto created = pbr::test::AmpMeshHarness::Create();
