@@ -283,6 +283,7 @@ bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
   ApplyProtocolHandlers(link);
   RefreshPresence(link);
   connected_link_ids_.insert(link.Id());
+  ApplyPendingKeepaliveTier(link);
   WatchPathChanges(link);
   EmitLinkEvent(MakeLinkEvent(LinkEvent::Kind::Connected, link));
   // Nested carrier links skip ch0 — product reachability already established via outer mesh.
@@ -904,6 +905,12 @@ void PeerLinkManager::MarkWarm(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   if (auto* link = FindLink(peer_key)) {
     link->MarkWarm();
+    return;
+  }
+  // No link yet (product warms before EnsureAssociation): apply when it connects.
+  auto& pending = pending_keepalive_tiers_[peer_key];
+  if (pending != KeepaliveTier::Hot) {
+    pending = KeepaliveTier::Warm;
   }
 }
 
@@ -911,13 +918,34 @@ void PeerLinkManager::MarkHot(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   if (auto* link = FindLink(peer_key)) {
     link->MarkHot();
+    return;
   }
+  pending_keepalive_tiers_[peer_key] = KeepaliveTier::Hot;
 }
 
 void PeerLinkManager::ClearWarm(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
+  pending_keepalive_tiers_.erase(peer_key);
   if (auto* link = FindLink(peer_key)) {
     link->ClearWarm();
+  }
+}
+
+void PeerLinkManager::ApplyPendingKeepaliveTier(PeerLink& link) {
+  KeepaliveTier tier = KeepaliveTier::None;
+  for (const std::string& key : {link.PeerKey(), link.RemotePeerId()}) {
+    if (key.empty()) {
+      continue;
+    }
+    if (auto it = pending_keepalive_tiers_.find(key); it != pending_keepalive_tiers_.end()) {
+      tier = std::max(tier, it->second);
+      pending_keepalive_tiers_.erase(it);
+    }
+  }
+  if (tier == KeepaliveTier::Hot) {
+    link.MarkHot();
+  } else if (tier == KeepaliveTier::Warm && link.GetKeepaliveTier() == KeepaliveTier::None) {
+    link.MarkWarm();
   }
 }
 

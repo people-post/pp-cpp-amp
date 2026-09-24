@@ -171,6 +171,7 @@ public:
                                               ChannelSession::FrameHandler on_frame,
                                               ChannelSession::ClosedCallback on_closed = {});
 
+  /** Tier applies now, or when a link for `peer_key` (dial key or PeerId) next connects. */
   void MarkWarm(const std::string& peer_key);
   void MarkHot(const std::string& peer_key);
   void ClearWarm(const std::string& peer_key);
@@ -230,6 +231,7 @@ private:
   void WatchPathChanges(PeerLink& link);
   void ScheduleAdoptDialAlias(std::string remote_peer_id, std::string dial_alias);
   void MaybeSendKeepalives(int64_t now_ms);
+  void ApplyPendingKeepaliveTier(PeerLink& link);
   void PostCompletion(std::function<void()> fn);
   void AssignLinkIdentity(PeerLink& link);
   void RefreshPresence(PeerLink& link);
@@ -255,6 +257,8 @@ private:
   std::atomic<LinkEventListenerId> next_link_event_listener_id_{1};
   /** Links that reached Connected (LinkEvent::was_connected); erased on DropLink. */
   std::unordered_set<LinkId> connected_link_ids_;
+  /** MarkWarm / MarkHot requested before a link for the key existed. */
+  std::unordered_map<std::string, KeepaliveTier> pending_keepalive_tiers_;
   bool nested_carrier_accept_ = false;
   std::string nested_carrier_protocol_id_;
 
