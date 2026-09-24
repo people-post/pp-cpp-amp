@@ -1115,7 +1115,7 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
   }
 }
 
-void PeerLinkManager::FinishNestedCarrier(const std::string& provisional_key, LinkRoe result) {
+void PeerLinkManager::FinishNestedCarrier(std::string provisional_key, LinkRoe result) {
   std::lock_guard lock(strand_mu_);
   auto* link = FindLink(provisional_key);
   if (result && link && !link->RemotePeerId().empty() && link->RemotePeerId() != provisional_key) {
@@ -1148,10 +1148,12 @@ void PeerLinkManager::FinishNestedCarrier(const std::string& provisional_key, Li
   }
   if (!result) {
     last_error_[provisional_key] = result.error();
-    // Always DropLink (mux/handler/orphan cleanup) — never raw erase ([A027]).
-    DropLink(provisional_key);
+    // Defer DropLink (mux/handler/orphan cleanup, never raw erase — [A027]) to Tick: we are inside
+    // the dying link's establish_cb_ (often via its carrier's closed callback), so a synchronous
+    // drop frees the running lambda, the PeerLink and the carrier handler (dogfood SIGSEGV).
+    ScheduleDropLink(provisional_key);
     if (notify_key != provisional_key) {
-      DropLink(notify_key);
+      ScheduleDropLink(notify_key);
     }
   }
   for (auto& cb : waiters) {

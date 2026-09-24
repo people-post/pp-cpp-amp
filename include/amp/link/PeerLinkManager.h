@@ -209,7 +209,8 @@ private:
   void FinishDial(const std::string& peer_key, LinkRoe result);
   /** Start outbound dial for `peer_key`; waiters must already be queued. Strand-locked. */
   void BeginOutboundDialLocked(const std::string& peer_key);
-  void FinishNestedCarrier(const std::string& provisional_key, LinkRoe result);
+  /** Runs inside the nested link's establish_cb_ — `provisional_key` by value (caller's capture dies with the link). */
+  void FinishNestedCarrier(std::string provisional_key, LinkRoe result);
   void HandleInboundCarrierChannel(PeerLink& via_link, uint32_t channel_id);
   std::string DeriveRemotePeerId(const ByteVector& identity_public_key) const;
   bool AdoptInboundOrDropDuplicate(PeerLink& inbound);
