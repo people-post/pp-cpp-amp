@@ -132,6 +132,48 @@ TEST_F(AdpConnTest, BestEffortNoRtxOnDrop) {
   EXPECT_EQ(p.ep_b->Find(Aid()), nullptr);
 }
 
+// docs/KEEPALIVE.md: keepalive announces the sender's cadence, requests an echo, and widens the
+// liveness window on both ends to max(kAliveTimeoutMs, 5/2 × cadence).
+TEST_F(AdpConnTest, KeepaliveAnnouncesCadenceAndEchoes) {
+  auto p = MakePair();
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+
+  EXPECT_EQ((*ca)->LivenessWindowMs(), pp::adp::kAliveTimeoutMs);
+  ASSERT_TRUE((*ca)->SendKeepalive(p.clock->NowMs(), 10'000));
+  p.ep_b->Pump();
+  EXPECT_EQ((*cb)->PeerKeepaliveIntervalMs(), 10'000u);
+  EXPECT_EQ((*cb)->LivenessWindowMs(), 25'000);
+
+  // B echoed at once (flags 0, its own cadence 0) — A has fresh RX and does not echo back.
+  p.ep_a->Pump();
+  EXPECT_EQ((*ca)->LastAuthRxMs(), p.clock->NowMs());
+  EXPECT_EQ((*ca)->PeerKeepaliveIntervalMs(), 0u);
+  EXPECT_EQ((*ca)->LivenessWindowMs(), 25'000) << "local cadence widens the sender's window too";
+  p.ep_b->Pump();
+
+  // Silent for 20 s: alive under the widened window, dead under the cold one.
+  p.clock->Advance(20'000);
+  EXPECT_TRUE((*cb)->LooksAlive(p.clock->NowMs()));
+  EXPECT_TRUE((*ca)->LooksAlive(p.clock->NowMs()));
+
+  // Stop: both sides fall back to the cold window.
+  ASSERT_TRUE((*ca)->StopKeepalive(p.clock->NowMs()));
+  p.ep_b->Pump();
+  EXPECT_EQ((*cb)->PeerKeepaliveIntervalMs(), 0u);
+  EXPECT_EQ((*cb)->LivenessWindowMs(), pp::adp::kAliveTimeoutMs);
+  EXPECT_EQ((*ca)->LivenessWindowMs(), pp::adp::kAliveTimeoutMs);
+}
+
 TEST_F(AdpConnTest, PathMigrate) {
   auto p = MakePair();
 

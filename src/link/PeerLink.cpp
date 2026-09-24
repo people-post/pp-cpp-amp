@@ -406,13 +406,20 @@ void PeerLink::MarkWarm() { keepalive_tier_ = KeepaliveTier::Warm; }
 
 void PeerLink::MarkHot() { keepalive_tier_ = KeepaliveTier::Hot; }
 
-void PeerLink::ClearWarm() { keepalive_tier_ = KeepaliveTier::None; }
+void PeerLink::ClearWarm() {
+  keepalive_tier_ = KeepaliveTier::None;
+  last_keepalive_tx_ms_ = 0;
+  // Back to the cold liveness window on both sides.
+  if (connection_ && !IsCarrierBacked()) {
+    (void)connection_->StopKeepalive(host_.now_ms ? host_.now_ms() : 0);
+  }
+}
 
-PeerLink::LinkRoe PeerLink::SendKeepalive(const int64_t now_ms) {
+PeerLink::LinkRoe PeerLink::SendKeepalive(const int64_t now_ms, const uint32_t interval_ms) {
   if (IsCarrierBacked() || !connection_) {
     return LinkRoe::error(Failure::Of(Err::TransportUnavailable, "amp link: keepalive unavailable"));
   }
-  auto sent = connection_->SendKeepalive(now_ms);
+  auto sent = connection_->SendKeepalive(now_ms, interval_ms);
   if (!sent) {
     return LinkRoe::error(WrapConnectionFailure(sent.error()));
   }

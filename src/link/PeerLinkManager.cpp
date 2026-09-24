@@ -283,6 +283,7 @@ bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
   ApplyProtocolHandlers(link);
   RefreshPresence(link);
   connected_link_ids_.insert(link.Id());
+  ApplyPendingKeepaliveTier(link);
   WatchPathChanges(link);
   EmitLinkEvent(MakeLinkEvent(LinkEvent::Kind::Connected, link));
   // Nested carrier links skip ch0 — product reachability already established via outer mesh.
@@ -904,6 +905,12 @@ void PeerLinkManager::MarkWarm(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   if (auto* link = FindLink(peer_key)) {
     link->MarkWarm();
+    return;
+  }
+  // No link yet (product warms before EnsureAssociation): apply when it connects.
+  auto& pending = pending_keepalive_tiers_[peer_key];
+  if (pending != KeepaliveTier::Hot) {
+    pending = KeepaliveTier::Warm;
   }
 }
 
@@ -911,20 +918,43 @@ void PeerLinkManager::MarkHot(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   if (auto* link = FindLink(peer_key)) {
     link->MarkHot();
+    return;
   }
+  pending_keepalive_tiers_[peer_key] = KeepaliveTier::Hot;
 }
 
 void PeerLinkManager::ClearWarm(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
+  pending_keepalive_tiers_.erase(peer_key);
   if (auto* link = FindLink(peer_key)) {
     link->ClearWarm();
+  }
+}
+
+void PeerLinkManager::ApplyPendingKeepaliveTier(PeerLink& link) {
+  KeepaliveTier tier = KeepaliveTier::None;
+  for (const std::string& key : {link.PeerKey(), link.RemotePeerId()}) {
+    if (key.empty()) {
+      continue;
+    }
+    if (auto it = pending_keepalive_tiers_.find(key); it != pending_keepalive_tiers_.end()) {
+      tier = std::max(tier, it->second);
+      pending_keepalive_tiers_.erase(it);
+    }
+  }
+  if (tier == KeepaliveTier::Hot) {
+    link.MarkHot();
+  } else if (tier == KeepaliveTier::Warm && link.GetKeepaliveTier() == KeepaliveTier::None) {
+    link.MarkWarm();
   }
 }
 
 void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
   std::lock_guard lock(strand_mu_);
   table_.ForEach([&](PeerLink& link) {
-    if (link.Phase() != PeerLinkPhase::Connected || link.IsCarrierBacked() || !link.IsOutbound()) {
+    // Any warm/hot ADP link keeps its own cadence (inbound too): the tier widens its liveness window
+    // only once announced, and the echo keeps the NAT open in both directions.
+    if (link.Phase() != PeerLinkPhase::Connected || link.IsCarrierBacked()) {
       return;
     }
     const auto tier = link.GetKeepaliveTier();
@@ -939,7 +969,7 @@ void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
     if (link.LastKeepaliveTxMs() != 0 && now_ms - link.LastKeepaliveTxMs() < interval_ms) {
       return;
     }
-    (void)link.SendKeepalive(now_ms);
+    (void)link.SendKeepalive(now_ms, static_cast<uint32_t>(interval_ms));
   });
 }
 
@@ -1009,6 +1039,10 @@ void PeerLinkManager::Tick() {
     }
   }
 
+  // Before eviction: a freshly warmed link announces its cadence (widening its liveness window)
+  // before it is judged against the cold 5 s window.
+  MaybeSendKeepalives(now);
+
   std::vector<std::pair<std::string, LinkDropReason>> evict;
   table_.ForEach([&](PeerLink& link) {
     if (link.IsCarrierBacked()) {
@@ -1018,10 +1052,10 @@ void PeerLinkManager::Tick() {
       return;
     }
     auto* conn = link.ConnectionOrNull();
-    // A closed ADP association is dead whatever the keepalive tier (B25): after a network
-    // change the link object can stay Connected+Warm while Connection is already closed.
-    if (conn && link.Phase() == PeerLinkPhase::Connected &&
-        (conn->IsClosed() || (!conn->LooksAlive(now) && !link.IsWarm()))) {
+    // Closed, or silent past its liveness window. Warm/hot links are no longer exempt: their
+    // keepalives request an echo and widen the window to 5/2 × cadence, so silence past it
+    // means the peer / path is dead (B25 + dead-peer detection, docs/KEEPALIVE.md).
+    if (conn && link.Phase() == PeerLinkPhase::Connected && (conn->IsClosed() || !conn->LooksAlive(now))) {
       evict.emplace_back(link.PeerKey(), conn->IsClosed() ? LinkDropReason::ConnectionClosed
                                                           : LinkDropReason::ConnectionDead);
     }
@@ -1062,8 +1096,6 @@ void PeerLinkManager::Tick() {
       PostCompletion(std::move(c));
     }
   }
-
-  MaybeSendKeepalives(now);
 }
 
 void PeerLinkManager::EnableNestedCarrierAccept(const bool enable, std::string protocol_id) {

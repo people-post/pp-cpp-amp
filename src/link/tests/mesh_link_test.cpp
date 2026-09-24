@@ -238,6 +238,26 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
   EXPECT_FALSE(events[0].was_connected);
 }
 
+// Product warms a peer before dialing it (chat foreground); the tier must not be lost.
+TEST(MeshLinkTest, MarkWarmBeforeAssociationAppliesOnConnect) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_a->MarkWarm("bob");
+  ASSERT_EQ(fixture->mgr_a->FindLink("bob"), nullptr);
+
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated; });
+  ASSERT_TRUE(associated);
+  auto* link = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(link, nullptr);
+  EXPECT_EQ(link->GetKeepaliveTier(), KeepaliveTier::Warm);
+}
+
 TEST(MeshLinkTest, LinkEventsConnectedThenDeadDrop) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();

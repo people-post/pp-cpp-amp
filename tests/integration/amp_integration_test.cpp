@@ -765,6 +765,53 @@ TEST_F(AmpIntegrationTest, WarmLinkSurvivesIdle) {
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
 }
 
+// Only the dialer marks the link hot (relay reservation pattern). The cold inbound end learns the
+// cadence from keepalives and must not evict after kAliveTimeoutMs (dogfood 2026-09-24).
+TEST_F(AmpIntegrationTest, HotDialerKeepsColdInboundAlive) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+  h.mgr_a().MarkHot("b");
+  for (int i = 0; i < 120; ++i) {  // 60 s idle in 500 ms steps
+    h.AdvanceMs(500);
+    h.PumpBudget(2);
+  }
+  EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+  EXPECT_TRUE(h.mgr_b().IsConnectedToPeerId(h.peer_id_a)) << "cold inbound end must honour the cadence";
+}
+
+// Dead-peer detection: a hot link whose peer goes silent is evicted after its widened window,
+// no longer kept forever because it is warm/hot.
+TEST_F(AmpIntegrationTest, HotLinkEvictedWhenPeerGoesSilent) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  ASSERT_TRUE(h.Associate());
+  h.mgr_a().MarkHot("b");
+  h.AdvanceMs(100);
+  h.PumpBudget(4);
+  ASSERT_TRUE(h.mgr_a().IsConnected("b"));
+
+  std::vector<pp::amp::LinkEvent> dropped;
+  h.mgr_a().AddLinkEventListener([&](const pp::amp::LinkEvent& event) {
+    if (event.kind == pp::amp::LinkEvent::Kind::Dropped) {
+      dropped.push_back(event);
+    }
+  });
+  h.io_b->SetDropRate(1.0);  // B's sends (echoes) vanish
+  const int64_t window = h.mgr_a().FindLink("b")->ConnectionOrNull()->LivenessWindowMs();
+  ASSERT_GT(window, pp::adp::kAliveTimeoutMs);
+  for (int64_t t = 0; t <= window + 2'000 && h.mgr_a().IsConnected("b"); t += 500) {
+    h.AdvanceMs(500);
+    h.PumpBudget(1);
+  }
+  EXPECT_FALSE(h.mgr_a().IsConnected("b"));
+  ASSERT_FALSE(dropped.empty());
+  EXPECT_EQ(dropped[0].reason, pp::amp::LinkDropReason::ConnectionDead);
+  EXPECT_TRUE(dropped[0].was_connected);
+}
+
 TEST_F(AmpIntegrationTest, OutboundWarmKeepaliveRefreshesAssociation) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));
