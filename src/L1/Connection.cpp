@@ -4,6 +4,7 @@
 #include "amp/L1/WireCodec.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <utility>
@@ -75,17 +76,52 @@ bool Connection::LooksAlive(int64_t now_ms) const {
   if (closed_ || last_auth_rx_ms_ == 0) {
     return false;
   }
-  return (now_ms - last_auth_rx_ms_) <= kAliveTimeoutMs;
+  return (now_ms - last_auth_rx_ms_) <= LivenessWindowMs();
 }
 
-Connection::Roe<void> Connection::SendKeepalive(const int64_t now_ms) {
+int64_t Connection::LivenessWindowMs() const {
+  const int64_t cadence = std::max(local_keepalive_interval_ms_, peer_keepalive_interval_ms_);
+  return std::max(kAliveTimeoutMs, cadence * kKeepaliveLivenessNumerator / kKeepaliveLivenessDenominator);
+}
+
+Connection::Roe<void> Connection::SendKeepalive(const int64_t now_ms, const uint32_t interval_ms) {
+  local_keepalive_interval_ms_ = interval_ms;
+  return SendKeepalivePacket(now_ms, interval_ms, kKeepaliveFlagEchoRequest);
+}
+
+Connection::Roe<void> Connection::StopKeepalive(const int64_t now_ms) {
+  if (local_keepalive_interval_ms_ == 0) {
+    return Roe<void>();
+  }
+  local_keepalive_interval_ms_ = 0;
+  return SendKeepalivePacket(now_ms, 0, 0);
+}
+
+Connection::Roe<void> Connection::SendKeepalivePacket(const int64_t now_ms, const uint32_t interval_ms,
+                                                       const uint8_t flags) {
   if (closed_) {
     return Failure::Of(Err::Closed, "adp: keepalive on closed connection");
   }
   if (peer_.port == 0) {
     return Failure::Of(Err::WireError, "adp: keepalive without peer endpoint");
   }
-  return SendPacket(PacketType::Keepalive, 0, {}, now_ms);
+  const std::array<uint8_t, kKeepalivePayloadBytes> payload = {
+      static_cast<uint8_t>(interval_ms >> 24), static_cast<uint8_t>(interval_ms >> 16),
+      static_cast<uint8_t>(interval_ms >> 8), static_cast<uint8_t>(interval_ms), flags};
+  return SendPacket(PacketType::Keepalive, 0, payload, now_ms);
+}
+
+void Connection::HandleKeepalive(const WirePacket& pkt, const int64_t now_ms) {
+  if (pkt.payload.size() < kKeepalivePayloadBytes) {
+    return;
+  }
+  const auto& p = pkt.payload;
+  peer_keepalive_interval_ms_ = (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+                                (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+  if ((p[4] & kKeepaliveFlagEchoRequest) != 0) {
+    // Echo carries our own cadence (0 if we keep none) and never requests an echo back.
+    (void)SendKeepalivePacket(now_ms, local_keepalive_interval_ms_, 0);
+  }
 }
 
 uint32_t Connection::TruncTs(int64_t now_ms) const {
@@ -264,6 +300,7 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     break;
   }
   case PacketType::Keepalive: {
+    HandleKeepalive(pkt, now_ms);
     break;
   }
   case PacketType::DataBestEffort: {

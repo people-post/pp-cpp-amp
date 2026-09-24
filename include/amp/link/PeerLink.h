@@ -114,7 +114,8 @@ public:
   bool IsWarm() const { return keepalive_tier_ != KeepaliveTier::None; }
   KeepaliveTier GetKeepaliveTier() const { return keepalive_tier_; }
 
-  LinkRoe SendKeepalive(int64_t now_ms);
+  /** Scheduled keepalive announcing `interval_ms` (echo requested — docs/KEEPALIVE.md). */
+  LinkRoe SendKeepalive(int64_t now_ms, uint32_t interval_ms);
   int64_t LastKeepaliveTxMs() const { return last_keepalive_tx_ms_; }
   void SetLastKeepaliveTxMs(int64_t ms) { last_keepalive_tx_ms_ = ms; }
 

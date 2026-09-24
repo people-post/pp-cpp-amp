@@ -72,9 +72,18 @@ public:
   void OnPathChange(PathChangeHandler handler) { on_path_change_ = std::move(handler); }
 
   bool LooksAlive(int64_t now_ms) const;
+  /** max(kAliveTimeoutMs, 5/2 × max(local, peer keepalive interval)). */
+  int64_t LivenessWindowMs() const;
+  /** Interval the peer announced in its last keepalive (0 = none / stopped). */
+  uint32_t PeerKeepaliveIntervalMs() const { return peer_keepalive_interval_ms_; }
 
-  /** Send an empty Keepalive packet (BestEffort-style; no app payload). */
-  Roe<void> SendKeepalive(int64_t now_ms);
+  /**
+   * Scheduled keepalive: announces our cadence (widens both sides' liveness window) and asks the
+   * peer to echo, so the sender keeps receiving and NAT stays open in both directions.
+   */
+  Roe<void> SendKeepalive(int64_t now_ms, uint32_t interval_ms);
+  /** Tier dropped to cold: tell the peer our cadence stopped (interval 0, no echo). */
+  Roe<void> StopKeepalive(int64_t now_ms);
 
   /** Drive retransmits / close drain. */
   void Tick(int64_t now_ms);
@@ -119,6 +128,11 @@ private:
   MessageHandler on_message_;
   PathChangeHandler on_path_change_;
   int64_t last_auth_rx_ms_ = 0;
+  uint32_t local_keepalive_interval_ms_ = 0;
+  uint32_t peer_keepalive_interval_ms_ = 0;
+
+  Roe<void> SendKeepalivePacket(int64_t now_ms, uint32_t interval_ms, uint8_t flags);
+  void HandleKeepalive(const WirePacket& pkt, int64_t now_ms);
 
   struct Outstanding {
     uint32_t seq = 0;

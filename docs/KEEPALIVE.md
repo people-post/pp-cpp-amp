@@ -1,35 +1,52 @@
 # ADP keepalive (NAT / association maintenance)
 
-**Status:** v1 (2026-09-01)
+**Status:** v2 (2026-09-24) — cadence-aware liveness + echo + dead-peer eviction
 
 ## Purpose
 
-UDP associations behind NAT lose router mappings after idle periods (often 30–120 s). Application-level liveness (`LooksAlive`, 5 s) evicts cold links quickly. **Keepalive** lets warm/hot links refresh NAT mappings without application traffic.
+UDP associations behind NAT lose router mappings after idle periods (cellular CGNAT can be 20–30 s, home routers 30–120 s). Links that must survive idle (relay reservations, standby paths, warm chat peers) keep a **keepalive cadence**; everything else is **cold** and is evicted quickly when silent.
+
+## Liveness window
+
+Each `adp::Connection` judges liveness against
+
+```
+window = max(kAliveTimeoutMs (5 s), 5/2 × max(local cadence, peer cadence))
+```
+
+- *local cadence* — the interval we announced in our last scheduled keepalive (0 after `StopKeepalive`);
+- *peer cadence* — the interval the peer announced in its last keepalive (0 = none / stopped).
+
+`LooksAlive(now)` = authenticated RX within `window`. The 5/2 factor tolerates ~2 lost keepalives.
+
+v1 used a fixed 5 s window on the receiver whatever the sender's tier, so a warm/hot sender (60 s / 20 s) was evicted by its cold peer after 5 s (dogfood 2026-09-24: relay reservations dropped).
 
 ## Wire
 
 | Field | Value |
 |-------|-------|
 | `PacketType` | `Keepalive` (4) |
-| Payload | empty |
 | seq | 0 |
+| Payload | `u32` BE sender cadence ms (0 = stopped) · `u8` flags |
+| Flags | `0x01` echo request |
 
-Receiving a Keepalive updates `last_auth_rx_ms_` like any authenticated packet. No `on_message_` callback.
+On receipt: record the peer cadence; if echo is requested, reply at once with a keepalive carrying our own cadence and **no** echo request (no ping-pong loops). The echo gives the sender RX (so silence means a dead peer / path) and refreshes NAT mappings in both directions.
 
 ## Link policy
 
-| Tier | API | Outbound interval (default) | Eviction |
-|------|-----|----------------------------|----------|
-| Cold | (default) | none | Evicted when `LooksAlive` false (~5 s idle) |
-| Warm | `PeerLinkManager::MarkWarm` | 60 s | Skips `LooksAlive` eviction |
-| Hot | `PeerLinkManager::MarkHot` | 20 s | Skips `LooksAlive` eviction |
+| Tier | API | Cadence (Amp default) | Eviction |
+|------|-----|-----------------------|----------|
+| Cold | (default) / `ClearWarm` | none | Silent > 5 s (or peer cadence window) |
+| Warm | `PeerLinkManager::MarkWarm` | `keepalive_warm_interval` (60 s) | Silent > window (dead-peer) |
+| Hot | `PeerLinkManager::MarkHot` | `keepalive_hot_interval` (20 s) | Silent > window (dead-peer) |
 
-**Sender rule:** only **outbound** connected links send scheduled keepalives. Public / inbound peers respond to normal traffic; they do not initiate keepalive timers.
+- **Any** Connected ADP link with a warm/hot tier sends scheduled keepalives — inbound too.
+- Warm/hot links are **not** exempt from eviction: with echoes, silence past the window means dead (reason `connection-dead` in `LinkEvent`). A closed Connection is evicted immediately (B25).
+- `ClearWarm` sends a stop notice (cadence 0, no echo) so both ends return to the cold window.
+- `PeerLinkManager::Tick` sends due keepalives **before** eviction, so a freshly warmed link announces its cadence before it is judged against the cold window.
 
-Configure intervals via `PeerLinkConfig::keepalive_hot_interval` / `keepalive_warm_interval`.
+Configure cadences via `PeerLinkConfig::keepalive_hot_interval` / `keepalive_warm_interval`; products choose tiers (pp-browser: call-path-resilience K008).
 
 ## Integration
 
-`PeerLinkManager::Tick()` calls `MaybeSendKeepalives()` after idle eviction. Drive via `MeshRuntime::Tick()` / `MeshPump::Tick()`.
-
-Product layers (pp-browser) choose when to `MarkWarm` / `MarkHot` / `ClearWarm` on active peers.
+Drive via `MeshRuntime::Tick()` / `MeshPump::Tick()`. Tests: `AdpConnTest.KeepaliveAnnouncesCadenceAndEchoes`, `AmpIntegrationTest.HotDialerKeepsColdInboundAlive`, `AmpIntegrationTest.HotLinkEvictedWhenPeerGoesSilent`.
