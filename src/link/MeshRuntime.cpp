@@ -236,6 +236,11 @@ void MeshRuntime::RemoveLinkEventListener(const LinkEventListenerId id) {
   links_.RemoveLinkEventListener(id);
 }
 
+size_t MeshRuntime::RequestDropLink(const DialKey& peer_key) {
+  std::lock_guard lock(io_mu_);
+  return links_.RequestDropLink(peer_key);
+}
+
 void MeshRuntime::EnsureAssociation(const DialKey& peer_key, PeerLinkManager::LinkCb on_complete) {
   links_.EnsureAssociation(peer_key, std::move(on_complete));
 }
