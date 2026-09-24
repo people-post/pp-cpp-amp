@@ -47,6 +47,8 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    poster — never on the link's own callback stack — and carry `LinkHandle` + ids,
    not `PeerLink&`. Amp stays logging-free; products log / react to events instead of
    polling `FindLink`. Every drop site must pass a reason (`ScheduleDropLink(key, reason)`).
+   Products drop a link they know is stale with `RequestDropLink(dial key or PeerId)` (reason
+   `requested`, scheduled on Tick) — never via `FindLink` + `Connection::Close`.
 
 ## Consequences
 

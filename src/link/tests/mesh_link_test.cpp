@@ -239,6 +239,38 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
 }
 
 // Product warms a peer before dialing it (chat foreground); the tier must not be lost.
+// pp-browser B39: product drops a link it knows is stale; both ends evict it, reason "requested".
+TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+  const std::string bob_peer_id = fixture->mgr_a->FindLink("bob")->RemotePeerId();
+
+  std::vector<LinkEvent> dropped;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) {
+    if (event.kind == LinkEvent::Kind::Dropped) {
+      dropped.push_back(event);
+    }
+  });
+  // By PeerId (what the call bridge knows), not the dial alias.
+  EXPECT_EQ(fixture->mgr_a->RequestDropLink(bob_peer_id), 1u);
+  EXPECT_TRUE(fixture->mgr_a->IsConnected("bob")) << "scheduled, not inline";
+  fixture->PumpBoth();
+  EXPECT_FALSE(fixture->mgr_a->IsConnected("bob"));
+  ASSERT_EQ(dropped.size(), 1u);
+  EXPECT_EQ(dropped[0].reason, LinkDropReason::Requested);
+  fixture->PumpUntil([&] { return fixture->mgr_b->FindConnectedInboundLink() == nullptr; });
+  EXPECT_EQ(fixture->mgr_b->FindConnectedInboundLink(), nullptr) << "peer evicts on our Close";
+  EXPECT_EQ(fixture->mgr_a->RequestDropLink("nobody"), 0u);
+}
+
 TEST(MeshLinkTest, MarkWarmBeforeAssociationAppliesOnConnect) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();

@@ -178,6 +178,13 @@ public:
 
   void ClearDialBackoff(const std::string& peer_key);
   void AbortInflightDial(const std::string& peer_key);
+  /**
+   * Drop the ADP link(s) behind `peer_key` (dial key and/or PeerId) on the next Tick, closing the
+   * association (peer is told). For links the product knows are stale although they still read
+   * Connected — the next dial uses fresh DialBook candidates. Carrier links are left alone.
+   * @return number of links scheduled.
+   */
+  size_t RequestDropLink(const std::string& peer_key);
 
   /**
    * Amp-internal / tests — prefer WithLiveLink / snapshots for product.

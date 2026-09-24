@@ -731,6 +731,24 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, LinkRoe result) {
   }
 }
 
+size_t PeerLinkManager::RequestDropLink(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
+  std::vector<std::string> keys;
+  for (PeerLink* link : {FindLink(peer_key), FindLinkByPeerId(peer_key)}) {
+    if (!link || link->IsCarrierBacked()) {
+      continue;
+    }
+    if (std::find(keys.begin(), keys.end(), link->PeerKey()) == keys.end()) {
+      keys.push_back(link->PeerKey());
+    }
+  }
+  // Scheduled (Tick), never inline: callers may sit on a link / channel callback stack.
+  for (auto& key : keys) {
+    ScheduleDropLink(std::move(key), LinkDropReason::Requested);
+  }
+  return keys.size();
+}
+
 void PeerLinkManager::ClearDialBackoff(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   book_.ClearBackoff(peer_key);

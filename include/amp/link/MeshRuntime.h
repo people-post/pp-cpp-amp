@@ -106,6 +106,8 @@ public:
   /** Link lifecycle events; delivered on the PostToIo lane. */
   LinkEventListenerId AddLinkEventListener(LinkEventListener listener);
   void RemoveLinkEventListener(LinkEventListenerId id);
+  /** PeerLinkManager::RequestDropLink under the strand. */
+  size_t RequestDropLink(const DialKey& peer_key);
   void EnsureAssociation(const DialKey& peer_key, PeerLinkManager::LinkCb on_complete);
   void OpenChannel(const DialKey& peer_key, const std::string& protocol_id, ChannelPolicy policy,
                    PeerLinkManager::ChannelCb on_complete);

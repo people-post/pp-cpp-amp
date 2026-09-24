@@ -26,6 +26,8 @@ enum class LinkDropReason : uint8_t {
   DialAborted,
   /** Non-Connected occupant displaced by a fresh dial or alias adoption. */
   Displaced,
+  /** Product asked to drop it (RequestDropLink — e.g. stale link after the peer changed network). */
+  Requested,
 };
 
 inline const char* LinkDropReasonName(const LinkDropReason reason) {
@@ -50,6 +52,8 @@ inline const char* LinkDropReasonName(const LinkDropReason reason) {
     return "dial-aborted";
   case LinkDropReason::Displaced:
     return "displaced";
+  case LinkDropReason::Requested:
+    return "requested";
   }
   return "unknown";
 }
