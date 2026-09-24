@@ -103,6 +103,9 @@ public:
   void RemoveIoTick(IoTickId id);
 
   // --- Product-facing link plane (forwards to PeerLinkManager under strand) ---
+  /** Link lifecycle events; delivered on the PostToIo lane. */
+  LinkEventListenerId AddLinkEventListener(LinkEventListener listener);
+  void RemoveLinkEventListener(LinkEventListenerId id);
   void EnsureAssociation(const DialKey& peer_key, PeerLinkManager::LinkCb on_complete);
   void OpenChannel(const DialKey& peer_key, const std::string& protocol_id, ChannelPolicy policy,
                    PeerLinkManager::ChannelCb on_complete);

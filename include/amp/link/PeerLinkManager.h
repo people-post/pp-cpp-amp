@@ -7,6 +7,7 @@
 #include "amp/L2/Types.h"
 #include "amp/link/CodedFailure.h"
 #include "amp/link/DialBook.h"
+#include "amp/link/LinkEvents.h"
 #include "amp/link/LinkIdentity.h"
 #include "amp/link/LinkTable.h"
 #include "amp/link/PeerLink.h"
@@ -86,6 +87,9 @@ public:
   void SetPeerConnectedListener(PeerConnectedListener listener);
   void ClearPeerConnectedListeners();
   void ClearPeerConnectedListener() { ClearPeerConnectedListeners(); }
+  /** Link lifecycle events (Connected / Dropped+reason / PathChanged), posted like PeerConnected. */
+  LinkEventListenerId AddLinkEventListener(LinkEventListener listener);
+  void RemoveLinkEventListener(LinkEventListenerId id);
 
   adp::Endpoint& GetEndpoint() { return endpoint_; }
   const std::string& LocalPeerId() const { return local_peer_id_; }
@@ -200,7 +204,7 @@ private:
   void InstallAcceptHandler();
   void OnInboundConnection(std::shared_ptr<adp::Connection> connection);
   bool OnLinkEstablished(PeerLink& link);
-  void ScheduleDropLink(std::string peer_key);
+  void ScheduleDropLink(std::string peer_key, LinkDropReason reason);
   void ApplyProtocolHandlers(PeerLink& link);
   void StartCapabilityExchange(PeerLink& link);
   void OnCapabilityData(const std::string& peer_key, std::vector<uint8_t> payload);
@@ -219,7 +223,11 @@ private:
   PeerLink* FindConnectedLinkForPeerId(const std::string& peer_id);
   PeerLink* FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id);
   PeerLink* ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const;
-  void DropLink(const std::string& peer_key);
+  void DropLink(const std::string& peer_key, LinkDropReason reason);
+  /** Copy listeners under the strand and post `event` off-stack. */
+  void EmitLinkEvent(LinkEvent event);
+  LinkEvent MakeLinkEvent(LinkEvent::Kind kind, PeerLink& link) const;
+  void WatchPathChanges(PeerLink& link);
   void ScheduleAdoptDialAlias(std::string remote_peer_id, std::string dial_alias);
   void MaybeSendKeepalives(int64_t now_ms);
   void PostCompletion(std::function<void()> fn);
@@ -229,6 +237,7 @@ private:
                             const std::string& multiaddr) const;
 
   static Failure WrapPeerLinkFailure(const PeerLink::Failure& child);
+  static LinkDropReason DropReasonFor(const Failure& failure);
   static LinkRoe WrapPeerLinkResult(const PeerLink::LinkRoe& child);
 
   adp::Endpoint& endpoint_;
@@ -242,6 +251,10 @@ private:
   CompletionPoster completion_poster_;
   std::unordered_map<PeerConnectedListenerId, PeerConnectedListener> peer_connected_listeners_;
   std::atomic<PeerConnectedListenerId> next_peer_connected_listener_id_{1};
+  std::unordered_map<LinkEventListenerId, LinkEventListener> link_event_listeners_;
+  std::atomic<LinkEventListenerId> next_link_event_listener_id_{1};
+  /** Links that reached Connected (LinkEvent::was_connected); erased on DropLink. */
+  std::unordered_set<LinkId> connected_link_ids_;
   bool nested_carrier_accept_ = false;
   std::string nested_carrier_protocol_id_;
 
@@ -249,7 +262,7 @@ private:
   std::unordered_map<std::string, std::vector<LinkCb>> inflight_associations_;
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;
-  std::vector<std::string> pending_drop_keys_;
+  std::vector<std::pair<std::string, LinkDropReason>> pending_drop_keys_;
   /** After a failed dial, try next DialBook candidate once the link is dropped (Tick). */
   std::vector<std::string> pending_candidate_retry_;
   std::vector<std::pair<std::string, std::string>> pending_alias_adopt_;

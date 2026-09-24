@@ -54,6 +54,8 @@ public:
   void SetPeerEndpoint(IpEndpoint peer);
   void UpgradeBinder(PeerKey key);
   IpEndpoint PeerEndpoint() const { return peer_; }
+  /** Amp-clock ms of the last authenticated RX; 0 if none yet. */
+  int64_t LastAuthRxMs() const { return last_auth_rx_ms_; }
   AssocId Id() const { return id_; }
 
   Roe<void> Send(QosClass qos, std::span<const uint8_t> payload);

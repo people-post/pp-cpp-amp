@@ -203,6 +203,9 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
   carrier->Bind(*outbound->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
                 [](Roe<std::vector<uint8_t>>) { return true; });
 
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
+
   // Bob never answers the nested handshake, so it stays Handshaking until the reset lands.
   std::optional<PeerLinkManager::LinkRoe> nested;
   fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", carrier, true,
@@ -226,6 +229,59 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
   fixture->pump_a->Tick();
   EXPECT_EQ(fixture->mgr_a->FindLink("nested:bob"), nullptr);
   EXPECT_TRUE(fixture->mgr_a->IsConnected("bob"));
+
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].kind, LinkEvent::Kind::Dropped);
+  EXPECT_EQ(events[0].dial_key, "nested:bob");
+  EXPECT_EQ(events[0].transport, TransportClass::Carrier);
+  EXPECT_EQ(events[0].reason, LinkDropReason::CarrierClosed);
+  EXPECT_FALSE(events[0].was_connected);
+}
+
+TEST(MeshLinkTest, LinkEventsConnectedThenDeadDrop) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+
+  std::vector<LinkEvent> events_a;
+  std::vector<LinkEvent> events_b;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events_a.push_back(event); });
+  const auto id_b =
+      fixture->mgr_b->AddLinkEventListener([&](const LinkEvent& event) { events_b.push_back(event); });
+
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] {
+    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
+  });
+  ASSERT_TRUE(associated);
+
+  ASSERT_EQ(events_a.size(), 1u);
+  EXPECT_EQ(events_a[0].kind, LinkEvent::Kind::Connected);
+  EXPECT_EQ(events_a[0].dial_key, "bob");
+  EXPECT_TRUE(events_a[0].outbound);
+  EXPECT_EQ(events_a[0].transport, TransportClass::Adp);
+  EXPECT_FALSE(events_a[0].peer_id.empty());
+  ASSERT_TRUE(events_a[0].remote.has_value());
+  EXPECT_EQ(*events_a[0].remote, fixture->addr_b);
+  ASSERT_EQ(events_b.size(), 1u);
+  EXPECT_EQ(events_b[0].kind, LinkEvent::Kind::Connected);
+  EXPECT_FALSE(events_b[0].outbound);
+  fixture->mgr_b->RemoveLinkEventListener(id_b);
+
+  // Cold link, no traffic past kAliveTimeoutMs → Tick evicts it as dead.
+  fixture->clock->Advance(adp::kAliveTimeoutMs + 1000);
+  fixture->pump_a->Tick();
+  ASSERT_EQ(events_a.size(), 2u);
+  EXPECT_EQ(events_a[1].kind, LinkEvent::Kind::Dropped);
+  EXPECT_EQ(events_a[1].reason, LinkDropReason::ConnectionDead);
+  EXPECT_TRUE(events_a[1].was_connected);
+  EXPECT_EQ(events_a[1].handle, events_a[0].handle);
+  EXPECT_GE(events_a[1].last_rx_age_ms, adp::kAliveTimeoutMs);
+  EXPECT_EQ(events_b.size(), 1u) << "removed listener must not fire";
 }
 
 TEST(MeshRuntimeTest, PumpDrivesAssociationRoundTrip) {

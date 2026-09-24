@@ -228,6 +228,14 @@ void MeshRuntime::RemoveIoTick(const IoTickId id) {
   }
 }
 
+LinkEventListenerId MeshRuntime::AddLinkEventListener(LinkEventListener listener) {
+  return links_.AddLinkEventListener(std::move(listener));
+}
+
+void MeshRuntime::RemoveLinkEventListener(const LinkEventListenerId id) {
+  links_.RemoveLinkEventListener(id);
+}
+
 void MeshRuntime::EnsureAssociation(const DialKey& peer_key, PeerLinkManager::LinkCb on_complete) {
   links_.EnsureAssociation(peer_key, std::move(on_complete));
 }

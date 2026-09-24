@@ -357,6 +357,13 @@ TEST_F(AmpIntegrationTest, PathMigrateMidSession) {
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg1));
   ASSERT_TRUE(h.PumpUntilReceived(received, [&] { return received == msg1; }));
 
+  std::vector<pp::amp::LinkEvent> path_events;
+  h.mgr_b().AddLinkEventListener([&](const pp::amp::LinkEvent& event) {
+    if (event.kind == pp::amp::LinkEvent::Kind::PathChanged) {
+      path_events.push_back(event);
+    }
+  });
+
   const pp::adp::IpEndpoint alt_a = pp::adp::IpEndpoint::V4(10, 0, 0, 1, 1001);
   const std::vector<uint8_t> ping = {'p'};
   ASSERT_TRUE(h.SendSealedFromAlternatePath(HarnessSide::A, "b", *ch, alt_a, ping, 2));
@@ -364,6 +371,12 @@ TEST_F(AmpIntegrationTest, PathMigrateMidSession) {
     h.PumpBoth();
   }
   EXPECT_EQ(inbound_conn->PeerEndpoint(), alt_a);
+  ASSERT_FALSE(path_events.empty());
+  EXPECT_EQ(path_events[0].peer_id, h.peer_id_a);
+  ASSERT_TRUE(path_events[0].previous_remote.has_value());
+  ASSERT_TRUE(path_events[0].remote.has_value());
+  EXPECT_EQ(*path_events[0].previous_remote, h.addr_a);
+  EXPECT_EQ(*path_events[0].remote, alt_a);
 
   const std::vector<uint8_t> msg2 = {'b'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg2));
