@@ -40,6 +40,13 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    consumer needs them (no empty placeholder types).
 8. **Strand mutex is non-recursive** once completions are deferred; affinity is
    “called only from MeshRuntime Drive/PostToIo/PostDeferred.”
+9. **Link events** (`amp/link/LinkEvents.h`, `MeshRuntime::AddLinkEventListener`):
+   `Connected` (after dual-dial adoption), `Dropped` (every `DropLink`, with a
+   `LinkDropReason`, `was_connected`, last-RX age) and `PathChanged` (ADP remote
+   endpoint migration, from `Connection::OnPathChange`). Posted via the completion
+   poster — never on the link's own callback stack — and carry `LinkHandle` + ids,
+   not `PeerLink&`. Amp stays logging-free; products log / react to events instead of
+   polling `FindLink`. Every drop site must pass a reason (`ScheduleDropLink(key, reason)`).
 
 ## Consequences
 
