@@ -335,7 +335,9 @@ bool PeerLinkManager::AdoptInboundOrDropDuplicate(PeerLink& candidate) {
   if (!existing) {
     if (!candidate.IsOutbound()) {
       for (const auto& [alias, rec] : book_.Endpoints()) {
-        if (rec.peer_id == remote && !table_.ContainsDialKey(alias)) {
+        // Skip BurstDial leftovers: an aborted punch's amp:burst:* record once named a relay
+        // carrier link (pp-browser dogfood 2026-09-24 16:17).
+        if (rec.peer_id == remote && !IsEphemeralDialKey(alias) && !table_.ContainsDialKey(alias)) {
           BindDialAlias(candidate.Id(), alias);
           return true;
         }
@@ -368,7 +370,8 @@ bool PeerLinkManager::AdoptInboundOrDropDuplicate(PeerLink& candidate) {
   // Winner is the new candidate — prefer dial alias when free.
   if (!candidate.IsOutbound()) {
     for (const auto& [alias, rec] : book_.Endpoints()) {
-      if (rec.peer_id == remote && !table_.ContainsDialKey(alias) && candidate.PeerKey() != alias) {
+      if (rec.peer_id == remote && !IsEphemeralDialKey(alias) && !table_.ContainsDialKey(alias) &&
+          candidate.PeerKey() != alias) {
         BindDialAlias(candidate.Id(), alias);
         return true;
       }
@@ -801,10 +804,11 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
   if (table_.size() >= book_.Config().max_links) {
     return;
   }
+  static constexpr char kHex[] = "0123456789abcdef";
   std::string peer_key = "inbound:";
-  for (size_t i = 0; i < connection->Id().bytes.size(); ++i) {
-    peer_key.push_back(static_cast<char>('0' + (connection->Id().bytes[i] >> 4)));
-    peer_key.push_back(static_cast<char>('0' + (connection->Id().bytes[i] & 0x0f)));
+  for (const uint8_t byte : connection->Id().bytes) {
+    peer_key.push_back(kHex[byte >> 4]);
+    peer_key.push_back(kHex[byte & 0x0f]);
   }
   if (table_.ContainsDialKey(peer_key)) {
     return;

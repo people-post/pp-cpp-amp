@@ -271,6 +271,39 @@ TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
   EXPECT_EQ(fixture->mgr_a->RequestDropLink("nobody"), 0u);
 }
 
+// BurstDial leaves amp:burst:* records in the DialBook; inbound adopt must not take them as the new
+// link's alias (pp-browser dogfood 2026-09-24: an aborted punch key named a relay carrier link).
+TEST(MeshLinkTest, InboundAdoptSkipsEphemeralBurstAlias) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+  const std::string alice_id = fixture->mgr_b->FindConnectedInboundLink()->RemotePeerId();
+  ASSERT_FALSE(alice_id.empty());
+
+  // Drop, then leave an aborted-punch style record for Alice in Bob's book.
+  ASSERT_EQ(fixture->mgr_a->RequestDropLink("bob"), 1u);
+  fixture->PumpUntil([&] { return fixture->mgr_b->FindConnectedInboundLink() == nullptr; });
+  auto alice_ma = FormatAdpMultiaddr(fixture->addr_a, alice_id);
+  ASSERT_TRUE(static_cast<bool>(alice_ma));
+  ASSERT_TRUE(static_cast<bool>(
+      fixture->mgr_b->RegisterEndpoint(std::string(kBurstDialKeyPrefix) + "0:" + alice_id.substr(0, 12), *alice_ma)));
+
+  associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+  auto* inbound = fixture->mgr_b->FindConnectedInboundLink();
+  ASSERT_NE(inbound, nullptr);
+  EXPECT_FALSE(IsEphemeralDialKey(inbound->PeerKey())) << inbound->PeerKey();
+}
+
 TEST(MeshLinkTest, MarkWarmBeforeAssociationAppliesOnConnect) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();
@@ -322,6 +355,11 @@ TEST(MeshLinkTest, LinkEventsConnectedThenDeadDrop) {
   ASSERT_EQ(events_b.size(), 1u);
   EXPECT_EQ(events_b[0].kind, LinkEvent::Kind::Connected);
   EXPECT_FALSE(events_b[0].outbound);
+  // Inbound dial key = "inbound:" + assoc id as lowercase hex (was '0'+nibble → ":;<=>?").
+  ASSERT_EQ(events_b[0].dial_key.size(), std::string("inbound:").size() + 32);
+  EXPECT_EQ(events_b[0].dial_key.rfind("inbound:", 0), 0u);
+  EXPECT_EQ(events_b[0].dial_key.find_first_not_of("0123456789abcdef", 8), std::string::npos)
+      << events_b[0].dial_key;
   fixture->mgr_b->RemoveLinkEventListener(id_b);
 
   // Cold link, no traffic past kAliveTimeoutMs → Tick evicts it as dead.
