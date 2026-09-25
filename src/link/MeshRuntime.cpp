@@ -433,8 +433,8 @@ void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chr
       finish(std::move(ok));
       return;
     }
-    const std::string key =
-        "amp:burst:" + std::to_string(i) + ":" + peer_id.substr(0, std::min<size_t>(peer_id.size(), 12));
+    const std::string key = std::string(kBurstDialKeyPrefix) + std::to_string(i) + ":" +
+                            peer_id.substr(0, std::min<size_t>(peer_id.size(), 12));
     if (auto registered = RegisterEndpoint(key, ma); !registered) {
       if (IsConnectedToPeerId(peer_id)) {
         BurstDialResult ok;

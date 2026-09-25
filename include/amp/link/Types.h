@@ -10,8 +10,17 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <string_view>
 
 namespace pp::amp {
+
+/** DialKey prefix of MeshRuntime::BurstDial's per-candidate ephemeral dials. */
+inline constexpr std::string_view kBurstDialKeyPrefix = "amp:burst:";
+
+/** Ephemeral dial keys never become a link's durable alias (inbound adopt, alias moves). */
+inline bool IsEphemeralDialKey(std::string_view key) {
+  return key.substr(0, kBurstDialKeyPrefix.size()) == kBurstDialKeyPrefix;
+}
 
 inline constexpr const char* kAdpMultiaddrProtocol = "adp";
 inline constexpr const char* kAdpMultiaddrVersion = "1.0.0";
