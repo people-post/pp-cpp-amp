@@ -1089,7 +1089,12 @@ void PeerLinkManager::Tick() {
   std::vector<std::pair<std::string, LinkDropReason>> evict;
   table_.ForEach([&](PeerLink& link) {
     if (link.IsCarrierBacked()) {
-      if (link.Carrier() && link.Carrier()->IsClosed() && link.Phase() == PeerLinkPhase::Connected) {
+      // A closed carrier ends the nested link whatever phase its close left it in: a Connected
+      // link's closed callback drops it to Backoff, which nothing else evicts (it lingered
+      // forever). A handshake in progress has its own deferred drop (FinishNestedCarrier).
+      const auto phase = link.Phase();
+      if (link.Carrier() && link.Carrier()->IsClosed() && phase != PeerLinkPhase::Handshaking &&
+          phase != PeerLinkPhase::Dialing) {
         evict.emplace_back(link.PeerKey(), LinkDropReason::CarrierClosed);
       }
       return;

@@ -283,6 +283,99 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
 
 // Product warms a peer before dialing it (chat foreground); the tier must not be lost.
 // pp-browser B39: product drops a link it knows is stale; both ends evict it, reason "requested".
+/** Associate A→B and bring up a Connected nested link over a carrier channel (B accepts). */
+struct ConnectedNested {
+  uint32_t carrier_channel = 0;
+  LinkHandle outer_b;  // B's end of the outer (ADP) link carrying the carrier
+  std::string nested_key = "nested:bob";
+};
+
+std::optional<ConnectedNested> BringUpConnectedNested(MeshLinkFixture& f) {
+  f.mgr_b->EnableNestedCarrierAccept(true);
+  auto bob_addr = FormatAdpMultiaddr(f.addr_b, "QmBob");
+  if (!bob_addr || !f.mgr_a->RegisterEndpoint("bob", *bob_addr)) {
+    return std::nullopt;
+  }
+  bool associated = false;
+  f.mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  f.PumpUntil([&] { return associated && f.mgr_b->FindConnectedInboundLink() != nullptr; });
+  if (!associated) {
+    return std::nullopt;
+  }
+  const LinkHandle outer_b = f.mgr_b->FindConnectedInboundLink()->Handle();
+  std::optional<uint32_t> channel_id;
+  f.mgr_a->OpenChannel("bob", kAmpCircuitCarrierProtocolId, CircuitCarrierChannelPolicy(),
+                       [&](PeerLinkManager::ChannelRoe ch) {
+                         if (ch.isOk()) {
+                           channel_id = ch.value();
+                         }
+                       });
+  f.PumpUntil([&] {
+    auto* outbound = f.mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  if (!channel_id) {
+    return std::nullopt;
+  }
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*f.mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+  ConnectedNested out;
+  out.carrier_channel = *channel_id;
+  out.outer_b = outer_b;
+  bool nested_ok = false;
+  f.mgr_a->EstablishNestedOverCarrier(out.nested_key, carrier, true,
+                                      [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
+  f.PumpUntil([&] { return nested_ok; });
+  if (!nested_ok) {
+    return std::nullopt;
+  }
+  return out;
+}
+
+/** The carrier-backed link on A under `key`, if any. */
+PeerLink* FindNestedLink(MeshLinkFixture& f, const std::string& key) {
+  auto* link = f.mgr_a->FindLink(key);
+  return link && link->IsCarrierBacked() ? link : nullptr;
+}
+
+// k1 (call-path-resilience): a Connected nested link whose carrier closes used to drop to Backoff
+// and linger there forever — Tick only evicted Connected carrier links. It must be dropped with
+// reason CarrierClosed.
+TEST(MeshLinkTest, ConnectedNestedLinkIsDroppedWhenItsCarrierCloses) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+  auto* nested_link = FindNestedLink(*fixture, nested->nested_key);
+  ASSERT_NE(nested_link, nullptr);
+  ASSERT_EQ(nested_link->Phase(), PeerLinkPhase::Connected);
+  const LinkHandle nested_handle = nested_link->Handle();
+
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
+  // B's outer (ADP) link carries the carrier channel; its nested inbound link is another link.
+  bool reset = false;
+  ASSERT_TRUE(fixture->mgr_b->WithLiveLink(nested->outer_b, [&](PeerLink& outer_b) {
+    reset = !outer_b.IsCarrierBacked() && static_cast<bool>(outer_b.Mux()->ResetChannel(nested->carrier_channel));
+  }));
+  ASSERT_TRUE(reset);
+  for (int i = 0; i < 5; ++i) {
+    fixture->PumpBoth();
+  }
+
+  EXPECT_FALSE(fixture->mgr_a->WithLiveLink(nested_handle, [](PeerLink&) {})) << "no Backoff linger";
+  bool dropped = false;
+  for (const auto& event : events) {
+    if (event.kind == LinkEvent::Kind::Dropped && event.reason == LinkDropReason::CarrierClosed && event.was_connected) {
+      dropped = true;
+    }
+  }
+  EXPECT_TRUE(dropped) << "one Dropped(CarrierClosed) for the connected nested link";
+  EXPECT_NE(fixture->mgr_a->FindLink("bob"), nullptr) << "the outer link is untouched";
+}
+
 TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();
