@@ -1140,6 +1140,10 @@ void PeerLinkManager::Tick() {
     if (conn && link.Phase() == PeerLinkPhase::Connected && (conn->IsClosed() || !conn->LooksAlive(now))) {
       evict.emplace_back(link.PeerKey(), conn->IsClosed() ? LinkDropReason::ConnectionClosed
                                                           : LinkDropReason::ConnectionDead);
+    } else if (conn && conn->PeerUnreachable()) {
+      // The OS said there is no route to this peer (host / network unreachable or down): drop now
+      // rather than after the liveness window (#215 B39 a). A redial picks the next path.
+      evict.emplace_back(link.PeerKey(), LinkDropReason::TransportFailed);
     }
   });
   for (const auto& [key, reason] : evict) {

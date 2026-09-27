@@ -40,6 +40,8 @@ public:
     SeqWrap,
     WindowFull,
     WireError,
+    /** The send failed with no route to the peer (see PeerUnreachable). */
+    Unreachable,
   };
 
   using Failure = CodedFailure<Err>;
@@ -50,6 +52,8 @@ public:
 
   void Close();
   bool IsClosed() const { return closed_; }
+  /** A send reported no route to the peer (IsUnreachableSendError): the association is unusable. */
+  bool PeerUnreachable() const { return peer_unreachable_; }
 
   void SetPeerEndpoint(IpEndpoint peer);
   void UpgradeBinder(PeerKey key);
@@ -116,6 +120,7 @@ private:
   OpenParams params_;
   bool closed_ = false;
   bool peer_closed_ = false;
+  bool peer_unreachable_ = false;
 
   uint32_t tx_seq_be_ = 0;
   uint32_t tx_seq_rel_ = 0;

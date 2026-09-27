@@ -11,6 +11,15 @@
 
 namespace pp::adp {
 
+/**
+ * `Error::code` of a SendTo failure that means "no route to this peer right now" (host down / host
+ * unreachable / network unreachable / network down) — the association to it cannot work until the
+ * path changes, so the link above drops it at once instead of waiting out its liveness window.
+ */
+inline constexpr int32_t kDatagramSendUnreachable = 1;
+
+inline bool IsUnreachableSendError(const Error& error) { return error.code == kDatagramSendUnreachable; }
+
 class DatagramIo {
 public:
   virtual ~DatagramIo() = default;

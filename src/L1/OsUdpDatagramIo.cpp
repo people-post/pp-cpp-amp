@@ -178,14 +178,17 @@ Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_
                           static_cast<int>(datagram.size()), 0, reinterpret_cast<sockaddr*>(&ss),
                           len);
   if (n < 0 || static_cast<size_t>(n) != datagram.size()) {
-    return Error(std::string("adp udp: sendto dst=") + EndpointLabel(peer) + " src=" +
-                 EndpointLabel(local_) +
 #if defined(_WIN32)
-                 " errno=" + std::to_string(WSAGetLastError())
+    const int err = WSAGetLastError();
+    const bool unreachable = err == WSAEHOSTUNREACH || err == WSAENETUNREACH || err == WSAEHOSTDOWN ||
+                             err == WSAENETDOWN;
 #else
-                 " errno=" + std::to_string(errno)
+    const int err = errno;
+    const bool unreachable = err == EHOSTUNREACH || err == ENETUNREACH || err == EHOSTDOWN || err == ENETDOWN;
 #endif
-    );
+    return Error(unreachable ? kDatagramSendUnreachable : 0,
+                 std::string("adp udp: sendto dst=") + EndpointLabel(peer) + " src=" + EndpointLabel(local_) +
+                     " errno=" + std::to_string(err));
   }
   return {};
 }

@@ -196,6 +196,12 @@ Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std:
   }
   auto sent = endpoint_->SendRaw(peer_, *sealed);
   if (!sent) {
+    // Checked here, for every send (data, retransmit, ack, keepalive), whether or not the caller
+    // looks at the result.
+    if (IsUnreachableSendError(sent.error())) {
+      peer_unreachable_ = true;
+      return Failure::Of(Err::Unreachable, sent.error().message);
+    }
     return Failure::Of(Err::WireError, sent.error().message);
   }
   return {};

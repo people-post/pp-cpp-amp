@@ -1,5 +1,6 @@
 #include "amp/L1/MemoryDatagramIo.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <utility>
 
@@ -36,7 +37,17 @@ void MemoryDatagramIo::FlushReorder() {
   }
 }
 
+void MemoryDatagramIo::SetUnreachable(const IpEndpoint& peer, const bool unreachable) {
+  std::erase(unreachable_, peer);
+  if (unreachable) {
+    unreachable_.push_back(peer);
+  }
+}
+
 Roe<void> MemoryDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_t> datagram) {
+  if (std::find(unreachable_.begin(), unreachable_.end(), peer) != unreachable_.end()) {
+    return Error(kDatagramSendUnreachable, "memory datagram io: peer unreachable");
+  }
   if (drop_next_ > 0) {
     --drop_next_;
     return {};

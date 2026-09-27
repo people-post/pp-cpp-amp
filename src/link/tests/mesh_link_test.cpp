@@ -475,6 +475,37 @@ TEST(MeshLinkTest, InboundLinkIsDroppedWhenItsHandshakeFails) {
   EXPECT_EQ(fixture->mgr_b->FindConnectedInboundLink(), nullptr);
 }
 
+// k1 (call-path-resilience, #215 B39 a): the OS reports no route to the peer — drop the link at
+// once (TransportFailed) instead of after the liveness window, so a redial can pick another path.
+TEST(MeshLinkTest, LinkIsDroppedAtOnceWhenTheOsReportsThePeerUnreachable) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated; });
+  ASSERT_TRUE(associated);
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
+
+  fixture->io_a->SetUnreachable(fixture->addr_b, true);
+  std::optional<PeerLinkManager::ChannelRoe> opened;  // any send on the link hits the route error
+  fixture->mgr_a->OpenChannel("bob", "/pp-test/any/1.0.0", ControlJsonChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) { opened = std::move(ch); });
+  fixture->pump_a->Pump();
+  fixture->pump_a->Tick();  // no clock advance: well inside the liveness window
+
+  EXPECT_EQ(fixture->mgr_a->FindLink("bob"), nullptr);
+  bool dropped = false;
+  for (const auto& event : events) {
+    dropped = dropped || (event.kind == LinkEvent::Kind::Dropped && event.reason == LinkDropReason::TransportFailed);
+  }
+  EXPECT_TRUE(dropped);
+}
+
 // Product warms a peer before dialing it (chat foreground); the tier must not be lost.
 // pp-browser B39: product drops a link it knows is stale; both ends evict it, reason "requested".
 TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {

@@ -48,6 +48,9 @@ public:
    */
   void Rebind(IpEndpoint new_local);
 
+  /** Tests: sends to `peer` fail with kDatagramSendUnreachable (no route) while set. */
+  void SetUnreachable(const IpEndpoint& peer, bool unreachable);
+
   ~MemoryDatagramIo() override;
 
 private:
@@ -59,6 +62,7 @@ private:
   size_t drop_next_ = 0;
   std::mt19937 rng_{1};
   std::deque<std::pair<IpEndpoint, std::vector<uint8_t>>> pending_reorder_;
+  std::vector<IpEndpoint> unreachable_;
 };
 
 /**
