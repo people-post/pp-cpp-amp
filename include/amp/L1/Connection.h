@@ -128,6 +128,9 @@ private:
   MessageHandler on_message_;
   PathChangeHandler on_path_change_;
   int64_t last_auth_rx_ms_ = 0;
+  /** Newest authenticated wire timestamp (serial order): seq-0 control packets are fresh only past it. */
+  uint32_t max_auth_rx_ts_ = 0;
+  bool have_auth_rx_ts_ = false;
   uint32_t local_keepalive_interval_ms_ = 0;
   uint32_t peer_keepalive_interval_ms_ = 0;
 

@@ -211,6 +211,82 @@ TEST_F(AdpConnTest, PathMigrate) {
   EXPECT_EQ((*cb)->PeerEndpoint(), addr_c);
 }
 
+// k1 (call-path-resilience): the path followed any authenticated packet before the replay check —
+// a replayed packet from a new address redirected the association. A replayed data seq must not
+// move the path (or refresh liveness); a fresh packet from the new address still does.
+TEST_F(AdpConnTest, ReplayedPacketFromANewAddressDoesNotMoveThePath) {
+  auto p = MakePair();
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  std::vector<pp::adp::IpEndpoint> paths;
+  (*cb)->OnPathChange([&](const pp::adp::IpEndpoint&, const pp::adp::IpEndpoint& to) { paths.push_back(to); });
+
+  const auto one = std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("a"), 1);
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort, one));  // seq 1 from A's path
+  p.ep_b->Pump();
+  ASSERT_EQ((*cb)->PeerEndpoint(), p.addr_a);
+
+  // Same association, other address, same seq 1: B has seen it — a replay.
+  auto addr_c = pp::adp::IpEndpoint::V4(10, 0, 0, 9, 1009);
+  auto io_c = std::make_shared<pp::adp::MemoryDatagramIo>(p.hub, addr_c);
+  auto ep_c = std::make_unique<pp::adp::Endpoint>(io_c, p.clock);
+  pp::adp::OpenParams opc = op;
+  opc.peer = p.addr_b;
+  auto cc = ep_c->Open(opc);
+  ASSERT_TRUE(cc);
+  const int64_t rx_before = (*cb)->LastAuthRxMs();
+  p.clock->Advance(10);
+  ASSERT_TRUE((*cc)->Send(pp::adp::QosClass::BestEffort, one));
+  p.ep_b->Pump();
+  EXPECT_EQ((*cb)->PeerEndpoint(), p.addr_a) << "a replayed seq must not redirect the path";
+  EXPECT_TRUE(paths.empty());
+  EXPECT_EQ((*cb)->LastAuthRxMs(), rx_before) << "nor count as the peer being alive";
+
+  // A fresh seq from the new address (a real rebind) moves it.
+  ASSERT_TRUE((*cc)->Send(pp::adp::QosClass::BestEffort, one));  // seq 2
+  p.ep_b->Pump();
+  EXPECT_EQ((*cb)->PeerEndpoint(), addr_c);
+  ASSERT_FALSE(paths.empty());
+  EXPECT_EQ(paths.back(), addr_c);
+}
+
+// An idle warm/hot link sends only keepalives (seq 0): after a NAT rebind the newest keepalive
+// alone must still move the path.
+TEST_F(AdpConnTest, KeepaliveAfterRebindMovesThePath) {
+  auto p = MakePair();
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  ASSERT_TRUE((*ca)->SendKeepalive(p.clock->NowMs(), 10'000));
+  p.ep_b->Pump();
+  ASSERT_EQ((*cb)->PeerEndpoint(), p.addr_a);
+
+  const auto rebound = pp::adp::IpEndpoint::V4(10, 0, 0, 1, 4242);
+  p.io_a->Rebind(rebound);
+  p.clock->Advance(10'000);
+  ASSERT_TRUE((*ca)->SendKeepalive(p.clock->NowMs(), 10'000));
+  p.ep_b->Pump();
+  EXPECT_EQ((*cb)->PeerEndpoint(), rebound);
+  EXPECT_EQ((*cb)->LastAuthRxMs(), p.clock->NowMs());
+}
+
 TEST_F(AdpConnTest, NatReplyUsesObservedAddr) {
   auto p = MakePair();
   p.ep_b->SetAcceptKey(Key());

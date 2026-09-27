@@ -366,7 +366,7 @@ TEST_F(AmpIntegrationTest, PathMigrateMidSession) {
 
   const pp::adp::IpEndpoint alt_a = pp::adp::IpEndpoint::V4(10, 0, 0, 1, 1001);
   const std::vector<uint8_t> ping = {'p'};
-  ASSERT_TRUE(h.SendSealedFromAlternatePath(HarnessSide::A, "b", *ch, alt_a, ping, 2));
+  ASSERT_TRUE(h.SendAfterRebind(HarnessSide::A, "b", *ch, alt_a, ping));
   for (int i = 0; i < 20; ++i) {
     h.PumpBoth();
   }
@@ -381,7 +381,7 @@ TEST_F(AmpIntegrationTest, PathMigrateMidSession) {
   const std::vector<uint8_t> msg2 = {'b'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg2));
   ASSERT_TRUE(h.PumpUntilReceived(received, [&] { return received == msg2; }));
-  EXPECT_EQ(inbound_conn->PeerEndpoint(), h.addr_a);
+  EXPECT_EQ(inbound_conn->PeerEndpoint(), alt_a) << "A really moved: the session stays on the new path";
   EXPECT_EQ(inbound->Mux()->State(*ch), pp::amp::ChannelState::Open);
 }
 
@@ -565,7 +565,7 @@ TEST_F(AmpIntegrationTest, PathMigrateSurvivesLoss) {
 
   const pp::adp::IpEndpoint alt_a = pp::adp::IpEndpoint::V4(10, 0, 0, 1, 1001);
   const std::vector<uint8_t> ping = {'p'};
-  ASSERT_TRUE(h.SendSealedFromAlternatePath(HarnessSide::A, "b", *ch, alt_a, ping, 2));
+  ASSERT_TRUE(h.SendAfterRebind(HarnessSide::A, "b", *ch, alt_a, ping));
   for (int i = 0; i < 20; ++i) {
     h.PumpBoth();
   }

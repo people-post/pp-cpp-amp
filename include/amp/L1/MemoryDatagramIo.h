@@ -42,6 +42,12 @@ public:
   /** Deliver any datagrams held for reorder (FIFO drain). */
   void FlushReorder();
 
+  /**
+   * Tests: move this socket to `new_local` (a NAT rebinding): later sends come from the new address
+   * and datagrams to the old one are dropped. Connections on it keep their sequence counters.
+   */
+  void Rebind(IpEndpoint new_local);
+
   ~MemoryDatagramIo() override;
 
 private:

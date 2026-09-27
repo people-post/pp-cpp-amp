@@ -21,6 +21,13 @@ MemoryDatagramIo::~MemoryDatagramIo() {
   }
 }
 
+void MemoryDatagramIo::Rebind(IpEndpoint new_local) {
+  FlushReorder();
+  hub_->Unregister(local_);
+  local_ = new_local;
+  hub_->Register(local_, this);
+}
+
 void MemoryDatagramIo::FlushReorder() {
   while (!pending_reorder_.empty()) {
     auto front = std::move(pending_reorder_.front());
