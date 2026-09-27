@@ -693,6 +693,27 @@ TEST(MeshLinkTest, NestedLinkIsDroppedWhenItsReliableLaneGivesUp) {
   EXPECT_TRUE(dead);
 }
 
+// A024: an ADP and a nested link to one peer coexist; asking for a transport class gets that one.
+TEST(MeshLinkTest, ConnectedLinkByPeerIdHonoursTheTransportClass) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+  auto* nested_a = FindNestedLink(*fixture, nested->nested_key);
+  ASSERT_NE(nested_a, nullptr);
+  const std::string bob = nested_a->RemotePeerId();
+  ASSERT_FALSE(bob.empty());
+  auto* adp = fixture->mgr_a->FindConnectedLinkByPeerId(bob, TransportClass::Adp);
+  auto* carrier = fixture->mgr_a->FindConnectedLinkByPeerId(bob, TransportClass::Carrier);
+  ASSERT_NE(adp, nullptr);
+  ASSERT_NE(carrier, nullptr);
+  EXPECT_FALSE(adp->IsCarrierBacked());
+  EXPECT_TRUE(carrier->IsCarrierBacked());
+  EXPECT_EQ(carrier, nested_a);
+  EXPECT_EQ(fixture->mgr_a->FindConnectedLinkByPeerId("QmNobody", TransportClass::Adp), nullptr);
+}
+
 // k1 (call-path-resilience): a Connected nested link whose carrier closes used to drop to Backoff
 // and linger there forever — Tick only evicted Connected carrier links. It must be dropped with
 // reason CarrierClosed.
