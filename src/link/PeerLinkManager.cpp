@@ -641,6 +641,16 @@ void PeerLinkManager::SetProtocolHandler(const std::string& protocol_id, Protoco
   table_.ForEach([&](PeerLink& link) { ApplyProtocolHandlers(link); });
 }
 
+void PeerLinkManager::SetRefuseUnhandledOpens(const bool refuse) {
+  std::lock_guard lock(strand_mu_);
+  refuse_unhandled_opens_ = refuse;
+  table_.ForEach([&](PeerLink& link) {
+    if (link.Mux()) {
+      link.Mux()->SetRefuseUnhandledOpens(refuse);
+    }
+  });
+}
+
 void PeerLinkManager::RemoveProtocolHandler(const std::string& protocol_id) {
   std::lock_guard lock(strand_mu_);
   protocol_handlers_.erase(protocol_id);
@@ -671,6 +681,7 @@ void PeerLinkManager::ApplyProtocolHandlers(PeerLink& link) {
   }
   const auto handle = link.Handle();
   const std::string remote = link.RemotePeerId();
+  link.Mux()->SetRefuseUnhandledOpens(refuse_unhandled_opens_);
   link.Mux()->ClearProtocolHandlers();
   for (const auto& [protocol_id, handler] : protocol_handlers_) {
     link.Mux()->SetProtocolHandler(protocol_id, [this, handle, remote, handler](const uint32_t channel_id,
@@ -1098,14 +1109,19 @@ void PeerLinkManager::Tick() {
         link = table_.FindByPeerId(key);
       }
       bool open = false;
+      bool refused = false;
       if (link && link->Mux() && link->Phase() == PeerLinkPhase::Connected && ch != 0) {
-        open = link->Mux()->State(ch) == ChannelState::Open;
+        const auto state = link->Mux()->State(ch);
+        open = state == ChannelState::Open;
+        // Closed on a connected link: the peer refused the open (no handler) or it already ended —
+        // it will not open, so fail now instead of at the deadline.
+        refused = state == ChannelState::Closed;
       }
       if (open) {
         if (done) {
           completions.push_back([done = std::move(done)]() mutable { done(true); });
         }
-      } else if (deadline > 0 && now >= deadline) {
+      } else if (refused || (deadline > 0 && now >= deadline)) {
         if (done) {
           completions.push_back([done = std::move(done)]() mutable { done(false); });
         }

@@ -120,6 +120,13 @@ public:
                                  std::string protocol_id = kAmpCircuitCarrierProtocolId);
 
   void SetProtocolHandler(const std::string& protocol_id, ProtocolHandler handler);
+  /**
+   * Refuse inbound channel opens for protocols with no registered handler (OpenAck
+   * kOpenAckNoHandler; the opener's WhenChannelOpen fails at once instead of at its deadline).
+   * Off by default — enable when this manager's protocol table is the node's whole service surface
+   * (a product host), not when callers bind data handlers by channel id after the open.
+   */
+  void SetRefuseUnhandledOpens(bool refuse);
   void RemoveProtocolHandler(const std::string& protocol_id);
   void ClearProtocolHandlers();
 
@@ -270,6 +277,7 @@ private:
   std::string nested_carrier_protocol_id_;
 
   std::unordered_map<std::string, ProtocolHandler> protocol_handlers_;
+  bool refuse_unhandled_opens_ = false;
   std::unordered_map<std::string, std::vector<LinkCb>> inflight_associations_;
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;

@@ -20,6 +20,10 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
 - Dial / channel: `EnsureAssociation`, `OpenChannel`, `WhenChannelOpenIn`, `BindChannel`
 - Snapshots: `SnapshotByDialKey`, `SnapshotByPeerId`, `IsReachable`, `IsConnected`
 - Handlers: `SetProtocolHandler`, `SetCapabilityHandler` (no `PeerLink&`)
+- `SetRefuseUnhandledOpens(true)`: inbound opens for protocols without a handler are refused
+  (OpenAck `kOpenAckNoHandler`) — the opener's `WhenChannelOpen` fails at once instead of seeing an
+  open channel whose requests vanish. Off by default (raw muxes / tests bind by channel id).
+  `WhenChannelOpen` also fails as soon as a connected link reports the channel Closed.
 - Nested carrier: `EstablishNestedOverCarrier`, `EnableNestedCarrierAccept`
 - Drive: `Start` / `Stop`, `Drive` / `Pump` / `Tick`, `PostToIo`, `WithIoLock`
 

@@ -119,6 +119,13 @@ TEST(MeshLinkTest, OpenChannelDataRoundTrip) {
   auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  // Bob serves the protocol (links refuse opens nobody handles).
+  std::vector<uint8_t> received;
+  fixture->mgr_b->SetProtocolHandler("/pp-browser/chat/1.0.0", [&](LinkHandle, const std::string&, uint32_t ch) {
+    auto* inbound = fixture->mgr_b->FindConnectedInboundLink();
+    ASSERT_NE(inbound, nullptr);
+    inbound->Mux()->SetDataHandler(ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
+  });
 
   bool associated = false;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
@@ -149,19 +156,55 @@ TEST(MeshLinkTest, OpenChannelDataRoundTrip) {
     return outbound && outbound->Mux() && outbound->Mux()->State(channel_id) == ChannelState::Open;
   });
 
-  std::vector<uint8_t> received;
-  auto* inbound = fixture->mgr_b->FindConnectedInboundLink();
-  ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(channel_id, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
-
   auto* outbound = fixture->mgr_a->FindLink("bob");
   ASSERT_NE(outbound, nullptr);
   const std::vector<uint8_t> msg = {'h', 'i'};
   ASSERT_TRUE(static_cast<bool>(outbound->Mux()->SendData(channel_id, msg)));
   fixture->PumpBoth();
   EXPECT_EQ(received, msg);
+}
+
+// A peer that does not serve a protocol refuses the open: the opener's WhenChannelOpen fails at
+// once instead of seeing an "open" channel whose requests vanish until its own timeout.
+TEST(MeshLinkTest, UnservedProtocolOpenIsRefusedPromptly) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  fixture->mgr_b->SetRefuseUnhandledOpens(true);
+  bool served_called = false;
+  fixture->mgr_b->SetProtocolHandler("/served/1", [&](LinkHandle, const std::string&, uint32_t) { served_called = true; });
+
+  const auto open_and_wait = [&](const std::string& protocol) -> std::optional<bool> {
+    std::optional<uint32_t> id;
+    bool done = false;
+    fixture->mgr_a->OpenChannel("bob", protocol, ControlJsonChannelPolicy(), [&](PeerLinkManager::ChannelRoe ch) {
+      if (ch.isOk()) {
+        id = ch.value();
+      }
+      done = true;
+    });
+    fixture->PumpUntil([&] { return done; });
+    if (!id) {
+      return std::nullopt;
+    }
+    std::optional<bool> opened;
+    fixture->mgr_a->WhenChannelOpenIn("bob", *id, std::chrono::seconds(30), [&](bool ok) { opened = ok; });
+    // Far fewer rounds than the 30 s deadline: only a refusal (or an open) settles this.
+    fixture->PumpUntil([&] { return opened.has_value(); }, 200);
+    return opened;
+  };
+
+  const auto unserved = open_and_wait("/not-served/1");
+  ASSERT_TRUE(unserved.has_value()) << "waited for the deadline instead of failing on the refusal";
+  EXPECT_FALSE(*unserved);
+  const auto served = open_and_wait("/served/1");
+  ASSERT_TRUE(served.has_value());
+  EXPECT_TRUE(*served);
+  EXPECT_TRUE(served_called);
+  EXPECT_NE(fixture->mgr_a->FindLink("bob"), nullptr) << "a refused channel does not cost the link";
 }
 
 // Dogfood SIGSEGV: far end resets the carrier while the nested handshake is in flight. The failure
