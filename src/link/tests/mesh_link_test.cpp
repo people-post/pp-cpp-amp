@@ -376,6 +376,40 @@ TEST(MeshLinkTest, ConnectedNestedLinkIsDroppedWhenItsCarrierCloses) {
   EXPECT_NE(fixture->mgr_a->FindLink("bob"), nullptr) << "the outer link is untouched";
 }
 
+// k1 (call-path-resilience): an inbound link whose handshake failed stayed in Backoff under its
+// `inbound:` key until something displaced it. It must be dropped (HandshakeFailed).
+TEST(MeshLinkTest, InboundLinkIsDroppedWhenItsHandshakeFails) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  // A signs with a secret key that does not match the public key it presents: B's verify fails.
+  MshIdentity forged = fixture->alice;
+  forged.ml_dsa_public_key = fixture->bob.ml_dsa_public_key;
+  fixture->pump_a.reset();
+  fixture->mgr_a = std::make_unique<PeerLinkManager>(*fixture->ep_a, forged, "QmAlice");
+  fixture->pump_a = std::make_unique<MeshPump>(*fixture->ep_a, *fixture->mgr_a);
+
+  std::vector<LinkEvent> events_b;
+  fixture->mgr_b->AddLinkEventListener([&](const LinkEvent& event) { events_b.push_back(event); });
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  std::optional<bool> associated;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  const auto inbound_failed = [&] {
+    for (const auto& event : events_b) {
+      if (event.kind == LinkEvent::Kind::Dropped && !event.was_connected &&
+          event.reason == LinkDropReason::HandshakeFailed) {
+        return true;
+      }
+    }
+    return false;
+  };
+  fixture->PumpUntil(inbound_failed, 200);
+  EXPECT_TRUE(inbound_failed()) << "B drops the inbound link its handshake failed on";
+  EXPECT_EQ(fixture->mgr_b->FindConnectedInboundLink(), nullptr);
+}
+
 TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();

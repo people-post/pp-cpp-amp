@@ -839,7 +839,13 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
   AssignLinkIdentity(*link);
   PeerLink* raw = link.get();
   table_.Insert(std::move(link));
-  raw->StartInboundHandshake({});
+  // A failed inbound handshake leaves the link in Backoff under its `inbound:` key, which nothing
+  // else evicts: drop it (deferred to Tick — this runs inside the link's own callback).
+  raw->StartInboundHandshake([this, key = peer_key](PeerLink::LinkRoe result) {
+    if (!result) {
+      ScheduleDropLink(key, DropReasonFor(WrapPeerLinkFailure(result.error())));
+    }
+  });
 }
 
 void PeerLinkManager::BindDialAlias(LinkId id, DialKey to_key) {
