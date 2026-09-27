@@ -550,6 +550,20 @@ void PumpAdvancing(MeshLinkFixture& f, const std::function<bool()>& done, const 
   }
 }
 
+/**
+ * PumpAdvancing for a lossy fixture: each round also releases what the reorder windows hold, so
+ * datagrams are reordered within a round (10 ms) but never parked until later traffic pushes them
+ * out — a quiet link would otherwise hold its last few datagrams indefinitely.
+ */
+void PumpLossy(MeshLinkFixture& f, const std::function<bool()>& done, const int rounds = 2000) {
+  for (int i = 0; i < rounds && !done(); ++i) {
+    f.clock->Advance(10);
+    f.PumpBoth();
+    f.lossy_a->FlushReorder();
+    f.lossy_b->FlushReorder();
+  }
+}
+
 /** Reliable channel on A's nested link to B; B records every message it gets. */
 struct NestedReliableChannel {
   uint32_t channel_id = 0;
@@ -610,6 +624,15 @@ TEST(MeshLinkTest, NestedReliableChannelSurvivesLossAndReorderingOnTheCarrier) {
   ASSERT_NE(nested_a, nullptr);
   EXPECT_TRUE(nested_a->CarrierLaneActive()) << "both ends announced the lane during the handshake";
 
+  // The outer link is hot, as a relay link holding a circuit is in the product, and both ends have
+  // heard each other's cadence before the loss starts (liveness window 5/2 × cadence): what is
+  // tested is the lane, not a cold outer link timing out.
+  fixture->mgr_a->MarkHot("bob");
+  fixture->mgr_b->MarkHot("QmAlice");
+  for (int i = 0; i < 20; ++i) {
+    fixture->clock->Advance(10);
+    fixture->PumpBoth();
+  }
   for (auto* lossy : {fixture->lossy_a.get(), fixture->lossy_b.get()}) {
     lossy->SetRngSeed(7);
     lossy->SetDropRate(0.2);
@@ -625,7 +648,7 @@ TEST(MeshLinkTest, NestedReliableChannelSurvivesLossAndReorderingOnTheCarrier) {
     fixture->clock->Advance(5);
     fixture->PumpBoth();
   }
-  PumpAdvancing(*fixture, [&] { return channel->received->size() >= sent.size(); });
+  PumpLossy(*fixture, [&] { return channel->received->size() >= sent.size(); });
   EXPECT_EQ(*channel->received, sent) << "every message, once, in order";
   auto* link = FindNestedLink(*fixture, nested->nested_key);
   ASSERT_NE(link, nullptr) << "the link survived";
