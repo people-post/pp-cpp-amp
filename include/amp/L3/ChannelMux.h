@@ -57,6 +57,16 @@ public:
   void SetProtocolHandler(const std::string& protocol_id, InboundOpenHandler handler);
   void ClearProtocolHandlers();
 
+  /** Terminal reason when the link (and this mux) is being destroyed. */
+  static constexpr const char* kLinkDroppedReason = "link-dropped";
+  /**
+   * The mux is about to be destroyed with its link: close every channel record and hand back each
+   * channel's terminal notice (reason kLinkDroppedReason) for the caller to run **after** the mux is
+   * gone. Sessions bound to it forget the mux in that notice and report the channel closed — without
+   * this they kept a dangling mux pointer (use-after-free on the next write or on destruction).
+   */
+  std::vector<std::function<void()>> DetachAllChannels();
+
   /** OpenAck result: the responder has no handler for the channel's protocol. */
   static constexpr uint8_t kOpenAckNoHandler = 1;
   /**

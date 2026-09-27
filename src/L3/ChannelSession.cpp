@@ -1,6 +1,16 @@
 #include "amp/L3/ChannelSession.h"
 
+#include <string_view>
+
 namespace pp::amp {
+namespace {
+
+// Compare contents: a constexpr char pointer is folded to each translation unit's own literal.
+bool IsLinkDropped(const char* reason) {
+  return reason && std::string_view(reason) == ChannelMux::kLinkDroppedReason;
+}
+
+} // namespace
 
 ChannelSession::~ChannelSession() {
   ReleaseHandlers();
@@ -29,6 +39,9 @@ void ChannelSession::InstallMuxHandlers() {
     });
     mux_->SetTerminalHandler(channel_id_, [weak](uint32_t, const char* reason) {
       if (auto session = weak.lock()) {
+        if (IsLinkDropped(reason)) {
+          session->mux_ = nullptr;  // the mux is gone (DetachAllChannels): never touch it again
+        }
         session->NotifyRemoteTerminal(reason);
       }
     });
@@ -46,6 +59,9 @@ void ChannelSession::InstallMuxHandlers() {
     }
   });
   mux_->SetTerminalHandler(channel_id_, [this](uint32_t, const char* reason) {
+    if (IsLinkDropped(reason)) {
+      mux_ = nullptr;
+    }
     NotifyRemoteTerminal(reason);
   });
 }
