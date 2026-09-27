@@ -49,6 +49,22 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    polling `FindLink`. Every drop site must pass a reason (`ScheduleDropLink(key, reason)`).
    Products drop a link they know is stale with `RequestDropLink(dial key or PeerId)` (reason
    `requested`, scheduled on Tick) — never via `FindLink` + `Connection::Close`.
+10. **Link hygiene** (pp-browser call-path-resilience k1): no link lingers.
+   - A carrier-backed link whose carrier closed is dropped (`CarrierClosed`) in any phase but
+     Handshaking / Dialing (those keep their deferred drop); an inbound link whose handshake
+     fails is dropped (`HandshakeFailed`).
+   - Deferred drops are held **by `LinkHandle`** (the key's occupant when scheduled): a link that
+     replaced it under the same dial key before Tick is never hit. Inserting under an occupied
+     key **displaces** (drops, `Displaced`) the occupant instead of orphaning it.
+   - Only a **fresh** packet refreshes liveness or moves the ADP path (A003): data once its replay
+     window accepts the seq; seq-0 control packets (ack / close / keepalive) only when their wire
+     timestamp is the newest seen (serial arithmetic). A replayed packet from a new address
+     cannot redirect an association.
+   - A send the OS rejects as host / network unreachable or down (`kDatagramSendUnreachable`)
+     marks the association `PeerUnreachable`; Tick drops the link at once (`TransportFailed`).
+   - Snapshots and events carry `LinkPathKind` (Direct / Punched / Carrier — Punched when the
+     link came up through `BurstDial`, either side); snapshots also carry the live `remote`
+     endpoint and `last_rx_age_ms`.
 
 ## Consequences
 
