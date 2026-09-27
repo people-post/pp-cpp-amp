@@ -39,7 +39,8 @@ PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool 
 PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool outbound,
                    std::shared_ptr<ChannelSession> carrier, MshIdentity local_identity, PeerLinkHostPorts host)
     : peer_key_(std::move(peer_key)), remote_peer_id_(std::move(remote_peer_id)), outbound_(outbound),
-      carrier_(std::move(carrier)), identity_(std::move(local_identity)), host_(std::move(host)) {
+      carrier_(std::move(carrier)), lane_(std::make_unique<CarrierLane>()), identity_(std::move(local_identity)),
+      host_(std::move(host)) {
   AttachCarrierFrameHandler();
 }
 
@@ -87,6 +88,8 @@ void PeerLink::StartHandshakeCommon(const MshAdpHandshake::Role role, CompleteCb
       role, identity_,
       [this](std::vector<uint8_t> payload) {
         if (IsCarrierBacked()) {
+          // Every handshake message carries a lane probe, so both ends know at Connected.
+          SendLaneProbe();
           auto sent = SendCarrierWire(std::move(payload));
           if (!sent) {
             return Roe<void>(Error(sent.error().message));
@@ -117,20 +120,17 @@ void PeerLink::StartInboundHandshake(CompleteCb on_established) {
 }
 
 void PeerLink::HandleCarrierFrame(const std::span<const uint8_t> payload) {
+  auto lane_kind = AmpAdpCarrier::DecodeKind(payload);
+  if (lane_kind && (*lane_kind == AmpAdpPayloadKind::LaneData || *lane_kind == AmpAdpPayloadKind::LaneAck)) {
+    HandleLaneFrame(*lane_kind, payload);
+    return;
+  }
   if (phase_ == PeerLinkPhase::Connected && mux_) {
     auto kind = AmpAdpCarrier::DecodeKind(payload);
     if (!kind || *kind != AmpAdpPayloadKind::Sealed) {
       return;
     }
-    auto header = AmpAdpCarrier::DecodeSealedHeader(payload);
-    if (!header) {
-      return;
-    }
-    auto body = AmpAdpCarrier::DecodeSealedBody(payload);
-    if (!body) {
-      return;
-    }
-    (void)mux_->OnSealedInbound(header->first, header->second, *body);
+    DeliverSealedCarrierWire(payload);
     return;
   }
   if (!handshake_) {
@@ -214,6 +214,69 @@ void PeerLink::HandleAdpPayload(const std::span<const uint8_t> payload) {
     return;
   }
   (void)handshake_->HandleMsh(*msh_type, *body);
+}
+
+void PeerLink::HandleLaneFrame(const AmpAdpPayloadKind kind, const std::span<const uint8_t> payload) {
+  if (!lane_) {
+    return;
+  }
+  lane_->NotePeerSpeaksLane();
+  if (kind == AmpAdpPayloadKind::LaneAck) {
+    if (auto ack = AmpAdpCarrier::DecodeLaneAck(payload)) {
+      lane_->OnAck(*ack, NowMs());
+    }
+    return;
+  }
+  auto data = AmpAdpCarrier::DecodeLaneData(payload);
+  if (!data) {
+    return;
+  }
+  // Taken in while still handshaking too: the peer may finish first and send at once. The ack
+  // goes back either way so its sender does not wait out an RTO.
+  auto received = lane_->OnData(data->first, data->second);
+  (void)SendCarrierWire(AmpAdpCarrier::EncodeLaneAck(received.ack));
+  for (auto& inner : received.deliver) {
+    lane_backlog_.push_back(std::move(inner));
+  }
+  FlushLaneBacklog();
+}
+
+void PeerLink::FlushLaneBacklog() {
+  if (phase_ != PeerLinkPhase::Connected || !mux_) {
+    return;
+  }
+  auto backlog = std::move(lane_backlog_);
+  lane_backlog_.clear();
+  for (const auto& inner : backlog) {
+    DeliverSealedCarrierWire(inner);
+  }
+}
+
+void PeerLink::DeliverSealedCarrierWire(const std::span<const uint8_t> wire) {
+  auto header = AmpAdpCarrier::DecodeSealedHeader(wire);
+  if (!header) {
+    return;
+  }
+  auto body = AmpAdpCarrier::DecodeSealedBody(wire);
+  if (!body) {
+    return;
+  }
+  (void)mux_->OnSealedInbound(header->first, header->second, *body);
+}
+
+void PeerLink::SendLaneProbe() {
+  if (lane_) {
+    (void)SendCarrierWire(AmpAdpCarrier::EncodeLaneAck({}));
+  }
+}
+
+void PeerLink::TickCarrierLane(const int64_t now_ms) {
+  if (!lane_ || phase_ != PeerLinkPhase::Connected) {
+    return;
+  }
+  for (auto& wire : lane_->DueResends(now_ms)) {
+    (void)SendCarrierWire(std::move(wire));
+  }
 }
 
 Roe<std::optional<std::vector<uint8_t>>> PeerLink::PushMshChunk(const MshMessageType type, const uint16_t index,
@@ -348,6 +411,10 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
     establish_cb_(LinkRoe());
     establish_cb_ = nullptr;
   }
+  if (lane_) {
+    SendLaneProbe();  // a peer that lost every handshake-time probe still learns of the lane
+    FlushLaneBacklog();
+  }
 }
 
 void PeerLink::FailAssociation(const Failure& failure) {
@@ -380,6 +447,9 @@ void PeerLink::DemoteForScheduledDrop() {
 
 void PeerLink::AttachMuxTransport() {
   mux_->SetTransportCredits([this]() -> size_t {
+    if (CarrierLaneActive()) {
+      return lane_->Credits();
+    }
     if (IsCarrierBacked() || !connection_) {
       return std::numeric_limits<size_t>::max();
     }
@@ -392,6 +462,14 @@ void PeerLink::AttachMuxTransport() {
       return wire.error();
     }
     if (IsCarrierBacked()) {
+      // Reliable-class frames ride the lane when the peer speaks it; best-effort (media) as is.
+      if (qos == adp::QosClass::Reliable && CarrierLaneActive()) {
+        auto laned = lane_->Wrap(*wire, NowMs());
+        if (!laned) {
+          return Error("amp link: carrier lane window full");
+        }
+        wire = std::move(*laned);
+      }
       auto sent = SendCarrierWire(std::move(*wire));
       if (!sent) {
         return Error(sent.error().message);

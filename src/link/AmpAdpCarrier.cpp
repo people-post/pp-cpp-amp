@@ -131,4 +131,53 @@ Roe<std::vector<uint8_t>> AmpAdpCarrier::DecodeSealedBody(const std::span<const 
   return std::vector<uint8_t>(payload.begin() + 9, payload.end());
 }
 
+std::vector<uint8_t> AmpAdpCarrier::EncodeLaneData(const uint32_t seq, const std::span<const uint8_t> inner) {
+  std::vector<uint8_t> out;
+  out.reserve(1 + 4 + inner.size());
+  out.push_back(static_cast<uint8_t>(AmpAdpPayloadKind::LaneData));
+  AppendU32(out, seq);
+  out.insert(out.end(), inner.begin(), inner.end());
+  return out;
+}
+
+Roe<std::pair<uint32_t, std::span<const uint8_t>>> AmpAdpCarrier::DecodeLaneData(
+    const std::span<const uint8_t> payload) {
+  if (payload.empty() || static_cast<AmpAdpPayloadKind>(payload[0]) != AmpAdpPayloadKind::LaneData) {
+    return Error("amp carrier: not a lane data payload");
+  }
+  size_t offset = 1;
+  auto seq = ReadU32(payload, offset);
+  if (!seq) {
+    return seq.error();
+  }
+  if (*seq == 0 || offset >= payload.size()) {
+    return Error("amp carrier: bad lane data");
+  }
+  return std::pair<uint32_t, std::span<const uint8_t>>{*seq, payload.subspan(offset)};
+}
+
+std::vector<uint8_t> AmpAdpCarrier::EncodeLaneAck(const LaneAckFields& ack) {
+  std::vector<uint8_t> out;
+  out.reserve(1 + 4 + 8);
+  out.push_back(static_cast<uint8_t>(AmpAdpPayloadKind::LaneAck));
+  AppendU32(out, ack.cumulative);
+  AppendU32(out, static_cast<uint32_t>(ack.selective));
+  AppendU32(out, static_cast<uint32_t>(ack.selective >> 32));
+  return out;
+}
+
+Roe<LaneAckFields> AmpAdpCarrier::DecodeLaneAck(const std::span<const uint8_t> payload) {
+  if (payload.empty() || static_cast<AmpAdpPayloadKind>(payload[0]) != AmpAdpPayloadKind::LaneAck) {
+    return Error("amp carrier: not a lane ack payload");
+  }
+  size_t offset = 1;
+  auto cumulative = ReadU32(payload, offset);
+  auto lo = ReadU32(payload, offset);
+  auto hi = ReadU32(payload, offset);
+  if (!cumulative || !lo || !hi) {
+    return Error("amp carrier: truncated lane ack");
+  }
+  return LaneAckFields{*cumulative, static_cast<uint64_t>(*lo) | (static_cast<uint64_t>(*hi) << 32)};
+}
+
 } // namespace pp::amp

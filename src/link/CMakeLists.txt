@@ -1,6 +1,7 @@
   pp_amp_add_library(pp_amp_link
   AdpMultiaddr.cpp
   AmpAdpCarrier.cpp
+  CarrierLane.cpp
   DialBook.cpp
   DualDialElector.cpp
   LinkTable.cpp
