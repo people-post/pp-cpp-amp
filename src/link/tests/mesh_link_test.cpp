@@ -1,5 +1,6 @@
 #include "amp/L1/Clock.h"
 #include "amp/L1/Endpoint.h"
+#include "amp/L1/LossyDatagramIo.h"
 #include "amp/L1/MemoryDatagramIo.h"
 #include "crypto/MlDsa.h"
 #include "amp/L3/ChannelPolicy.h"
@@ -30,6 +31,9 @@ struct MeshLinkFixture {
   std::shared_ptr<adp::MemoryDatagramHub> hub;
   std::shared_ptr<adp::MemoryDatagramIo> io_a;
   std::shared_ptr<adp::MemoryDatagramIo> io_b;
+  /** Set when created lossy: drop / reorder on each side's sends (off until the test turns it on). */
+  std::shared_ptr<adp::LossyDatagramIo> lossy_a;
+  std::shared_ptr<adp::LossyDatagramIo> lossy_b;
   std::unique_ptr<adp::Endpoint> ep_a;
   std::unique_ptr<adp::Endpoint> ep_b;
   adp::IpEndpoint addr_a;
@@ -41,7 +45,7 @@ struct MeshLinkFixture {
   std::unique_ptr<MeshPump> pump_a;
   std::unique_ptr<MeshPump> pump_b;
 
-  static Roe<MeshLinkFixture> Create() {
+  static Roe<MeshLinkFixture> Create(const bool lossy = false) {
     MeshLinkFixture f;
     f.clock = std::make_shared<adp::VirtualClock>(1'000'000);
     f.hub = adp::MemoryDatagramIo::MakeHub();
@@ -49,8 +53,15 @@ struct MeshLinkFixture {
     f.addr_b = adp::IpEndpoint::V4(10, 0, 0, 2, 2000);
     f.io_a = std::make_shared<adp::MemoryDatagramIo>(f.hub, f.addr_a);
     f.io_b = std::make_shared<adp::MemoryDatagramIo>(f.hub, f.addr_b);
-    f.ep_a = std::make_unique<adp::Endpoint>(f.io_a, f.clock);
-    f.ep_b = std::make_unique<adp::Endpoint>(f.io_b, f.clock);
+    if (lossy) {
+      f.lossy_a = std::make_shared<adp::LossyDatagramIo>(f.io_a);
+      f.lossy_b = std::make_shared<adp::LossyDatagramIo>(f.io_b);
+      f.ep_a = std::make_unique<adp::Endpoint>(f.lossy_a, f.clock);
+      f.ep_b = std::make_unique<adp::Endpoint>(f.lossy_b, f.clock);
+    } else {
+      f.ep_a = std::make_unique<adp::Endpoint>(f.io_a, f.clock);
+      f.ep_b = std::make_unique<adp::Endpoint>(f.io_b, f.clock);
+    }
     f.ep_b->SetAcceptEnabled(true);
 
     auto alice_keys = pp::MlDsa::GenerateKeyPair();
@@ -528,6 +539,135 @@ std::optional<ConnectedNested> BringUpConnectedNested(MeshLinkFixture& f) {
 PeerLink* FindNestedLink(MeshLinkFixture& f, const std::string& key) {
   auto* link = f.mgr_a->FindLink(key);
   return link && link->IsCarrierBacked() ? link : nullptr;
+}
+
+/** Pump both sides while virtual time moves, so resend timers fire. */
+void PumpAdvancing(MeshLinkFixture& f, const std::function<bool()>& done, const int rounds = 2000,
+                   const int64_t step_ms = 10) {
+  for (int i = 0; i < rounds && !done(); ++i) {
+    f.clock->Advance(step_ms);
+    f.PumpBoth();
+  }
+}
+
+/** Reliable channel on A's nested link to B; B records every message it gets. */
+struct NestedReliableChannel {
+  uint32_t channel_id = 0;
+  std::shared_ptr<std::vector<std::string>> received = std::make_shared<std::vector<std::string>>();
+  /** B's end of the nested link (the channel's open handler names it). */
+  std::shared_ptr<LinkHandle> nested_b = std::make_shared<LinkHandle>();
+};
+
+constexpr const char* kNestedReliableProtocol = "/test/nested-reliable/1";
+
+ChannelPolicy NestedReliablePolicy() {
+  ChannelPolicy policy = ControlJsonChannelPolicy();
+  policy.read_once = false;
+  return policy;
+}
+
+std::optional<NestedReliableChannel> OpenNestedReliableChannel(MeshLinkFixture& f, const std::string& nested_key) {
+  NestedReliableChannel out;
+  f.mgr_b->SetProtocolHandler(kNestedReliableProtocol, [&f, received = out.received, nested_b = out.nested_b](
+                                                          LinkHandle link, const std::string&, uint32_t ch) {
+    *nested_b = link;
+    f.mgr_b->WithLiveLink(link, [&](PeerLink& nested_b) {
+      nested_b.Mux()->SetDataHandler(ch, [received](uint32_t, std::vector<uint8_t> payload) {
+        received->emplace_back(payload.begin(), payload.end());
+      });
+    });
+  });
+  std::optional<uint32_t> id;
+  f.mgr_a->OpenChannel(nested_key, kNestedReliableProtocol, NestedReliablePolicy(),
+                       [&](PeerLinkManager::ChannelRoe ch) {
+                         if (ch.isOk()) {
+                           id = ch.value();
+                         }
+                       });
+  PumpAdvancing(f, [&] {
+    auto* nested = FindNestedLink(f, nested_key);
+    return id && nested && nested->Mux()->State(*id) == ChannelState::Open;
+  });
+  if (!id) {
+    return std::nullopt;
+  }
+  out.channel_id = *id;
+  return out;
+}
+
+// Reliable delivery over a nested link (ADR_LINK_PLANE §11): the relay splices a best-effort
+// carrier, so without the lane one lost or reordered frame wedged a Reliable channel for good
+// (call control / chat / hello over a relay — lab `delay 120ms 30ms`).
+TEST(MeshLinkTest, NestedReliableChannelSurvivesLossAndReorderingOnTheCarrier) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+  auto channel = OpenNestedReliableChannel(*fixture, nested->nested_key);
+  ASSERT_TRUE(channel.has_value());
+  auto* nested_a = FindNestedLink(*fixture, nested->nested_key);
+  ASSERT_NE(nested_a, nullptr);
+  EXPECT_TRUE(nested_a->CarrierLaneActive()) << "both ends announced the lane during the handshake";
+
+  for (auto* lossy : {fixture->lossy_a.get(), fixture->lossy_b.get()}) {
+    lossy->SetRngSeed(7);
+    lossy->SetDropRate(0.2);
+    lossy->SetReorderWindow(3);
+  }
+  std::vector<std::string> sent;
+  for (int i = 0; i < 40; ++i) {
+    sent.push_back("msg-" + std::to_string(i));
+    auto* link = FindNestedLink(*fixture, nested->nested_key);
+    ASSERT_NE(link, nullptr);
+    const std::vector<uint8_t> bytes(sent.back().begin(), sent.back().end());
+    ASSERT_TRUE(static_cast<bool>(link->Mux()->SendData(channel->channel_id, bytes))) << i;
+    fixture->clock->Advance(5);
+    fixture->PumpBoth();
+  }
+  PumpAdvancing(*fixture, [&] { return channel->received->size() >= sent.size(); });
+  EXPECT_EQ(*channel->received, sent) << "every message, once, in order";
+  auto* link = FindNestedLink(*fixture, nested->nested_key);
+  ASSERT_NE(link, nullptr) << "the link survived";
+  EXPECT_FALSE(link->CarrierLaneFailed());
+}
+
+// The relay stops forwarding while both outer links stay up: no resend of a reliable frame gets
+// through, so the end-to-end path is dead — the nested link is dropped (connection-dead) instead
+// of holding a wedged channel while its carrier looks fine.
+TEST(MeshLinkTest, NestedLinkIsDroppedWhenItsReliableLaneGivesUp) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+  auto channel = OpenNestedReliableChannel(*fixture, nested->nested_key);
+  ASSERT_TRUE(channel.has_value());
+  auto* nested_a = FindNestedLink(*fixture, nested->nested_key);
+  ASSERT_NE(nested_a, nullptr);
+  const LinkHandle handle = nested_a->Handle();
+  // Outer links stay alive (keepalives both ways) …
+  fixture->mgr_a->MarkHot("bob");
+  fixture->mgr_b->MarkHot("QmAlice");
+  // … while B's end of the carrier silently swallows everything (a relay that stopped splicing).
+  ASSERT_TRUE(fixture->mgr_b->WithLiveLink(*channel->nested_b, [](PeerLink& nested_b) {
+    nested_b.Carrier()->SetFrameHandler([](Roe<std::vector<uint8_t>>) { return true; });
+  }));
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
+
+  const std::vector<uint8_t> bytes = {'x'};
+  ASSERT_TRUE(static_cast<bool>(nested_a->Mux()->SendData(channel->channel_id, bytes)));
+  PumpAdvancing(*fixture, [&] { return !fixture->mgr_a->WithLiveLink(handle, [](PeerLink&) {}); }, 6000);
+  EXPECT_FALSE(fixture->mgr_a->WithLiveLink(handle, [](PeerLink&) {}));
+  EXPECT_TRUE(fixture->mgr_a->IsConnected("bob")) << "the outer link is fine";
+  fixture->PumpBoth();  // listeners run off-strand
+  bool dead = false;
+  for (const auto& event : events) {
+    dead |= event.kind == LinkEvent::Kind::Dropped && event.handle == handle &&
+            event.reason == LinkDropReason::ConnectionDead;
+  }
+  EXPECT_TRUE(dead);
 }
 
 // k1 (call-path-resilience): a Connected nested link whose carrier closes used to drop to Backoff

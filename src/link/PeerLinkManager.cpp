@@ -1165,6 +1165,12 @@ void PeerLinkManager::Tick() {
       if (link.Carrier() && link.Carrier()->IsClosed() && phase != PeerLinkPhase::Handshaking &&
           phase != PeerLinkPhase::Dialing) {
         evict.emplace_back(link.Handle(), LinkDropReason::CarrierClosed);
+        return;
+      }
+      link.TickCarrierLane(now);
+      if (phase == PeerLinkPhase::Connected && link.CarrierLaneFailed()) {
+        // A reliable frame went unacked through every resend: the end-to-end path is dead.
+        evict.emplace_back(link.Handle(), LinkDropReason::ConnectionDead);
       }
       return;
     }

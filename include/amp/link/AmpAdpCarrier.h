@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace pp::amp {
@@ -14,6 +15,15 @@ enum class AmpAdpPayloadKind : uint8_t {
   Msh = 0,
   Sealed = 1,
   MshChunk = 2,
+  /** Carrier reliable lane (CarrierLane): [seq u32][inner Sealed wire]. */
+  LaneData = 3,
+  /** Carrier reliable lane ack: [cumulative u32][selective u64]; cumulative 0 + no bits = probe. */
+  LaneAck = 4,
+};
+
+struct LaneAckFields {
+  uint32_t cumulative = 0;
+  uint64_t selective = 0;
 };
 
 inline constexpr size_t kMaxMshBodyPerDatagram = 900;
@@ -32,6 +42,12 @@ public:
       std::span<const uint8_t> payload);
   static Roe<std::pair<uint32_t, uint32_t>> DecodeSealedHeader(std::span<const uint8_t> payload);
   static Roe<std::vector<uint8_t>> DecodeSealedBody(std::span<const uint8_t> payload);
+
+  static std::vector<uint8_t> EncodeLaneData(uint32_t seq, std::span<const uint8_t> inner);
+  /** (seq, inner wire) — the inner wire is an ordinary payload (Sealed). */
+  static Roe<std::pair<uint32_t, std::span<const uint8_t>>> DecodeLaneData(std::span<const uint8_t> payload);
+  static std::vector<uint8_t> EncodeLaneAck(const LaneAckFields& ack);
+  static Roe<LaneAckFields> DecodeLaneAck(std::span<const uint8_t> payload);
 };
 
 } // namespace pp::amp

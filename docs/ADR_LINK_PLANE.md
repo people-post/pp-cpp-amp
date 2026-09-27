@@ -72,6 +72,26 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    - Snapshots and events carry `LinkPathKind` (Direct / Punched / Carrier — Punched when the
      link came up through `BurstDial`, either side); snapshots also carry the live `remote`
      endpoint and `last_rx_age_ms`.
+11. **Reliable lane on nested links** (A024 follow-on, pp-browser call-path-resilience k1). A relay
+   splices the circuit carrier as best-effort bytes, so ADP's per-hop reliability ends at the relay
+   and a nested link's Reliable-class mux frames (call control, chat, the call-media hello) had no
+   retransmission: one lost or reordered frame wedged the channel (`out of order seq`) for good.
+   - `CarrierLane` numbers each Reliable-class frame end to end (`LaneData` = [seq u32][Sealed
+     wire]) and keeps it until acked; the receiver releases frames in order, drops duplicates and
+     answers every data frame with `LaneAck` (cumulative u32 + 64 selective bits). Resend on an
+     adaptive RTO (RFC 6298 estimator, Karn, 200 ms – 3 s, doubling), or at once after three
+     selective acks pass a frame. Window 256 frames (mux transport credits; full → the send fails
+     like ADP `WindowFull`).
+   - A frame unacked after 10 transmissions (~20 s) means the end-to-end path is dead while the
+     carrier may look fine (relay stopped splicing, far leg gone): Tick drops the nested link
+     (`ConnectionDead`).
+   - BestEffort frames (media) are unchanged: plain `Sealed`, no lane.
+   - Negotiation without a wire version: each end sends a lane probe (a `LaneAck` acking nothing)
+     before every handshake message and once at Connected; a peer that has sent any lane frame
+     speaks the lane. Older builds drop unknown carrier kinds (handshake and connected paths
+     alike), never probe, and keep getting plain `Sealed` frames. Lane frames received while
+     still handshaking are acked and delivered once the mux exists.
+   - Relays need no change (they never parse the carrier).
 
 ## Consequences
 

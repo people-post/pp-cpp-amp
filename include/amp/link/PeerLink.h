@@ -4,6 +4,7 @@
 #include "amp/L3/Capability.h"
 #include "amp/L3/ChannelMux.h"
 #include "amp/L3/ChannelSession.h"
+#include "amp/link/CarrierLane.h"
 #include "amp/link/CodedFailure.h"
 #include "amp/link/LinkIdentity.h"
 #include "amp/link/MshAdpHandshake.h"
@@ -126,6 +127,13 @@ public:
   void RequestSessionRekey(std::function<void(Roe<void>)> on_complete);
   void HandleSessionControl(std::span<const uint8_t> payload);
 
+  /** Carrier-backed: resend unacked reliable-lane frames (Tick). */
+  void TickCarrierLane(int64_t now_ms);
+  /** Carrier-backed: a reliable-lane frame ran out of attempts — the path is gone. */
+  bool CarrierLaneFailed() const { return lane_ && lane_->Failed(); }
+  /** Carrier-backed: the peer speaks the reliable lane (it sent a lane frame). */
+  bool CarrierLaneActive() const { return lane_ && lane_->PeerSpeaksLane(); }
+
   int64_t HandshakeStartedMs() const { return handshake_started_ms_; }
   void FailHandshakeTimeout();
   void DemoteForScheduledDrop();
@@ -154,6 +162,12 @@ private:
   void AttachMuxTransport();
   void AttachCarrierFrameHandler();
   void HandleCarrierFrame(std::span<const uint8_t> payload);
+  void HandleLaneFrame(AmpAdpPayloadKind kind, std::span<const uint8_t> payload);
+  void DeliverSealedCarrierWire(std::span<const uint8_t> wire);
+  void FlushLaneBacklog();
+  /** Announce the reliable lane (an ack with nothing acked); older peers drop the unknown kind. */
+  void SendLaneProbe();
+  int64_t NowMs() const { return host_.now_ms ? host_.now_ms() : 0; }
   void StartHandshakeCommon(MshAdpHandshake::Role role, CompleteCb on_established);
 
   static Failure WrapConnectionFailure(const adp::Connection::Failure& child);
@@ -166,6 +180,10 @@ private:
   bool outbound_;
   std::shared_ptr<adp::Connection> connection_;
   std::shared_ptr<ChannelSession> carrier_;
+  /** Carrier-backed only: reliable delivery for Reliable-class frames (CarrierLane). */
+  std::unique_ptr<CarrierLane> lane_;
+  /** Lane frames released in order before the mux existed (peer finished its handshake first). */
+  std::vector<std::vector<uint8_t>> lane_backlog_;
   MshIdentity identity_;
   PeerLinkHostPorts host_;
   PeerLinkPhase phase_ = PeerLinkPhase::Handshaking;
