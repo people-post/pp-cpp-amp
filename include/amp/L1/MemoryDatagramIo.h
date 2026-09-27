@@ -3,6 +3,7 @@
 #include "amp/L1/DatagramIo.h"
 
 #include <deque>
+#include <mutex>
 #include <memory>
 #include <random>
 #include <unordered_map>
@@ -54,6 +55,11 @@ private:
   std::deque<std::pair<IpEndpoint, std::vector<uint8_t>>> pending_reorder_;
 };
 
+/**
+ * In-memory datagram network for tests. Thread-safe: each runtime drives its own endpoint, but
+ * product senders (e.g. a media capture thread under its runtime's io lock) enqueue while another
+ * runtime pops on the test's pump thread.
+ */
 class MemoryDatagramHub {
 public:
   void Register(const IpEndpoint& local, MemoryDatagramIo* io);
@@ -64,6 +70,7 @@ public:
   Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> Pop(const IpEndpoint& local);
 
 private:
+  std::mutex mu_;
   std::unordered_map<IpEndpoint, MemoryDatagramIo*, IpEndpointHash> ios_;
   std::unordered_map<IpEndpoint, std::deque<std::pair<IpEndpoint, std::vector<uint8_t>>>, IpEndpointHash>
       queues_;

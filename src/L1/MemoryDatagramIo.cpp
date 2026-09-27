@@ -66,10 +66,12 @@ Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> MemoryDatagramIo
 }
 
 void MemoryDatagramHub::Register(const IpEndpoint& local, MemoryDatagramIo* io) {
+  std::lock_guard lock(mu_);
   ios_[local] = io;
 }
 
 void MemoryDatagramHub::Unregister(const IpEndpoint& local) {
+  std::lock_guard lock(mu_);
   ios_.erase(local);
   queues_.erase(local);
 }
@@ -81,11 +83,13 @@ Roe<void> MemoryDatagramHub::Deliver(const IpEndpoint& from, const IpEndpoint& t
 }
 
 void MemoryDatagramHub::Enqueue(const IpEndpoint& to, IpEndpoint from, std::vector<uint8_t> datagram) {
+  std::lock_guard lock(mu_);
   queues_[to].emplace_back(std::move(from), std::move(datagram));
 }
 
 Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> MemoryDatagramHub::Pop(
     const IpEndpoint& local) {
+  std::lock_guard lock(mu_);
   auto it = queues_.find(local);
   if (it == queues_.end() || it->second.empty()) {
     return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{};
