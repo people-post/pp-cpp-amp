@@ -59,6 +59,10 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
      nests under the target PeerId while the direct dial is aborted); the key index names the
      latest, the other stays live by id, and dropping it leaves the key's index alone. Only
      product requests (`RequestDropLink`) resolve a key.
+   - Waiters belong to a link, too: `EnsureAssociation` joins (or aborts) only the ADP dial under
+     its key, `EstablishNestedOverCarrier` only a nested handshake under its key (waiters per
+     `LinkId`). Neither waits on the other — a cold ADP dial to a NAT'd peer runs its full dial
+     timeout while the carrier path answers at once.
    - Only a **fresh** packet refreshes liveness or moves the ADP path (A003): data once its replay
      window accepts the seq; seq-0 control packets (ack / close / keepalive) only when their wire
      timestamp is the newest seen (serial arithmetic). A replayed packet from a new address

@@ -418,6 +418,62 @@ TEST(MeshLinkTest, FailedAdpDialUnderASharedKeyLeavesTheNestedLinkAlone) {
   EXPECT_TRUE(holder->IsCarrierBacked());
 }
 
+// A024: a nested establish to a key must not wait on an ADP dial under the same key. Hard lab
+// (B-HARD-CALL-NAT-COLD): a cold ADP dial to the NAT'd answerer ran its full dial timeout and the
+// nested link over the relay — which would answer at once — failed with it.
+TEST(MeshLinkTest, NestedEstablishDoesNotWaitOnAnAdpDialUnderTheSameKey) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_b->EnableNestedCarrierAccept(true);
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated; });
+  ASSERT_TRUE(associated);
+
+  // An ADP dial to an address that never answers stays Handshaking …
+  const std::string key = "QmTarget";
+  auto dead = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 9, 999), "QmTarget");
+  ASSERT_TRUE(static_cast<bool>(dead));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint(key, *dead)));
+  std::optional<bool> adp_ok;
+  fixture->mgr_a->EnsureAssociation(key, [&](PeerLinkManager::LinkRoe result) { adp_ok = static_cast<bool>(result); });
+  auto* adp_link = fixture->mgr_a->FindLink(key);
+  ASSERT_NE(adp_link, nullptr);
+  const LinkHandle adp_handle = adp_link->Handle();
+
+  // … while the nested link over a carrier to the same key is established.
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", kAmpCircuitCarrierProtocolId, CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  fixture->PumpUntil([&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(channel_id.has_value());
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+  std::optional<bool> nested_ok;
+  fixture->mgr_a->EstablishNestedOverCarrier(key, carrier, true,
+                                             [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return nested_ok.has_value(); });
+
+  ASSERT_TRUE(nested_ok.has_value()) << "the nested handshake finished on its own, not with the ADP dial";
+  EXPECT_TRUE(*nested_ok);
+  EXPECT_FALSE(adp_ok.has_value()) << "the ADP dial's waiter waits for the ADP dial";
+  EXPECT_TRUE(fixture->mgr_a->WithLiveLink(adp_handle, [](PeerLink& link) {
+    EXPECT_EQ(link.Phase(), PeerLinkPhase::Handshaking);
+  })) << "and that dial is still in flight";
+}
+
 /** Associate A→B and bring up a Connected nested link over a carrier channel (B accepts). */
 struct ConnectedNested {
   uint32_t carrier_channel = 0;

@@ -156,6 +156,32 @@ const PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) const {
   return table_.FindByPeerId(peer_key);
 }
 
+PeerLink* PeerLinkManager::FindAdpLinkForKey(const DialKey& key) {
+  if (auto* occupant = table_.FindByDialKey(key); occupant && !occupant->IsCarrierBacked()) {
+    return occupant;
+  }
+  PeerLink* found = nullptr;
+  table_.ForEach([&](PeerLink& link) {
+    if (!found && !link.IsCarrierBacked() && link.PeerKey() == key) {
+      found = &link;
+    }
+  });
+  return found;
+}
+
+PeerLink* PeerLinkManager::FindNestedLinkForKey(const DialKey& key) {
+  if (auto* occupant = table_.FindByDialKey(key); occupant && occupant->IsCarrierBacked()) {
+    return occupant;
+  }
+  PeerLink* found = nullptr;
+  table_.ForEach([&](PeerLink& link) {
+    if (!found && link.IsCarrierBacked() && link.PeerKey() == key) {
+      found = &link;
+    }
+  });
+  return found;
+}
+
 PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) {
   std::lock_guard lock(strand_mu_);
   return table_.FindByPeerId(peer_id);
@@ -255,6 +281,19 @@ void PeerLinkManager::DropLinkNow(PeerLink& live, const LinkDropReason reason) {
   table_.EraseById(id);  // its key index only if it still names this link (A024 sharing)
   for (auto& notice : channel_notices) {
     notice();
+  }
+  // A nested link dropped before its handshake finished (carrier closed, shutdown) never reaches
+  // FinishNestedCarrier: fail its waiters rather than strand them.
+  if (auto it = nested_waiters_.find(id); it != nested_waiters_.end()) {
+    auto waiters = std::move(it->second);
+    nested_waiters_.erase(it);
+    PostCompletion([waiters = std::move(waiters)]() mutable {
+      for (auto& waiter : waiters) {
+        if (waiter) {
+          waiter(LinkRoe::error(Failure::Of(Err::TransportFailed, "amp link: nested link dropped")));
+        }
+      }
+    });
   }
   EmitLinkEvent(std::move(dropped));
 }
@@ -501,14 +540,15 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
     }
   }
 
-  if (auto* existing = table_.FindByDialKey(peer_key)) {
+  // Join an ADP dial in flight; a nested handshake under the same key is a different link (A024).
+  if (auto* existing = FindAdpLinkForKey(peer_key)) {
     if (existing->Phase() == PeerLinkPhase::Handshaking || existing->Phase() == PeerLinkPhase::Dialing) {
       inflight_associations_[peer_key].push_back(std::move(on_complete));
       return;
     }
     // Stale Backoff/Idle occupant blocks a fresh dial; drop and continue.
     if (existing->Phase() != PeerLinkPhase::Connected) {
-      DropLink(peer_key, LinkDropReason::Displaced);
+      DropLinkNow(*existing, LinkDropReason::Displaced);
     }
   }
 
@@ -762,7 +802,7 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, const LinkHandle h
       } else {
         book_.ResetDialIndex(peer_key);
       }
-      if (auto* link = FindLink(peer_key)) {
+      if (auto* link = table_.FindLive(handle)) {
         RefreshPresence(*link);
       }
       waiters = std::move(inflight_associations_[peer_key]);
@@ -820,7 +860,7 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
 
   // FailAssociation → establish_cb → FinishDial (ScheduleDropLink, no backoff). Do not
   // DropLink/ScheduleDrop here: destroying a Handshaking PeerLink races the handshake path.
-  if (auto* link = FindLink(peer_key)) {
+  if (auto* link = FindAdpLinkForKey(peer_key)) {
     const auto phase = link->Phase();
     if (link->IsOutbound() &&
         (phase == PeerLinkPhase::Handshaking || phase == PeerLinkPhase::Dialing)) {
@@ -1223,11 +1263,11 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
     }
     return;
   }
-  if (auto* existing = FindLink(peer_key)) {
-    if (existing->Phase() == PeerLinkPhase::Handshaking) {
-      inflight_associations_[peer_key].push_back(std::move(on_complete));
-      return;
-    }
+  // Join a nested handshake to this key in flight — never an ADP dial sharing it (A024): a cold
+  // ADP dial to a NAT'd peer runs its full dial timeout while the carrier path answers at once.
+  if (auto* existing = FindNestedLinkForKey(peer_key); existing && existing->Phase() == PeerLinkPhase::Handshaking) {
+    nested_waiters_[existing->Id()].push_back(std::move(on_complete));
+    return;
   }
 
   if (table_.size() >= book_.Config().max_links) {
@@ -1237,12 +1277,12 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
     return;
   }
 
-  inflight_associations_[peer_key].push_back(std::move(on_complete));
   auto link = std::make_unique<PeerLink>(peer_key, peer_key, initiator, std::move(carrier), local_identity_,
                                          MakeHostPorts());
   AssignLinkIdentity(*link);
   PeerLink* raw = link.get();
   const LinkHandle handle = raw->Handle();
+  nested_waiters_[handle.id].push_back(std::move(on_complete));
   // May take the key from an ADP link to the same peer (A024 — ADP and carrier coexist); that link
   // stays live by id. Drops below target this link by handle, never "whatever holds the key".
   table_.Insert(std::move(link));
@@ -1259,7 +1299,7 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
 
 void PeerLinkManager::FinishNestedCarrier(std::string provisional_key, const LinkHandle handle, LinkRoe result) {
   std::lock_guard lock(strand_mu_);
-  auto* link = FindLink(provisional_key);
+  auto* link = table_.FindLive(handle);
   if (result && link && !link->RemotePeerId().empty() && link->RemotePeerId() != provisional_key) {
     PeerLink* adp = nullptr;
     const std::string remote = link->RemotePeerId();
@@ -1275,18 +1315,13 @@ void PeerLinkManager::FinishNestedCarrier(std::string provisional_key, const Lin
     // already owns that PeerId key ([A024]).
     if (!adp && !table_.ContainsDialKey(remote)) {
       BindDialAlias(link->Id(), remote);
-      link = FindLink(remote);
     }
   }
 
-  const std::string notify_key = (link ? link->PeerKey() : provisional_key);
-  auto waiters = std::move(inflight_associations_[provisional_key]);
-  inflight_associations_.erase(provisional_key);
-  if (notify_key != provisional_key) {
-    auto extras = std::move(inflight_associations_[notify_key]);
-    inflight_associations_.erase(notify_key);
-    waiters.insert(waiters.end(), std::make_move_iterator(extras.begin()),
-                   std::make_move_iterator(extras.end()));
+  std::vector<LinkCb> waiters;
+  if (auto it = nested_waiters_.find(handle.id); it != nested_waiters_.end()) {
+    waiters = std::move(it->second);
+    nested_waiters_.erase(it);
   }
   if (!result) {
     last_error_[provisional_key] = result.error();

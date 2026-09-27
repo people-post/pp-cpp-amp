@@ -240,6 +240,13 @@ private:
   bool AdoptInboundOrDropDuplicate(PeerLink& inbound);
   /** Rebind dial alias for a live LinkId (index-only; replaces map-key RekeyLink). */
   void BindDialAlias(LinkId id, DialKey to_key);
+  /**
+   * The ADP (resp. carrier-backed) link dialed under `key`, whether or not the key index names it:
+   * under A024 an ADP dial and a nested link to the same peer share the key, and neither waits on
+   * the other's handshake.
+   */
+  PeerLink* FindAdpLinkForKey(const DialKey& key);
+  PeerLink* FindNestedLinkForKey(const DialKey& key);
   PeerLink* FindConnectedLinkForPeerId(const std::string& peer_id);
   PeerLink* FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id);
   PeerLink* ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const;
@@ -289,7 +296,10 @@ private:
 
   std::unordered_map<std::string, ProtocolHandler> protocol_handlers_;
   bool refuse_unhandled_opens_ = false;
+  /** EnsureAssociation waiters, per dial key: completed by the ADP dial under that key. */
   std::unordered_map<std::string, std::vector<LinkCb>> inflight_associations_;
+  /** EstablishNestedOverCarrier waiters, per nested link: completed by that link's handshake. */
+  std::unordered_map<LinkId, std::vector<LinkCb>> nested_waiters_;
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;
   std::vector<std::pair<LinkHandle, LinkDropReason>> pending_drops_;
