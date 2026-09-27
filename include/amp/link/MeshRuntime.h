@@ -135,6 +135,8 @@ public:
   std::optional<std::string> PreferredMultiaddr(const std::string& peer_id) const;
 
   void SetProtocolHandler(const std::string& protocol_id, PeerLinkManager::ProtocolHandler handler);
+  /** See PeerLinkManager::SetRefuseUnhandledOpens — product hosts whose handlers are the whole surface. */
+  void SetRefuseUnhandledOpens(bool refuse);
   void RemoveProtocolHandler(const std::string& protocol_id);
   void SetCapabilityHandler(PeerLinkManager::CapabilityHandler handler);
   void SetLocalListenMultiaddrs(std::vector<std::string> multiaddrs);

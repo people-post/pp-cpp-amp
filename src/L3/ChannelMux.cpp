@@ -172,6 +172,22 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
   if (channels_.contains(frame.header.channel_id)) {
     return Error("amp mux: duplicate open");
   }
+  const bool handled = frame.header.channel_id == kCapabilityChannelId ||
+                       protocol_handlers_.contains(frame.open.protocol_id) ||
+                       pending_handlers_.contains(frame.header.channel_id);
+  if (refuse_unhandled_opens_ && !handled) {
+    // No record: the id stays free, and nothing is left behind for a request nobody reads.
+    ChannelRecord refused;
+    refused.id = frame.header.channel_id;
+    refused.policy.cls = frame.open.channel_class;
+    ChannelFrame nack;
+    nack.header.frame_type = ChannelFrameType::OpenAck;
+    nack.header.channel_id = frame.header.channel_id;
+    nack.header.channel_seq = 0;
+    nack.open_ack_result = kOpenAckNoHandler;
+    pending_terminal_handlers_.erase(frame.header.channel_id);
+    return SendFrame(nack, refused);
+  }
   ChannelRecord rec;
   rec.id = frame.header.channel_id;
   rec.protocol_id = frame.open.protocol_id;
@@ -219,6 +235,8 @@ Roe<void> ChannelMux::HandleOpenAck(ChannelFrame frame) {
   if (frame.open_ack_result != 0) {
     channel->state = ChannelState::Closed;
     pending_open_data_.erase(frame.header.channel_id);
+    NotifyTerminal(*channel, frame.open_ack_result == kOpenAckNoHandler ? "open rejected: no handler"
+                                                                        : "open rejected");
     return Error("amp mux: open rejected");
   }
   channel->state = ChannelState::Open;

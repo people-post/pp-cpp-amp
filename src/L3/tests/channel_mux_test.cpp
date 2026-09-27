@@ -255,5 +255,53 @@ TEST(ChannelMuxTest, FragPreflightRefusesWhenCreditsLow) {
   EXPECT_GE(transport_calls, 3u);
 }
 
+TEST(ChannelMuxTest, RefusingMuxRejectsOpensNobodyHandles) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  link.responder.mux.SetRefuseUnhandledOpens(true);
+
+  std::string terminal_reason;
+  auto refused = link.initiator.mux.OpenOutbound("/nobody/1", ControlJsonChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(refused));
+  EXPECT_EQ(link.initiator.mux.State(*refused), ChannelState::Closed);
+  EXPECT_EQ(link.responder.mux.State(*refused), ChannelState::Closed) << "no record kept";
+
+  bool handler_called = false;
+  link.responder.mux.SetProtocolHandler("/served/1", [&](uint32_t, const std::string&) { handler_called = true; });
+  auto served = link.initiator.mux.OpenOutbound("/served/1", ControlJsonChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(served));
+  EXPECT_EQ(link.initiator.mux.State(*served), ChannelState::Open);
+  EXPECT_TRUE(handler_called);
+}
+
+TEST(ChannelMuxTest, RefusingMuxStillAcceptsPreboundAndCapabilityChannels) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  link.responder.mux.SetRefuseUnhandledOpens(true);
+
+  // Data handler bound to the id before the OPEN arrives (the capability channel pattern).
+  CapabilityPayload decoded;
+  link.responder.mux.SetDataHandler(kCapabilityChannelId, [&](uint32_t, std::vector<uint8_t> payload) {
+    auto cap = CapabilityCodec::Decode(payload);
+    ASSERT_TRUE(static_cast<bool>(cap));
+    decoded = std::move(*cap);
+  });
+  CapabilityPayload offer;
+  offer.local_peer_id = "QmCap";
+  ASSERT_TRUE(static_cast<bool>(ChannelMux::SendCapabilityOffer(link.initiator.mux, offer)));
+  EXPECT_EQ(decoded.local_peer_id, "QmCap");
+}
+
+TEST(ChannelMuxTest, RawMuxAcceptsUnhandledOpensByDefault) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/nobody/1", ControlJsonChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Open) << "policy is opt-in";
+}
+
 } // namespace
 } // namespace pp::amp

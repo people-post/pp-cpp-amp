@@ -310,6 +310,10 @@ void MeshRuntime::SetProtocolHandler(const std::string& protocol_id, PeerLinkMan
   links_.SetProtocolHandler(protocol_id, std::move(handler));
 }
 
+void MeshRuntime::SetRefuseUnhandledOpens(const bool refuse) {
+  links_.SetRefuseUnhandledOpens(refuse);
+}
+
 void MeshRuntime::RemoveProtocolHandler(const std::string& protocol_id) {
   links_.RemoveProtocolHandler(protocol_id);
 }

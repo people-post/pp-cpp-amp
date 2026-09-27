@@ -57,6 +57,17 @@ public:
   void SetProtocolHandler(const std::string& protocol_id, InboundOpenHandler handler);
   void ClearProtocolHandlers();
 
+  /** OpenAck result: the responder has no handler for the channel's protocol. */
+  static constexpr uint8_t kOpenAckNoHandler = 1;
+  /**
+   * When true, an inbound OPEN is refused (OpenAck kOpenAckNoHandler, no channel record) unless a
+   * protocol handler is registered for its protocol, a data handler was bound to its id before it
+   * arrived, or it is the capability channel. Without this, the opener saw an open channel whose
+   * requests were silently dropped and waited out its own timeout. Off by default;
+   * PeerLinkManager::SetRefuseUnhandledOpens applies it to every link's mux.
+   */
+  void SetRefuseUnhandledOpens(bool refuse) { refuse_unhandled_opens_ = refuse; }
+
   Roe<void> SendData(uint32_t channel_id, std::vector<uint8_t> payload);
   Roe<void> ResetChannel(uint32_t channel_id, uint32_t code = 1);
   Roe<void> CloseChannel(uint32_t channel_id, std::string reason = {});
@@ -109,6 +120,7 @@ private:
   uint32_t next_dynamic_id_ = 1;
   adp::QosClass last_send_qos_ = adp::QosClass::Reliable;
   uint64_t next_frag_msg_id_ = 1;
+  bool refuse_unhandled_opens_ = false;
 
   void FlushPendingOpenData(uint32_t channel_id);
 };
