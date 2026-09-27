@@ -219,7 +219,12 @@ private:
   void InstallAcceptHandler();
   void OnInboundConnection(std::shared_ptr<adp::Connection> connection);
   bool OnLinkEstablished(PeerLink& link);
+  /**
+   * Drop, at the next Tick, the link that occupies `peer_key` now. Deferred drops are held by
+   * handle: a replacement inserted under the same key before Tick is never hit.
+   */
   void ScheduleDropLink(std::string peer_key, LinkDropReason reason);
+  void ScheduleDropLink(LinkHandle link, LinkDropReason reason);
   void ApplyProtocolHandlers(PeerLink& link);
   void StartCapabilityExchange(PeerLink& link);
   void OnCapabilityData(const std::string& peer_key, std::vector<uint8_t> payload);
@@ -239,6 +244,10 @@ private:
   PeerLink* FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id);
   PeerLink* ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const;
   void DropLink(const std::string& peer_key, LinkDropReason reason);
+  /** Drop exactly `link` if it is still live (and still the occupant of its key). */
+  void DropLinkByHandle(LinkHandle link, LinkDropReason reason);
+  /** Insert under the link's key, displacing (dropping) any other occupant instead of orphaning it. */
+  PeerLink& InsertDisplacing(std::unique_ptr<PeerLink> link);
   /** Copy listeners under the strand and post `event` off-stack. */
   void EmitLinkEvent(LinkEvent event);
   LinkEvent MakeLinkEvent(LinkEvent::Kind kind, PeerLink& link) const;
@@ -281,7 +290,7 @@ private:
   std::unordered_map<std::string, std::vector<LinkCb>> inflight_associations_;
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;
-  std::vector<std::pair<std::string, LinkDropReason>> pending_drop_keys_;
+  std::vector<std::pair<LinkHandle, LinkDropReason>> pending_drops_;
   /** After a failed dial, try next DialBook candidate once the link is dropped (Tick). */
   std::vector<std::string> pending_candidate_retry_;
   std::vector<std::pair<std::string, std::string>> pending_alias_adopt_;

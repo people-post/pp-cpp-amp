@@ -281,8 +281,73 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
   EXPECT_FALSE(events[0].was_connected);
 }
 
-// Product warms a peer before dialing it (chat foreground); the tier must not be lost.
-// pp-browser B39: product drops a link it knows is stale; both ends evict it, reason "requested".
+// k1 (call-path-resilience): a drop scheduled for a failed link must not hit the link that
+// replaced it under the same dial key before Tick — and the replaced one must not be orphaned.
+TEST(MeshLinkTest, ScheduledDropHitsTheFailedLinkNotItsReplacement) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+  const LinkHandle outer_b = fixture->mgr_b->FindConnectedInboundLink()->Handle();
+
+  const auto open_carrier = [&]() -> std::shared_ptr<ChannelSession> {
+    std::optional<uint32_t> channel_id;
+    fixture->mgr_a->OpenChannel("bob", "/pp-test/carrier/1.0.0", CircuitCarrierChannelPolicy(),
+                                [&](PeerLinkManager::ChannelRoe ch) {
+                                  if (ch.isOk()) {
+                                    channel_id = ch.value();
+                                  }
+                                });
+    fixture->PumpUntil([&] {
+      auto* outbound = fixture->mgr_a->FindLink("bob");
+      return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+    });
+    if (!channel_id) {
+      return nullptr;
+    }
+    auto carrier = std::make_shared<ChannelSession>();
+    carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                  [](Roe<std::vector<uint8_t>>) { return true; });
+    return carrier;
+  };
+
+  // Both carriers up front: opening one pumps (and Ticks), which would drain the drop too early.
+  auto first_carrier = open_carrier();
+  ASSERT_NE(first_carrier, nullptr);
+  auto second_carrier = open_carrier();
+  ASSERT_NE(second_carrier, nullptr);
+  // First nested attempt (never answered), then its carrier resets: failed, drop scheduled.
+  const uint32_t first_channel = first_carrier->ChannelId();
+  fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", first_carrier, true, [](PeerLinkManager::LinkRoe) {});
+  first_carrier.reset();
+  const LinkHandle first = fixture->mgr_a->FindLink("nested:bob")->Handle();
+  ASSERT_TRUE(fixture->mgr_b->WithLiveLink(outer_b, [&](PeerLink& link) {
+    (void)link.Mux()->ResetChannel(first_channel);
+  }));
+  fixture->pump_b->Pump();
+  fixture->pump_a->Pump();
+
+  // Before Tick drains that drop, a new attempt takes the same key.
+  fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", second_carrier, true, [](PeerLinkManager::LinkRoe) {});
+  auto* replacement = fixture->mgr_a->FindLink("nested:bob");
+  ASSERT_NE(replacement, nullptr);
+  const LinkHandle second = replacement->Handle();
+  ASSERT_NE(second.id, first.id);
+
+  fixture->pump_a->Tick();
+  EXPECT_FALSE(fixture->mgr_a->WithLiveLink(first, [](PeerLink&) {})) << "the failed link is gone, not orphaned";
+  EXPECT_TRUE(fixture->mgr_a->WithLiveLink(second, [](PeerLink&) {})) << "its replacement survives the drop";
+  auto* now = fixture->mgr_a->FindLink("nested:bob");
+  ASSERT_NE(now, nullptr);
+  EXPECT_EQ(now->Id(), second.id);
+}
+
 /** Associate A→B and bring up a Connected nested link over a carrier channel (B accepts). */
 struct ConnectedNested {
   uint32_t carrier_channel = 0;
@@ -410,6 +475,8 @@ TEST(MeshLinkTest, InboundLinkIsDroppedWhenItsHandshakeFails) {
   EXPECT_EQ(fixture->mgr_b->FindConnectedInboundLink(), nullptr);
 }
 
+// Product warms a peer before dialing it (chat foreground); the tier must not be lost.
+// pp-browser B39: product drops a link it knows is stale; both ends evict it, reason "requested".
 TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();

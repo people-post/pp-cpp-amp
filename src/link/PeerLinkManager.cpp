@@ -257,7 +257,35 @@ void PeerLinkManager::DropLink(const std::string& peer_key, const LinkDropReason
 
 void PeerLinkManager::ScheduleDropLink(std::string peer_key, const LinkDropReason reason) {
   std::lock_guard lock(strand_mu_);
-  pending_drop_keys_.emplace_back(std::move(peer_key), reason);
+  if (auto* link = table_.FindByDialKey(peer_key)) {
+    pending_drops_.emplace_back(link->Handle(), reason);
+  }
+}
+
+void PeerLinkManager::ScheduleDropLink(const LinkHandle link, const LinkDropReason reason) {
+  std::lock_guard lock(strand_mu_);
+  pending_drops_.emplace_back(link, reason);
+}
+
+void PeerLinkManager::DropLinkByHandle(const LinkHandle handle, const LinkDropReason reason) {
+  std::lock_guard lock(strand_mu_);
+  auto* link = table_.FindLive(handle);
+  if (!link) {
+    return;  // already gone (dropped, displaced, or never inserted)
+  }
+  const std::string key = link->PeerKey();
+  if (table_.FindByDialKey(key) == link) {
+    DropLink(key, reason);
+  }
+}
+
+PeerLink& PeerLinkManager::InsertDisplacing(std::unique_ptr<PeerLink> link) {
+  std::lock_guard lock(strand_mu_);
+  if (auto* occupant = table_.FindByDialKey(link->PeerKey()); occupant && occupant != link.get()) {
+    // Overwriting the key used to leave the occupant orphaned in the id map (still live, no key).
+    DropLink(occupant->PeerKey(), LinkDropReason::Displaced);
+  }
+  return table_.Insert(std::move(link));
 }
 
 void PeerLinkManager::ScheduleAdoptDialAlias(std::string remote_peer_id, std::string dial_alias) {
@@ -597,7 +625,7 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
   // failure), and FinishDial must FindLink / ScheduleDropLink against a table occupant.
   // Inserting after Start left a zombie link and raced DropLink on Windows (SEH 0xc0000005).
   PeerLink* raw = link.get();
-  table_.Insert(std::move(link));
+  InsertDisplacing(std::move(link));
   raw->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
     FinishDial(peer_key, WrapPeerLinkResult(result));
   });
@@ -1024,11 +1052,11 @@ void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
 
 void PeerLinkManager::Tick() {
   std::lock_guard lock(strand_mu_);
-  if (!pending_drop_keys_.empty()) {
-    auto pending = std::move(pending_drop_keys_);
-    pending_drop_keys_.clear();
-    for (const auto& [key, reason] : pending) {
-      DropLink(key, reason);
+  if (!pending_drops_.empty()) {
+    auto pending = std::move(pending_drops_);
+    pending_drops_.clear();
+    for (const auto& [handle, reason] : pending) {
+      DropLinkByHandle(handle, reason);
     }
   }
   if (!pending_candidate_retry_.empty()) {
@@ -1214,7 +1242,7 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
                                          MakeHostPorts());
   AssignLinkIdentity(*link);
   PeerLink* raw = link.get();
-  table_.Insert(std::move(link));
+  InsertDisplacing(std::move(link));
   if (initiator) {
     raw->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
       FinishNestedCarrier(peer_key, WrapPeerLinkResult(result));
@@ -1312,7 +1340,7 @@ PeerLinkHostPorts PeerLinkManager::MakeHostPorts() {
       .derive_peer_id = [this](const ByteVector& pk) { return DeriveRemotePeerId(pk); },
       .on_established = [this](PeerLink& link) { return OnLinkEstablished(link); },
       // PeerLink only schedules its own drop when it loses dual-dial election.
-      .schedule_drop = [this](std::string key) { ScheduleDropLink(std::move(key), LinkDropReason::DualDialLost); },
+      .schedule_drop = [this](LinkHandle link) { ScheduleDropLink(link, LinkDropReason::DualDialLost); },
       .schedule_adopt_alias =
           [this](std::string remote, std::string alias) {
             ScheduleAdoptDialAlias(std::move(remote), std::move(alias));
