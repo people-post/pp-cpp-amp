@@ -251,59 +251,15 @@ struct AmpIntegrationHarness : AmpMeshHarness {
   }
 
   /** Send one sealed L3 DATA frame from an alternate local UDP path (NAT handoff). */
-  bool SendSealedFromAlternatePath(const HarnessSide sender, const std::string& alias, const uint32_t channel_id,
-                                   const pp::adp::IpEndpoint& alt_local, std::vector<uint8_t> payload,
-                                   uint32_t channel_seq = 1) {
-    auto* link = Mgr(sender).FindLink(alias);
-    if (!link || !link->GetSession() || !link->ConnectionOrNull()) {
-      return false;
-    }
-    pp::amp::ChannelFrame frame;
-    frame.header.frame_type = pp::amp::ChannelFrameType::Data;
-    frame.header.channel_id = channel_id;
-    frame.header.channel_seq = channel_seq;
-    frame.payload = std::move(payload);
-    auto wire = pp::amp::ChannelWire::Encode(frame);
-    if (!wire) {
-      return false;
-    }
-    auto sealed = link->GetSession()->Seal(channel_id, channel_seq, *wire);
-    if (!sealed) {
-      return false;
-    }
-    auto carrier = pp::amp::AmpAdpCarrier::EncodeSealed(channel_id, channel_seq, *sealed);
-    if (!carrier) {
-      return false;
-    }
-
-    auto* conn = link->ConnectionOrNull();
-    pp::adp::OpenParams params;
-    params.key = link->GetSession()->AssocKey();
-    params.id = conn->Id();
-    params.mint_id = false;
-    params.peer = sender == HarnessSide::A ? addr_b : addr_a;
-
-    migrate_io_ = std::make_shared<pp::adp::MemoryDatagramIo>(hub, alt_local);
-    migrate_ep_ = std::make_unique<pp::adp::Endpoint>(migrate_io_, clock);
-    auto opened = migrate_ep_->Open(params);
-    if (!opened) {
-      migrate_ep_.reset();
-      migrate_io_.reset();
-      return false;
-    }
-    migrate_conn_ = *opened;
-    if (!static_cast<bool>(migrate_conn_->Send(pp::adp::QosClass::Reliable, *carrier))) {
-      return false;
-    }
-    migrate_ep_->Tick();
-    migrate_conn_->Tick(clock->NowMs());
-    PumpBoth();
-    return true;
+  /**
+   * NAT rebinding mid-session: move `sender`'s socket to `alt_local`, then send `payload` on the
+   * live link — the same connection, with its next sequence number, now from the new address (A003).
+   */
+  bool SendAfterRebind(const HarnessSide sender, const std::string& alias, const uint32_t channel_id,
+                       const pp::adp::IpEndpoint& alt_local, std::vector<uint8_t> payload) {
+    Io(sender)->Rebind(alt_local);
+    return SendMuxData(sender, alias, channel_id, std::move(payload));
   }
-
-  std::shared_ptr<pp::adp::MemoryDatagramIo> migrate_io_;
-  std::unique_ptr<pp::adp::Endpoint> migrate_ep_;
-  std::shared_ptr<pp::adp::Connection> migrate_conn_;
 
   bool RequestRekey(const HarnessSide side, const std::string& alias) {
     if (!WaitCh0Open(side, alias)) {

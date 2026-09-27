@@ -323,12 +323,12 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
     // Dual-dial loser ([A026]): tear down this link after stack unwinds. If another Connected
     // Session to the same remote remains, association still succeeded for waiters.
     phase_ = PeerLinkPhase::Backoff;
-    const std::string drop_key = peer_key_;
+    const std::string drop_key = peer_key_;  // dial alias for the survivor
     const std::string remote = remote_peer_id_;
     const bool assoc_ok =
         !remote.empty() && host_.has_other_connected && host_.has_other_connected(remote);
     if (host_.schedule_drop) {
-      host_.schedule_drop(drop_key);
+      host_.schedule_drop(Handle());
     }
     if (assoc_ok && outbound_ && host_.schedule_adopt_alias) {
       host_.schedule_adopt_alias(remote, drop_key);

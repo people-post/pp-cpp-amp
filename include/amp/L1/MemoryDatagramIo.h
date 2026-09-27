@@ -42,6 +42,15 @@ public:
   /** Deliver any datagrams held for reorder (FIFO drain). */
   void FlushReorder();
 
+  /**
+   * Tests: move this socket to `new_local` (a NAT rebinding): later sends come from the new address
+   * and datagrams to the old one are dropped. Connections on it keep their sequence counters.
+   */
+  void Rebind(IpEndpoint new_local);
+
+  /** Tests: sends to `peer` fail with kDatagramSendUnreachable (no route) while set. */
+  void SetUnreachable(const IpEndpoint& peer, bool unreachable);
+
   ~MemoryDatagramIo() override;
 
 private:
@@ -53,6 +62,7 @@ private:
   size_t drop_next_ = 0;
   std::mt19937 rng_{1};
   std::deque<std::pair<IpEndpoint, std::vector<uint8_t>>> pending_reorder_;
+  std::vector<IpEndpoint> unreachable_;
 };
 
 /**

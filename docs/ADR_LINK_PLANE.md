@@ -49,6 +49,29 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    polling `FindLink`. Every drop site must pass a reason (`ScheduleDropLink(key, reason)`).
    Products drop a link they know is stale with `RequestDropLink(dial key or PeerId)` (reason
    `requested`, scheduled on Tick) — never via `FindLink` + `Connection::Close`.
+10. **Link hygiene** (pp-browser call-path-resilience k1): no link lingers.
+   - A carrier-backed link whose carrier closed is dropped (`CarrierClosed`) in any phase but
+     Handshaking / Dialing (those keep their deferred drop); an inbound link whose handshake
+     fails is dropped (`HandshakeFailed`).
+   - Drops target **a link, by `LinkHandle`**, never "whatever holds the dial key": completions
+     (dial / nested / inbound), aborts, the dual-dial loser and Tick's timeouts / evictions all
+     know the link. An ADP link and a nested link may share a dial key (A024 — circuit reach
+     nests under the target PeerId while the direct dial is aborted); the key index names the
+     latest, the other stays live by id, and dropping it leaves the key's index alone. Only
+     product requests (`RequestDropLink`) resolve a key.
+   - Waiters belong to a link, too: `EnsureAssociation` joins (or aborts) only the ADP dial under
+     its key, `EstablishNestedOverCarrier` only a nested handshake under its key (waiters per
+     `LinkId`). Neither waits on the other — a cold ADP dial to a NAT'd peer runs its full dial
+     timeout while the carrier path answers at once.
+   - Only a **fresh** packet refreshes liveness or moves the ADP path (A003): data once its replay
+     window accepts the seq; seq-0 control packets (ack / close / keepalive) only when their wire
+     timestamp is the newest seen (serial arithmetic). A replayed packet from a new address
+     cannot redirect an association.
+   - A send the OS rejects as host / network unreachable or down (`kDatagramSendUnreachable`)
+     marks the association `PeerUnreachable`; Tick drops the link at once (`TransportFailed`).
+   - Snapshots and events carry `LinkPathKind` (Direct / Punched / Carrier — Punched when the
+     link came up through `BurstDial`, either side); snapshots also carry the live `remote`
+     endpoint and `last_rx_age_ms`.
 
 ## Consequences
 

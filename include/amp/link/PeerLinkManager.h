@@ -219,26 +219,41 @@ private:
   void InstallAcceptHandler();
   void OnInboundConnection(std::shared_ptr<adp::Connection> connection);
   bool OnLinkEstablished(PeerLink& link);
+  /**
+   * Drop, at the next Tick, the link that occupies `peer_key` now. Deferred drops are held by
+   * handle: a replacement inserted under the same key before Tick is never hit.
+   */
   void ScheduleDropLink(std::string peer_key, LinkDropReason reason);
+  void ScheduleDropLink(LinkHandle link, LinkDropReason reason);
   void ApplyProtocolHandlers(PeerLink& link);
   void StartCapabilityExchange(PeerLink& link);
   void OnCapabilityData(const std::string& peer_key, std::vector<uint8_t> payload);
   void OnCh0Data(const std::string& peer_key, std::vector<uint8_t> payload);
   void IngestRemoteCapabilityAddrs(PeerLink& link, const CapabilityPayload& remote);
-  void FinishDial(const std::string& peer_key, LinkRoe result);
+  void FinishDial(const std::string& peer_key, LinkHandle handle, LinkRoe result);
   /** Start outbound dial for `peer_key`; waiters must already be queued. Strand-locked. */
   void BeginOutboundDialLocked(const std::string& peer_key);
   /** Runs inside the nested link's establish_cb_ — `provisional_key` by value (caller's capture dies with the link). */
-  void FinishNestedCarrier(std::string provisional_key, LinkRoe result);
+  void FinishNestedCarrier(std::string provisional_key, LinkHandle handle, LinkRoe result);
   void HandleInboundCarrierChannel(PeerLink& via_link, uint32_t channel_id);
   std::string DeriveRemotePeerId(const ByteVector& identity_public_key) const;
   bool AdoptInboundOrDropDuplicate(PeerLink& inbound);
   /** Rebind dial alias for a live LinkId (index-only; replaces map-key RekeyLink). */
   void BindDialAlias(LinkId id, DialKey to_key);
+  /**
+   * The ADP (resp. carrier-backed) link dialed under `key`, whether or not the key index names it:
+   * under A024 an ADP dial and a nested link to the same peer share the key, and neither waits on
+   * the other's handshake.
+   */
+  PeerLink* FindAdpLinkForKey(const DialKey& key);
+  PeerLink* FindNestedLinkForKey(const DialKey& key);
   PeerLink* FindConnectedLinkForPeerId(const std::string& peer_id);
   PeerLink* FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id);
   PeerLink* ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const;
   void DropLink(const std::string& peer_key, LinkDropReason reason);
+  /** Drop exactly `link` if it is still live — also when another link now holds its dial key. */
+  void DropLinkByHandle(LinkHandle link, LinkDropReason reason);
+  void DropLinkNow(PeerLink& link, LinkDropReason reason);
   /** Copy listeners under the strand and post `event` off-stack. */
   void EmitLinkEvent(LinkEvent event);
   LinkEvent MakeLinkEvent(LinkEvent::Kind kind, PeerLink& link) const;
@@ -254,6 +269,9 @@ private:
 
   static Failure WrapPeerLinkFailure(const PeerLink::Failure& child);
   static LinkDropReason DropReasonFor(const Failure& failure);
+  static LinkPathKind PathKindOf(const PeerLink& link);
+  /** A BurstDial (punch) toward `peer_id` is registered right now. */
+  bool HasBurstDialFor(const std::string& peer_id) const;
   static LinkRoe WrapPeerLinkResult(const PeerLink::LinkRoe& child);
 
   adp::Endpoint& endpoint_;
@@ -278,10 +296,13 @@ private:
 
   std::unordered_map<std::string, ProtocolHandler> protocol_handlers_;
   bool refuse_unhandled_opens_ = false;
+  /** EnsureAssociation waiters, per dial key: completed by the ADP dial under that key. */
   std::unordered_map<std::string, std::vector<LinkCb>> inflight_associations_;
+  /** EstablishNestedOverCarrier waiters, per nested link: completed by that link's handshake. */
+  std::unordered_map<LinkId, std::vector<LinkCb>> nested_waiters_;
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;
-  std::vector<std::pair<std::string, LinkDropReason>> pending_drop_keys_;
+  std::vector<std::pair<LinkHandle, LinkDropReason>> pending_drops_;
   /** After a failed dial, try next DialBook candidate once the link is dropped (Tick). */
   std::vector<std::string> pending_candidate_retry_;
   std::vector<std::pair<std::string, std::string>> pending_alias_adopt_;

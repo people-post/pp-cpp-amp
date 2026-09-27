@@ -196,6 +196,12 @@ Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std:
   }
   auto sent = endpoint_->SendRaw(peer_, *sealed);
   if (!sent) {
+    // Checked here, for every send (data, retransmit, ack, keepalive), whether or not the caller
+    // looks at the result.
+    if (IsUnreachableSendError(sent.error())) {
+      peer_unreachable_ = true;
+      return Failure::Of(Err::Unreachable, sent.error().message);
+    }
     return Failure::Of(Err::WireError, sent.error().message);
   }
   return {};
@@ -283,8 +289,32 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
   if (!AcceptSkew(pkt.timestamp_ms, now_ms)) {
     return;
   }
-  last_auth_rx_ms_ = now_ms;
-  MaybeLearnPath(from);
+  // Only a fresh packet proves the peer is alive and may move the path (A003): data by its replay
+  // window, seq-0 control packets (ack / close / keepalive) by being newer than anything
+  // authenticated so far. A replayed packet from a new address must not redirect the
+  // association; a real rebind's packets are the newest ones.
+  bool fresh_data = false;
+  bool fresh = false;
+  switch (pkt.type) {
+  case PacketType::DataBestEffort:
+    fresh = fresh_data = rx_be_.Accept(pkt.seq);
+    break;
+  case PacketType::DataReliable:
+    fresh = fresh_data = rx_rel_.Accept(pkt.seq);
+    break;
+  default:
+    // Serial arithmetic on the 32-bit wire timestamp (it wraps, as in AcceptSkew).
+    fresh = !have_auth_rx_ts_ || static_cast<int32_t>(pkt.timestamp_ms - max_auth_rx_ts_) > 0;
+    break;
+  }
+  if (!have_auth_rx_ts_ || static_cast<int32_t>(pkt.timestamp_ms - max_auth_rx_ts_) > 0) {
+    max_auth_rx_ts_ = pkt.timestamp_ms;
+    have_auth_rx_ts_ = true;
+  }
+  if (fresh) {
+    last_auth_rx_ms_ = now_ms;
+    MaybeLearnPath(from);
+  }
 
   switch (pkt.type) {
   case PacketType::Ack: {
@@ -304,7 +334,7 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     break;
   }
   case PacketType::DataBestEffort: {
-    if (!rx_be_.Accept(pkt.seq)) {
+    if (!fresh_data) {
       break;
     }
     if (on_message_) {
@@ -318,10 +348,9 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     break;
   }
   case PacketType::DataReliable: {
-    const bool fresh = rx_rel_.Accept(pkt.seq);
     // Always ACK so sender can stop rtx even on dup.
     (void)SendPacket(PacketType::Ack, pkt.seq, {}, now_ms);
-    if (!fresh) {
+    if (!fresh_data) {
       break;
     }
     rx_rel_hold_[pkt.seq] = pkt.payload;
