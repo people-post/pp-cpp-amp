@@ -187,6 +187,21 @@ PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) {
   return table_.FindByPeerId(peer_id);
 }
 
+PeerLink* PeerLinkManager::FindConnectedLinkByPeerId(const std::string& peer_id, const TransportClass transport) {
+  std::lock_guard lock(strand_mu_);
+  if (peer_id.empty()) {
+    return nullptr;
+  }
+  PeerLink* found = nullptr;
+  table_.ForEach([&](PeerLink& link) {
+    if (!found && link.Phase() == PeerLinkPhase::Connected && link.Transport() == transport &&
+        link.RemotePeerId() == peer_id) {
+      found = &link;
+    }
+  });
+  return found;
+}
+
 const PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) const {
   std::lock_guard lock(strand_mu_);
   return const_cast<PeerLinkManager*>(this)->FindLinkByPeerId(peer_id);

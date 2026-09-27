@@ -201,6 +201,12 @@ public:
   const PeerLink* FindLink(const std::string& peer_key) const;
   PeerLink* FindLinkByPeerId(const std::string& peer_id);
   const PeerLink* FindLinkByPeerId(const std::string& peer_id) const;
+  /**
+   * The Connected link to `peer_id` of exactly `transport` (ADP or carrier) — no fallback to the
+   * other class. An ADP and a nested link to one peer coexist (A024); callers moving traffic between
+   * them (call-path migration) need the one they asked for.
+   */
+  PeerLink* FindConnectedLinkByPeerId(const std::string& peer_id, TransportClass transport);
   PeerLink* FindConnectedInboundLink();
 
   size_t CountConnectedLinksForPeerId(const std::string& peer_id) const;
