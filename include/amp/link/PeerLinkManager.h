@@ -230,11 +230,11 @@ private:
   void OnCapabilityData(const std::string& peer_key, std::vector<uint8_t> payload);
   void OnCh0Data(const std::string& peer_key, std::vector<uint8_t> payload);
   void IngestRemoteCapabilityAddrs(PeerLink& link, const CapabilityPayload& remote);
-  void FinishDial(const std::string& peer_key, LinkRoe result);
+  void FinishDial(const std::string& peer_key, LinkHandle handle, LinkRoe result);
   /** Start outbound dial for `peer_key`; waiters must already be queued. Strand-locked. */
   void BeginOutboundDialLocked(const std::string& peer_key);
   /** Runs inside the nested link's establish_cb_ — `provisional_key` by value (caller's capture dies with the link). */
-  void FinishNestedCarrier(std::string provisional_key, LinkRoe result);
+  void FinishNestedCarrier(std::string provisional_key, LinkHandle handle, LinkRoe result);
   void HandleInboundCarrierChannel(PeerLink& via_link, uint32_t channel_id);
   std::string DeriveRemotePeerId(const ByteVector& identity_public_key) const;
   bool AdoptInboundOrDropDuplicate(PeerLink& inbound);
@@ -244,10 +244,9 @@ private:
   PeerLink* FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id);
   PeerLink* ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const;
   void DropLink(const std::string& peer_key, LinkDropReason reason);
-  /** Drop exactly `link` if it is still live (and still the occupant of its key). */
+  /** Drop exactly `link` if it is still live — also when another link now holds its dial key. */
   void DropLinkByHandle(LinkHandle link, LinkDropReason reason);
-  /** Insert under the link's key, displacing (dropping) any other occupant instead of orphaning it. */
-  PeerLink& InsertDisplacing(std::unique_ptr<PeerLink> link);
+  void DropLinkNow(PeerLink& link, LinkDropReason reason);
   /** Copy listeners under the strand and post `event` off-stack. */
   void EmitLinkEvent(LinkEvent event);
   LinkEvent MakeLinkEvent(LinkEvent::Kind kind, PeerLink& link) const;

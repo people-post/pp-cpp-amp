@@ -199,10 +199,14 @@ PeerLink* PeerLinkManager::ElectDualDialWinner(PeerLink& existing, PeerLink& can
 
 void PeerLinkManager::DropLink(const std::string& peer_key, const LinkDropReason reason) {
   std::lock_guard lock(strand_mu_);
-  auto* link = table_.FindByDialKey(peer_key);
-  if (!link) {
-    return;
+  if (auto* link = table_.FindByDialKey(peer_key)) {
+    DropLinkNow(*link, reason);
   }
+}
+
+void PeerLinkManager::DropLinkNow(PeerLink& live, const LinkDropReason reason) {
+  PeerLink* link = &live;
+  const LinkId id = link->Id();
   LinkEvent dropped = MakeLinkEvent(LinkEvent::Kind::Dropped, *link);
   dropped.reason = reason;
   dropped.was_connected = connected_link_ids_.erase(link->Id()) > 0;
@@ -248,7 +252,7 @@ void PeerLinkManager::DropLink(const std::string& peer_key, const LinkDropReason
   if (dying_mux) {
     channel_notices = dying_mux->DetachAllChannels();
   }
-  table_.EraseByDialKey(peer_key);
+  table_.EraseById(id);  // its key index only if it still names this link (A024 sharing)
   for (auto& notice : channel_notices) {
     notice();
   }
@@ -269,23 +273,9 @@ void PeerLinkManager::ScheduleDropLink(const LinkHandle link, const LinkDropReas
 
 void PeerLinkManager::DropLinkByHandle(const LinkHandle handle, const LinkDropReason reason) {
   std::lock_guard lock(strand_mu_);
-  auto* link = table_.FindLive(handle);
-  if (!link) {
-    return;  // already gone (dropped, displaced, or never inserted)
+  if (auto* link = table_.FindLive(handle)) {
+    DropLinkNow(*link, reason);  // whether or not it still holds its dial key
   }
-  const std::string key = link->PeerKey();
-  if (table_.FindByDialKey(key) == link) {
-    DropLink(key, reason);
-  }
-}
-
-PeerLink& PeerLinkManager::InsertDisplacing(std::unique_ptr<PeerLink> link) {
-  std::lock_guard lock(strand_mu_);
-  if (auto* occupant = table_.FindByDialKey(link->PeerKey()); occupant && occupant != link.get()) {
-    // Overwriting the key used to leave the occupant orphaned in the id map (still live, no key).
-    DropLink(occupant->PeerKey(), LinkDropReason::Displaced);
-  }
-  return table_.Insert(std::move(link));
 }
 
 void PeerLinkManager::ScheduleAdoptDialAlias(std::string remote_peer_id, std::string dial_alias) {
@@ -631,9 +621,10 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
   // failure), and FinishDial must FindLink / ScheduleDropLink against a table occupant.
   // Inserting after Start left a zombie link and raced DropLink on Windows (SEH 0xc0000005).
   PeerLink* raw = link.get();
-  InsertDisplacing(std::move(link));
-  raw->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
-    FinishDial(peer_key, WrapPeerLinkResult(result));
+  const LinkHandle handle = raw->Handle();
+  table_.Insert(std::move(link));
+  raw->StartOutboundHandshake([this, peer_key, handle](PeerLink::LinkRoe result) {
+    FinishDial(peer_key, handle, WrapPeerLinkResult(result));
   });
 }
 
@@ -740,7 +731,7 @@ void PeerLinkManager::ApplyProtocolHandlers(PeerLink& link) {
   }
 }
 
-void PeerLinkManager::FinishDial(const std::string& peer_key, LinkRoe result) {
+void PeerLinkManager::FinishDial(const std::string& peer_key, const LinkHandle handle, LinkRoe result) {
   std::vector<LinkCb> waiters;
   {
     std::lock_guard lock(strand_mu_);
@@ -753,14 +744,14 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, LinkRoe result) {
       // B15/B28: try the next DialBook candidate before arming long backoff / failing waiters.
       // Defer DropLink + redial to Tick — destroying the PeerLink inside its handshake cb segfaults.
       if (!suppress_backoff && book_.AdvanceDialCandidate(peer_key)) {
-        ScheduleDropLink(peer_key, reason);
+        ScheduleDropLink(handle, reason);
         pending_candidate_retry_.push_back(peer_key);
       } else {
         book_.ResetDialIndex(peer_key);
         if (!suppress_backoff) {
           book_.ArmBackoff(peer_key);
         }
-        ScheduleDropLink(peer_key, reason);
+        ScheduleDropLink(handle, reason);
         waiters = std::move(inflight_associations_[peer_key]);
         inflight_associations_.erase(peer_key);
       }
@@ -835,7 +826,7 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
         (phase == PeerLinkPhase::Handshaking || phase == PeerLinkPhase::Dialing)) {
       link->FailHandshakeTimeout();
     } else if (phase != PeerLinkPhase::Connected) {
-      ScheduleDropLink(peer_key, LinkDropReason::DialAborted);
+      ScheduleDropLink(link->Handle(), LinkDropReason::DialAborted);
       suppress_dial_backoff_.erase(peer_key);
     } else {
       suppress_dial_backoff_.erase(peer_key);
@@ -875,9 +866,9 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
   table_.Insert(std::move(link));
   // A failed inbound handshake leaves the link in Backoff under its `inbound:` key, which nothing
   // else evicts: drop it (deferred to Tick — this runs inside the link's own callback).
-  raw->StartInboundHandshake([this, key = peer_key](PeerLink::LinkRoe result) {
+  raw->StartInboundHandshake([this, handle = raw->Handle()](PeerLink::LinkRoe result) {
     if (!result) {
-      ScheduleDropLink(key, DropReasonFor(WrapPeerLinkFailure(result.error())));
+      ScheduleDropLink(handle, DropReasonFor(WrapPeerLinkFailure(result.error())));
     }
   });
 }
@@ -1089,7 +1080,7 @@ void PeerLinkManager::Tick() {
   const int64_t now = endpoint_.GetClock().NowMs();
   const int64_t dial_timeout_ms = book_.Config().dial_timeout.count();
   const int64_t dial_attempt_ms = book_.Config().dial_attempt_timeout.count();
-  std::vector<std::string> timed_out;
+  std::vector<LinkHandle> timed_out;
   table_.ForEach([&](PeerLink& link) {
     if (link.IsCarrierBacked()) {
       return;
@@ -1107,17 +1098,15 @@ void PeerLinkManager::Tick() {
       budget = std::min(budget, dial_attempt_ms);
     }
     if (now - link.HandshakeStartedMs() > budget) {
-      timed_out.push_back(link.PeerKey());
+      timed_out.push_back(link.Handle());
     }
   });
-  for (const auto& key : timed_out) {
-    if (auto* link = FindLink(key)) {
+  for (const auto& handle : timed_out) {
+    if (auto* link = table_.FindLive(handle)) {
       // FailHandshakeTimeout → establish_cb → FinishDial for outbound; do not FinishDial twice.
-      if (link->IsOutbound()) {
-        link->FailHandshakeTimeout();
-      } else {
-        link->FailHandshakeTimeout();
-        ScheduleDropLink(key, LinkDropReason::HandshakeTimeout);
+      link->FailHandshakeTimeout();
+      if (!link->IsOutbound()) {
+        ScheduleDropLink(handle, LinkDropReason::HandshakeTimeout);
       }
     }
   }
@@ -1126,7 +1115,7 @@ void PeerLinkManager::Tick() {
   // before it is judged against the cold 5 s window.
   MaybeSendKeepalives(now);
 
-  std::vector<std::pair<std::string, LinkDropReason>> evict;
+  std::vector<std::pair<LinkHandle, LinkDropReason>> evict;
   table_.ForEach([&](PeerLink& link) {
     if (link.IsCarrierBacked()) {
       // A closed carrier ends the nested link whatever phase its close left it in: a Connected
@@ -1135,7 +1124,7 @@ void PeerLinkManager::Tick() {
       const auto phase = link.Phase();
       if (link.Carrier() && link.Carrier()->IsClosed() && phase != PeerLinkPhase::Handshaking &&
           phase != PeerLinkPhase::Dialing) {
-        evict.emplace_back(link.PeerKey(), LinkDropReason::CarrierClosed);
+        evict.emplace_back(link.Handle(), LinkDropReason::CarrierClosed);
       }
       return;
     }
@@ -1144,18 +1133,19 @@ void PeerLinkManager::Tick() {
     // keepalives request an echo and widen the window to 5/2 × cadence, so silence past it
     // means the peer / path is dead (B25 + dead-peer detection, docs/KEEPALIVE.md).
     if (conn && link.Phase() == PeerLinkPhase::Connected && (conn->IsClosed() || !conn->LooksAlive(now))) {
-      evict.emplace_back(link.PeerKey(), conn->IsClosed() ? LinkDropReason::ConnectionClosed
-                                                          : LinkDropReason::ConnectionDead);
+      evict.emplace_back(link.Handle(), conn->IsClosed() ? LinkDropReason::ConnectionClosed
+                                                           : LinkDropReason::ConnectionDead);
     } else if (conn && conn->PeerUnreachable()) {
       // The OS said there is no route to this peer (host / network unreachable or down): drop now
       // rather than after the liveness window (#215 B39 a). A redial picks the next path.
-      evict.emplace_back(link.PeerKey(), LinkDropReason::TransportFailed);
+      evict.emplace_back(link.Handle(), LinkDropReason::TransportFailed);
     }
   });
-  for (const auto& [key, reason] : evict) {
+  for (const auto& [handle, reason] : evict) {
     // DropLink (not raw erase) so Mux/handlers/peer_id maps stay consistent — raw erase after a
     // concurrent dial left MeshRuntime Io racing a half-dead hop (dirty-book StartBridge SIGSEGV).
-    DropLink(key, reason);
+    // By handle: the link judged dead, even if another link now holds its dial key (A024).
+    DropLinkByHandle(handle, reason);
   }
 
   // WhenChannelOpen waiters (product H1/H2 replacement).
@@ -1252,19 +1242,22 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
                                          MakeHostPorts());
   AssignLinkIdentity(*link);
   PeerLink* raw = link.get();
-  InsertDisplacing(std::move(link));
+  const LinkHandle handle = raw->Handle();
+  // May take the key from an ADP link to the same peer (A024 — ADP and carrier coexist); that link
+  // stays live by id. Drops below target this link by handle, never "whatever holds the key".
+  table_.Insert(std::move(link));
   if (initiator) {
-    raw->StartOutboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
-      FinishNestedCarrier(peer_key, WrapPeerLinkResult(result));
+    raw->StartOutboundHandshake([this, peer_key, handle](PeerLink::LinkRoe result) {
+      FinishNestedCarrier(peer_key, handle, WrapPeerLinkResult(result));
     });
   } else {
-    raw->StartInboundHandshake([this, peer_key](PeerLink::LinkRoe result) {
-      FinishNestedCarrier(peer_key, WrapPeerLinkResult(result));
+    raw->StartInboundHandshake([this, peer_key, handle](PeerLink::LinkRoe result) {
+      FinishNestedCarrier(peer_key, handle, WrapPeerLinkResult(result));
     });
   }
 }
 
-void PeerLinkManager::FinishNestedCarrier(std::string provisional_key, LinkRoe result) {
+void PeerLinkManager::FinishNestedCarrier(std::string provisional_key, const LinkHandle handle, LinkRoe result) {
   std::lock_guard lock(strand_mu_);
   auto* link = FindLink(provisional_key);
   if (result && link && !link->RemotePeerId().empty() && link->RemotePeerId() != provisional_key) {
@@ -1305,10 +1298,7 @@ void PeerLinkManager::FinishNestedCarrier(std::string provisional_key, LinkRoe r
     // Defer DropLink (mux/handler/orphan cleanup, never raw erase — [A027]) to Tick: we are inside
     // the dying link's establish_cb_ (often via its carrier's closed callback), so a synchronous
     // drop frees the running lambda, the PeerLink and the carrier handler (dogfood SIGSEGV).
-    ScheduleDropLink(provisional_key, reason);
-    if (notify_key != provisional_key) {
-      ScheduleDropLink(notify_key, reason);
-    }
+    ScheduleDropLink(handle, reason);  // this nested link — the key may name an ADP link too (A024)
   }
   for (auto& cb : waiters) {
     if (cb) {

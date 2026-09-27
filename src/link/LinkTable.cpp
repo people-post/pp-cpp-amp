@@ -101,7 +101,10 @@ void LinkTable::EraseById(LinkId id) {
     return;
   }
   PeerLink& link = *it->second;
-  by_dial_key_.erase(link.PeerKey());
+  // Only the index entry that still names this link: under A024 another link may hold the key now.
+  if (auto key_it = by_dial_key_.find(link.PeerKey()); key_it != by_dial_key_.end() && key_it->second == id) {
+    by_dial_key_.erase(key_it);
+  }
   if (!link.RemotePeerId().empty()) {
     ClearPresence(link.RemotePeerId(), link.Transport(), id);
   }

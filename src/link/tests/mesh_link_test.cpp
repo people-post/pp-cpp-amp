@@ -281,8 +281,8 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
   EXPECT_FALSE(events[0].was_connected);
 }
 
-// k1 (call-path-resilience): a drop scheduled for a failed link must not hit the link that
-// replaced it under the same dial key before Tick — and the replaced one must not be orphaned.
+// k1 (call-path-resilience): a drop scheduled for a failed link must not hit the link that took
+// its dial key before Tick — and the failed one, no longer holding a key, must still be dropped.
 TEST(MeshLinkTest, ScheduledDropHitsTheFailedLinkNotItsReplacement) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();
@@ -346,6 +346,76 @@ TEST(MeshLinkTest, ScheduledDropHitsTheFailedLinkNotItsReplacement) {
   auto* now = fixture->mgr_a->FindLink("nested:bob");
   ASSERT_NE(now, nullptr);
   EXPECT_EQ(now->Id(), second.id);
+}
+
+// pp-browser COLD dual-NAT: circuit reach aborts the direct ADP dial to the target's PeerId and
+// establishes the nested link under that same key (A024: both may exist). The aborted ADP link's
+// drop is still pending when the nested link takes the key: at Tick it must hit the ADP link — not
+// "whatever holds the key" — and must not take the key's index with it.
+TEST(MeshLinkTest, FailedAdpDialUnderASharedKeyLeavesTheNestedLinkAlone) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_b->EnableNestedCarrierAccept(true);
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated; });
+  ASSERT_TRUE(associated);
+
+  // Shared key: an ADP dial to an address that never answers (the NAT'd target) …
+  const std::string key = "QmTarget";
+  auto dead = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 9, 999), "QmTarget");
+  ASSERT_TRUE(static_cast<bool>(dead));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint(key, *dead)));
+  std::optional<bool> adp_ok;
+  fixture->mgr_a->EnsureAssociation(key, [&](PeerLinkManager::LinkRoe result) { adp_ok = static_cast<bool>(result); });
+  auto* adp_link = fixture->mgr_a->FindLink(key);
+  ASSERT_NE(adp_link, nullptr);
+  const LinkHandle adp_handle = adp_link->Handle();
+  fixture->mgr_a->AbortInflightDial(key);  // failed; its drop waits for Tick
+  ASSERT_TRUE(fixture->mgr_a->WithLiveLink(adp_handle, [](PeerLink&) {}));
+
+  // … and, meanwhile, the nested link over a carrier under the same key.
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", kAmpCircuitCarrierProtocolId, CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  const auto carrier_open = [&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  };
+  for (int i = 0; i < 40 && !carrier_open(); ++i) {  // Pump only: a Tick would drain the ADP drop now
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+  }
+  ASSERT_TRUE(carrier_open());
+  ASSERT_TRUE(channel_id.has_value());
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+  bool nested_ok = false;
+  fixture->mgr_a->EstablishNestedOverCarrier(key, carrier, true,
+                                             [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
+  auto* nested_link = fixture->mgr_a->FindLink(key);
+  ASSERT_NE(nested_link, nullptr);
+  ASSERT_TRUE(nested_link->IsCarrierBacked());
+  const LinkHandle nested_handle = nested_link->Handle();
+  ASSERT_TRUE(fixture->mgr_a->WithLiveLink(adp_handle, [](PeerLink&) {})) << "drop still pending";
+
+  fixture->pump_a->Tick();  // drains the aborted dial's drop while the nested link holds the key
+  EXPECT_FALSE(fixture->mgr_a->WithLiveLink(adp_handle, [](PeerLink&) {})) << "the aborted dial is gone";
+  EXPECT_TRUE(fixture->mgr_a->WithLiveLink(nested_handle, [](PeerLink&) {})) << "the nested link survives";
+  fixture->PumpUntil([&] { return nested_ok; });
+  EXPECT_TRUE(nested_ok) << "and completes";
+  auto* holder = fixture->mgr_a->FindLink(key);
+  ASSERT_NE(holder, nullptr) << "the key still names the nested link";
+  EXPECT_TRUE(holder->IsCarrierBacked());
 }
 
 /** Associate A→B and bring up a Connected nested link over a carrier channel (B accepts). */
