@@ -53,9 +53,12 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    - A carrier-backed link whose carrier closed is dropped (`CarrierClosed`) in any phase but
      Handshaking / Dialing (those keep their deferred drop); an inbound link whose handshake
      fails is dropped (`HandshakeFailed`).
-   - Deferred drops are held **by `LinkHandle`** (the key's occupant when scheduled): a link that
-     replaced it under the same dial key before Tick is never hit. Inserting under an occupied
-     key **displaces** (drops, `Displaced`) the occupant instead of orphaning it.
+   - Drops target **a link, by `LinkHandle`**, never "whatever holds the dial key": completions
+     (dial / nested / inbound), aborts, the dual-dial loser and Tick's timeouts / evictions all
+     know the link. An ADP link and a nested link may share a dial key (A024 — circuit reach
+     nests under the target PeerId while the direct dial is aborted); the key index names the
+     latest, the other stays live by id, and dropping it leaves the key's index alone. Only
+     product requests (`RequestDropLink`) resolve a key.
    - Only a **fresh** packet refreshes liveness or moves the ADP path (A003): data once its replay
      window accepts the seq; seq-0 control packets (ack / close / keepalive) only when their wire
      timestamp is the newest seen (serial arithmetic). A replayed packet from a new address
