@@ -98,8 +98,12 @@ public:
   LinkHandle Handle() const { return LinkHandle{link_id_, generation_}; }
   const std::string& PeerKey() const { return peer_key_; }
   const std::string& RemotePeerId() const { return remote_peer_id_; }
+  /** Came up through a punch (BurstDial) — set by the manager at establish. */
+  bool Punched() const { return punched_; }
+  void MarkPunched() { punched_ = true; }
   const ByteVector& RemoteIdentityPublicKey() const { return remote_identity_public_key_; }
   adp::Connection* ConnectionOrNull() { return connection_.get(); }
+  const adp::Connection* ConnectionOrNull() const { return connection_.get(); }
   ChannelMux* Mux() { return mux_.get(); }
   Session* GetSession() { return session_.get(); }
   ChannelSession* Carrier() { return carrier_.get(); }
@@ -186,6 +190,7 @@ private:
   int64_t handshake_started_ms_ = 0;
   Roe<std::optional<std::vector<uint8_t>>> PushMshChunk(MshMessageType type, uint16_t index, uint16_t count,
                                                          std::span<const uint8_t> chunk);
+  bool punched_ = false;
 };
 
 } // namespace pp::amp

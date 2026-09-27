@@ -78,6 +78,7 @@ struct LinkEvent {
   /** Authenticated remote PeerId; empty if the link never finished MSH. */
   std::string peer_id;
   TransportClass transport = TransportClass::Adp;
+  LinkPathKind path_kind = LinkPathKind::Direct;
   bool outbound = false;
   /** ADP remote endpoint (new endpoint for PathChanged). Empty for carrier links. */
   std::optional<adp::IpEndpoint> remote;

@@ -312,6 +312,12 @@ size_t PeerLinkManager::CountConnectedLinksForPeerId(const std::string& peer_id)
 
 bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
   std::lock_guard lock(strand_mu_);
+  // Punched: our burst dial won (ephemeral burst key), or the peer's punch reached us while we were
+  // bursting toward it (simultaneous open). Read before adopt may rekey the link.
+  if (!link.IsCarrierBacked() &&
+      (IsEphemeralDialKey(link.PeerKey()) || (!link.IsOutbound() && HasBurstDialFor(link.RemotePeerId())))) {
+    link.MarkPunched();
+  }
   if (!AdoptInboundOrDropDuplicate(link)) {
     if (link.Mux()) {
       link.Mux()->ClearProtocolHandlers();
@@ -1443,6 +1449,7 @@ LinkEvent PeerLinkManager::MakeLinkEvent(const LinkEvent::Kind kind, PeerLink& l
   event.dial_key = link.PeerKey();
   event.peer_id = link.RemotePeerId();
   event.transport = link.Transport();
+  event.path_kind = PathKindOf(link);
   event.outbound = link.IsOutbound();
   if (auto* conn = link.ConnectionOrNull(); conn && !link.IsCarrierBacked()) {
     event.remote = conn->PeerEndpoint();
@@ -1467,6 +1474,25 @@ void PeerLinkManager::WatchPathChanges(PeerLink& link) {
     event.remote = to;
     EmitLinkEvent(std::move(event));
   });
+}
+
+LinkPathKind PeerLinkManager::PathKindOf(const PeerLink& link) {
+  if (link.IsCarrierBacked()) {
+    return LinkPathKind::Carrier;
+  }
+  return link.Punched() ? LinkPathKind::Punched : LinkPathKind::Direct;
+}
+
+bool PeerLinkManager::HasBurstDialFor(const std::string& peer_id) const {
+  if (peer_id.empty()) {
+    return false;
+  }
+  for (const auto& [key, record] : book_.Endpoints()) {
+    if (IsEphemeralDialKey(key) && record.peer_id == peer_id) {
+      return true;
+    }
+  }
+  return false;
 }
 
 LinkDropReason PeerLinkManager::DropReasonFor(const Failure& failure) {
@@ -1513,8 +1539,15 @@ LinkSnapshotEx PeerLinkManager::SnapshotOf(const PeerLink* link, const DialKey& 
   out.handle = link->Handle();
   out.peer_id = link->RemotePeerId();
   out.transport = link->Transport();
+  out.path_kind = PathKindOf(*link);
   out.base.phase = link->Phase();
   out.base.carrier_backed = link->IsCarrierBacked();
+  if (const auto* conn = link->ConnectionOrNull(); conn && !link->IsCarrierBacked()) {
+    out.remote = conn->PeerEndpoint();
+    if (conn->LastAuthRxMs() > 0) {
+      out.last_rx_age_ms = endpoint_.GetClock().NowMs() - conn->LastAuthRxMs();
+    }
+  }
   return out;
 }
 

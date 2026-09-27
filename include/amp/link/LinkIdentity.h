@@ -44,6 +44,13 @@ struct PeerPresence {
 /** Product association key for RegisterEndpoint / EnsureAssociation. */
 using DialKey = std::string;
 
+/**
+ * How a link reaches its peer — the truth for product path labels: a dialed ADP association, one
+ * that came up through a punch (MeshRuntime::BurstDial, either side), or a nested link over a relay
+ * carrier.
+ */
+enum class LinkPathKind : uint8_t { Direct, Punched, Carrier };
+
 /** Expanded snapshot for off-strand queries (no live PeerLink*). */
 struct LinkSnapshotEx {
   PeerLinkSnapshot base;
@@ -51,6 +58,11 @@ struct LinkSnapshotEx {
   DialKey dial_key;
   std::string peer_id;
   TransportClass transport = TransportClass::Adp;
+  LinkPathKind path_kind = LinkPathKind::Direct;
+  /** Current ADP remote endpoint (follows path migration); empty for carrier links / no link. */
+  std::optional<adp::IpEndpoint> remote;
+  /** Milliseconds since the last authenticated RX on the association; -1 when unknown. */
+  int64_t last_rx_age_ms = -1;
 };
 
 } // namespace pp::amp

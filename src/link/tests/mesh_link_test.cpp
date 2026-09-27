@@ -475,6 +475,26 @@ TEST(MeshLinkTest, InboundLinkIsDroppedWhenItsHandshakeFails) {
   EXPECT_EQ(fixture->mgr_b->FindConnectedInboundLink(), nullptr);
 }
 
+// k1 snapshot fields: kind (Direct / Punched / Carrier), the live remote endpoint and RX age.
+TEST(MeshLinkTest, SnapshotReportsPathKindRemoteAndRxAge) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+
+  fixture->clock->Advance(300);
+  const auto direct = fixture->mgr_a->GetSnapshotByDialKey("bob");
+  EXPECT_EQ(direct.path_kind, LinkPathKind::Direct) << "dialed, not punched";
+  ASSERT_TRUE(direct.remote.has_value());
+  EXPECT_EQ(*direct.remote, fixture->addr_b);
+  EXPECT_GE(direct.last_rx_age_ms, 300);
+
+  const auto carrier = fixture->mgr_a->GetSnapshotByDialKey(nested->nested_key);
+  EXPECT_EQ(carrier.path_kind, LinkPathKind::Carrier);
+  EXPECT_FALSE(carrier.remote.has_value());
+}
+
 // k1 (call-path-resilience, #215 B39 a): the OS reports no route to the peer — drop the link at
 // once (TransportFailed) instead of after the liveness window, so a redial can pick another path.
 TEST(MeshLinkTest, LinkIsDroppedAtOnceWhenTheOsReportsThePeerUnreachable) {
@@ -1191,6 +1211,11 @@ TEST(MeshRuntimeDriveTest, BurstDialConnectsPeer) {
   ASSERT_TRUE(done.has_value()) << "BurstDial did not settle";
   EXPECT_TRUE(done->ok) << done->error;
   EXPECT_TRUE(harness->runtime_a->IsConnectedToPeerId(harness->peer_id_b));
+  // k1 snapshot fields: a link that came up through the burst is labelled Punched.
+  const auto snap = harness->runtime_a->SnapshotByPeerId(harness->peer_id_b);
+  EXPECT_EQ(snap.path_kind, LinkPathKind::Punched);
+  EXPECT_TRUE(snap.remote.has_value());
+  EXPECT_GE(snap.last_rx_age_ms, 0);
 }
 
 TEST(MeshRuntimeDriveTest, IsConnectedToPeerIdIgnoresCarrierOnly) {

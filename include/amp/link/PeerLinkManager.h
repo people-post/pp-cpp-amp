@@ -263,6 +263,9 @@ private:
 
   static Failure WrapPeerLinkFailure(const PeerLink::Failure& child);
   static LinkDropReason DropReasonFor(const Failure& failure);
+  static LinkPathKind PathKindOf(const PeerLink& link);
+  /** A BurstDial (punch) toward `peer_id` is registered right now. */
+  bool HasBurstDialFor(const std::string& peer_id) const;
   static LinkRoe WrapPeerLinkResult(const PeerLink::LinkRoe& child);
 
   adp::Endpoint& endpoint_;
