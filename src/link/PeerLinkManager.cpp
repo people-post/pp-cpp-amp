@@ -241,7 +241,17 @@ void PeerLinkManager::DropLink(const std::string& peer_key, const LinkDropReason
     });
     dying_mux->ClearProtocolHandlers();
   }
+  // Channel sessions on the dying mux learn the channel ended — and drop their mux pointer —
+  // only after the link is erased, so a closed-callback that redials this peer cannot have its
+  // new link erased underneath it.
+  std::vector<std::function<void()>> channel_notices;
+  if (dying_mux) {
+    channel_notices = dying_mux->DetachAllChannels();
+  }
   table_.EraseByDialKey(peer_key);
+  for (auto& notice : channel_notices) {
+    notice();
+  }
   EmitLinkEvent(std::move(dropped));
 }
 

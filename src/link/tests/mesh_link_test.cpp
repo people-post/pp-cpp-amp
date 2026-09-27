@@ -314,6 +314,49 @@ TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
   EXPECT_EQ(fixture->mgr_a->RequestDropLink("nobody"), 0u);
 }
 
+// A dropped link destroys its mux: channel sessions bound to it must hear "link-dropped" and forget
+// the mux — they used to keep a dangling pointer and write / unbind through it (UAF, SIGSEGV).
+TEST(MeshLinkTest, DroppedLinkClosesItsChannelSessions) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  fixture->mgr_b->SetProtocolHandler("/served/1", [](LinkHandle, const std::string&, uint32_t) {});
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+
+  std::optional<uint32_t> id;
+  fixture->mgr_a->OpenChannel("bob", "/served/1", ControlJsonChannelPolicy(), [&](PeerLinkManager::ChannelRoe ch) {
+    if (ch.isOk()) {
+      id = ch.value();
+    }
+  });
+  fixture->PumpUntil([&] {
+    auto* link = fixture->mgr_a->FindLink("bob");
+    return id && link && link->Mux() && link->Mux()->State(*id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(id.has_value());
+  std::string closed_reason;
+  auto session = fixture->mgr_a->BindChannel("bob", *id, ControlJsonChannelPolicy(),
+                                             [](Roe<std::vector<uint8_t>>) { return true; },
+                                             [&](const char* reason) { closed_reason = reason ? reason : ""; });
+  ASSERT_NE(session, nullptr);
+
+  const std::string bob_peer_id = fixture->mgr_a->FindLink("bob")->RemotePeerId();
+  ASSERT_EQ(fixture->mgr_a->RequestDropLink(bob_peer_id), 1u);
+  fixture->PumpBoth();
+  ASSERT_FALSE(fixture->mgr_a->IsConnected("bob"));
+  EXPECT_EQ(closed_reason, ChannelMux::kLinkDroppedReason);
+  EXPECT_TRUE(session->IsClosed());
+  EXPECT_FALSE(session->EnqueueOutbound({1, 2, 3})) << "no write through the destroyed mux";
+  EXPECT_EQ(session->Mux(), nullptr) << "the session forgot the destroyed mux";
+  session.reset();  // destruction must not unbind through the destroyed mux either
+}
+
 // BurstDial leaves amp:burst:* records in the DialBook; inbound adopt must not take them as the new
 // link's alias (pp-browser dogfood 2026-09-24: an aborted punch key named a relay carrier link).
 TEST(MeshLinkTest, InboundAdoptSkipsEphemeralBurstAlias) {

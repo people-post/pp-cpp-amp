@@ -158,6 +158,21 @@ void ChannelMux::SetProtocolHandler(const std::string& protocol_id, InboundOpenH
 
 void ChannelMux::ClearProtocolHandlers() { protocol_handlers_.clear(); }
 
+std::vector<std::function<void()>> ChannelMux::DetachAllChannels() {
+  std::vector<std::function<void()>> notices;
+  for (auto& [id, channel] : channels_) {
+    channel.state = ChannelState::Closed;
+    channel.on_data = {};
+    if (auto handler = std::move(channel.on_terminal)) {
+      notices.push_back([handler = std::move(handler), channel_id = id]() { handler(channel_id, kLinkDroppedReason); });
+    }
+  }
+  pending_handlers_.clear();
+  pending_terminal_handlers_.clear();
+  pending_open_data_.clear();
+  return notices;
+}
+
 Roe<void> ChannelMux::DeliverPayload(ChannelRecord& channel, std::vector<uint8_t> payload) {
   // Copy before invoke ([A027]): parent may unbind / TearDown mid-callback.
   if (channel.on_data) {
