@@ -30,9 +30,12 @@ struct OpenParams {
   int64_t rtx_interval_ms = kDefaultRtxIntervalMs;
   int max_rtx = kDefaultMaxRtx;
   /**
-   * Start retransmits capped at kPreAuthMaxRtx instead of max_rtx, restoring max_rtx once
-   * UpgradeBinder proves the association is real. Endpoint sets this for accepted (inbound)
-   * connections — the reflection-amplification vector; explicit Open() dials are unaffected.
+   * Pre-auth hardening, lifted by UpgradeBinder once the association is real: retransmits cap
+   * at kPreAuthMaxRtx instead of max_rtx (reflection amplification), and inbound Close /
+   * Keepalive are ignored (both are trivially forgeable pre-auth — the binder key is still the
+   * well-known pre-session key). Set by Endpoint for accepted connections and by
+   * PeerLinkManager for its own outbound dials; explicit Open() calls (tests, and any other
+   * direct L1 use) are unaffected.
    */
   bool reduce_rtx_until_authenticated = false;
 };
@@ -136,6 +139,12 @@ private:
   bool peer_unreachable_ = false;
   /** params_.max_rtx to restore once UpgradeBinder proves the association is real (post-MSH). */
   int authenticated_max_rtx_ = 0;
+  /**
+   * Set by UpgradeBinder. Before it, the binder key is the well-known pre-session key (anyone
+   * can forge a valid HMAC), so Close / Keepalive — which can tear down or degrade the
+   * association — are ignored rather than trusted.
+   */
+  bool authenticated_ = false;
 
   uint32_t tx_seq_be_ = 0;
   uint32_t tx_seq_rel_ = 0;

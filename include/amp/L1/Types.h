@@ -44,6 +44,12 @@ inline constexpr uint8_t kKeepaliveFlagEchoRequest = 0x01;
 /** Liveness window = max(kAliveTimeoutMs, interval × 5 / 2): ~2 keepalives may be lost. */
 inline constexpr int64_t kKeepaliveLivenessNumerator = 5;
 inline constexpr int64_t kKeepaliveLivenessDenominator = 2;
+/**
+ * Cap on a peer-announced keepalive interval. LivenessWindowMs scales with it, so an
+ * unbounded peer claim (up to 0xFFFFFFFF ms) would let a peer stretch how long it looks
+ * "alive" after going silent, well past any real keepalive config.
+ */
+inline constexpr uint32_t kMaxPeerKeepaliveIntervalMs = 600'000; // 10 minutes
 
 enum class QosClass : uint8_t {
   BestEffort = 0,

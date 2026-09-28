@@ -647,6 +647,7 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
   params.key = PreSessionPeerKey();
   params.mint_id = true;
   params.peer = ep_it->second.endpoint;
+  params.reduce_rtx_until_authenticated = true;
   auto opened = endpoint_.Open(params);
   // Same-ms mint collision (pre-seq fix) or rare id clash — remint once.
   if (!opened && opened.error().message.find("assoc already open") != std::string::npos) {

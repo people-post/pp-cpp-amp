@@ -3,9 +3,12 @@
 #include "amp/L1/Endpoint.h"
 #include "amp/L1/WireCodec.h"
 
+#include "crypto/SodiumUtil.h"
+
+#include <sodium.h>
+
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cstring>
 #include <utility>
 
@@ -18,6 +21,10 @@ Connection::Connection(Endpoint& endpoint, OpenParams params)
   authenticated_max_rtx_ = params_.max_rtx;
   if (params_.reduce_rtx_until_authenticated) {
     params_.max_rtx = std::min(params_.max_rtx, kPreAuthMaxRtx);
+  } else {
+    // Opted out of pre-auth hardening (explicit Open() outside PeerLinkManager, e.g. tests):
+    // keep the old behavior of trusting Close / Keepalive from the first packet.
+    authenticated_ = true;
   }
 }
 
@@ -31,23 +38,10 @@ Connection::Roe<std::shared_ptr<Connection>> Connection::Open(Endpoint& endpoint
       }
     }
     if (zero) {
-      // Mint from clock + pointer entropy + seq (same-ms collision → "adp: assoc already open"
-      // when two EnsureAssociation/Open race — dogfood call-media connect).
-      static std::atomic<uint32_t> mint_seq{1};
-      const int64_t now = endpoint.GetClock().NowMs();
-      const uint32_t seq = mint_seq.fetch_add(1, std::memory_order_relaxed);
-      for (size_t i = 0; i < 8; ++i) {
-        params.id.bytes[i] = static_cast<uint8_t>((now >> (i * 8)) & 0xff);
-      }
-      const auto ent = reinterpret_cast<uintptr_t>(&endpoint) ^ static_cast<uintptr_t>(now * 2654435761u) ^
-                       static_cast<uintptr_t>(seq * 0x9e3779b9u);
-      for (size_t i = 0; i < 8; ++i) {
-        params.id.bytes[8 + i] = static_cast<uint8_t>((ent >> (i * 8)) & 0xff);
-      }
-      params.id.bytes[12] ^= static_cast<uint8_t>(seq);
-      params.id.bytes[13] ^= static_cast<uint8_t>(seq >> 8);
-      params.id.bytes[14] ^= static_cast<uint8_t>(seq >> 16);
-      params.id.bytes[15] ^= static_cast<uint8_t>(seq >> 24);
+      // CSPRNG, not clock/pointer/counter mixing: an id guessable from wall time let a
+      // third party address a UDP datagram at someone else's live association.
+      pp::EnsureSodiumInit();
+      randombytes_buf(params.id.bytes.data(), params.id.bytes.size());
     }
   }
   auto conn = std::shared_ptr<Connection>(new Connection(endpoint, std::move(params)));
@@ -78,6 +72,7 @@ void Connection::SetPeerEndpoint(IpEndpoint peer) {
 void Connection::UpgradeBinder(PeerKey key) {
   binder_.SetKey(key);
   params_.max_rtx = authenticated_max_rtx_;
+  authenticated_ = true;
 }
 
 bool Connection::LooksAlive(int64_t now_ms) const {
@@ -124,8 +119,9 @@ void Connection::HandleKeepalive(const WirePacket& pkt, const int64_t now_ms) {
     return;
   }
   const auto& p = pkt.payload;
-  peer_keepalive_interval_ms_ = (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
-                                (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+  const uint32_t announced = (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+                             (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+  peer_keepalive_interval_ms_ = std::min(announced, kMaxPeerKeepaliveIntervalMs);
   if ((p[4] & kKeepaliveFlagEchoRequest) != 0) {
     // Echo carries our own cadence (0 if we keep none) and never requests an echo back.
     (void)SendKeepalivePacket(now_ms, local_keepalive_interval_ms_, 0);
@@ -332,12 +328,19 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     break;
   }
   case PacketType::Close: {
+    // Pre-auth, the binder key is the well-known pre-session key: anyone can forge this HMAC.
+    if (!authenticated_) {
+      break;
+    }
     peer_closed_ = true;
     closed_ = true;
     endpoint_->Unregister(id_);
     break;
   }
   case PacketType::Keepalive: {
+    if (!authenticated_) {
+      break;
+    }
     HandleKeepalive(pkt, now_ms);
     break;
   }

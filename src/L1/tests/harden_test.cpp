@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <sodium.h>
 
+#include <array>
 #include <chrono>
 #include <random>
 #include <string>
@@ -237,6 +238,111 @@ TEST_F(AdpHardenTest, AcceptedConnectionCapsRetransmitsBeforeAuth) {
   }
   // 1 initial send + kPreAuthMaxRtx retries.
   EXPECT_EQ(reliable_sends, static_cast<size_t>(1 + pp::adp::kPreAuthMaxRtx));
+}
+
+// Regression: minted AssocIds must not be predictable from wall-clock time — the old scheme
+// packed the clock ms directly into the first 8 bytes.
+TEST_F(AdpHardenTest, MintedAssocIdsAreNotClockDerived) {
+  auto clock = std::make_shared<pp::adp::VirtualClock>(1'700'000'000'000); // realistic wall time
+  auto hub = pp::adp::MemoryDatagramIo::MakeHub();
+  auto addr_a = pp::adp::IpEndpoint::V4(10, 4, 4, 1, 1);
+  auto io_a = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_a);
+  auto ep_a = std::make_unique<pp::adp::Endpoint>(io_a, clock);
+
+  std::vector<pp::adp::AssocId> ids;
+  for (int i = 0; i < 8; ++i) {
+    pp::adp::OpenParams op;
+    op.key = Key();
+    op.mint_id = true;
+    op.peer = pp::adp::IpEndpoint::V4(10, 4, 4, 2, 2);
+    auto c = ep_a->Open(op);
+    ASSERT_TRUE(static_cast<bool>(c));
+    ids.push_back((*c)->Id());
+  }
+  // None of the clock's own bytes (little/big-endian, any 8-byte window) appear verbatim as a
+  // prefix — the old scheme wrote them directly into bytes[0..7].
+  const int64_t now = clock->NowMs();
+  std::array<uint8_t, 8> clock_le{};
+  for (size_t i = 0; i < 8; ++i) {
+    clock_le[i] = static_cast<uint8_t>((now >> (i * 8)) & 0xff);
+  }
+  for (const auto& id : ids) {
+    bool matches_clock_prefix = true;
+    for (size_t i = 0; i < 8; ++i) {
+      if (id.bytes[i] != clock_le[i]) {
+        matches_clock_prefix = false;
+        break;
+      }
+    }
+    EXPECT_FALSE(matches_clock_prefix);
+  }
+  // All distinct (would also hold with the old scheme, but worth asserting).
+  for (size_t i = 0; i < ids.size(); ++i) {
+    for (size_t j = i + 1; j < ids.size(); ++j) {
+      EXPECT_NE(ids[i], ids[j]);
+    }
+  }
+}
+
+// Regression: pre-auth (before UpgradeBinder), Close / Keepalive are forgeable with just the
+// well-known pre-session key — they must be ignored, not acted on.
+TEST_F(AdpHardenTest, PreAuthCloseAndKeepaliveAreIgnored) {
+  auto clock = std::make_shared<pp::adp::VirtualClock>(1);
+  auto hub = pp::adp::MemoryDatagramIo::MakeHub();
+  auto addr_a = pp::adp::IpEndpoint::V4(10, 5, 5, 1, 1);
+  auto addr_b = pp::adp::IpEndpoint::V4(10, 5, 5, 2, 2);
+  auto io_a = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_a);
+  auto io_b = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_b);
+  auto ep_b = std::make_unique<pp::adp::Endpoint>(io_b, clock);
+  ep_b->SetAcceptKey(Key());
+  ep_b->SetAcceptEnabled(true);
+
+  auto sendRaw = [&](pp::adp::PacketType type, uint32_t seq, std::span<const uint8_t> payload) {
+    pp::adp::WirePacket pkt;
+    pkt.type = type;
+    pkt.assoc = Aid();
+    pkt.seq = seq;
+    pkt.timestamp_ms = static_cast<uint32_t>(clock->NowMs());
+    pkt.payload.assign(payload.begin(), payload.end());
+    auto enc = pp::adp::WireCodec::Encode(pkt);
+    if (!enc) {
+      return false;
+    }
+    auto sealed = pp::adp::HmacBinder(Key()).Seal(*enc);
+    if (!sealed) {
+      return false;
+    }
+    return static_cast<bool>(io_a->SendTo(addr_b, *sealed));
+  };
+
+  // Accept (Ack triggers AcceptOrCreate harmlessly, as in the retransmit-cap test above).
+  ASSERT_TRUE(sendRaw(pp::adp::PacketType::Ack, 0, {}));
+  ep_b->Pump();
+  auto accepted = ep_b->Find(Aid());
+  ASSERT_NE(accepted, nullptr);
+
+  clock->Advance(1);
+  ASSERT_TRUE(sendRaw(pp::adp::PacketType::Close, 0, {}));
+  ep_b->Pump();
+  EXPECT_FALSE(accepted->IsClosed()) << "forged pre-auth Close must be ignored";
+
+  const uint8_t huge_interval[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0x00};
+  clock->Advance(1);
+  ASSERT_TRUE(sendRaw(pp::adp::PacketType::Keepalive, 0, huge_interval));
+  ep_b->Pump();
+  EXPECT_EQ(accepted->PeerKeepaliveIntervalMs(), 0u) << "forged pre-auth Keepalive must be ignored";
+
+  accepted->UpgradeBinder(Key());
+  clock->Advance(1);
+  ASSERT_TRUE(sendRaw(pp::adp::PacketType::Keepalive, 0, huge_interval));
+  ep_b->Pump();
+  // Capped, not the raw 0xFFFFFFFF the peer announced.
+  EXPECT_EQ(accepted->PeerKeepaliveIntervalMs(), pp::adp::kMaxPeerKeepaliveIntervalMs);
+
+  clock->Advance(1);
+  ASSERT_TRUE(sendRaw(pp::adp::PacketType::Close, 0, {}));
+  ep_b->Pump();
+  EXPECT_TRUE(accepted->IsClosed()) << "post-auth Close is honored";
 }
 
 TEST_F(AdpHardenTest, BindIpv6Wildcard) {
