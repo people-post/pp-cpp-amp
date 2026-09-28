@@ -1305,7 +1305,9 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
     }
     return;
   }
-  if (IsConnected(peer_key)) {
+  // Already nested and Connected under this key. An ADP link under the same key does not count
+  // (A024: they coexist — the caller built a carrier because it wants the nested one).
+  if (auto* existing = FindNestedLinkForKey(peer_key); existing && existing->Phase() == PeerLinkPhase::Connected) {
     if (on_complete) {
       on_complete(LinkRoe());
     }
