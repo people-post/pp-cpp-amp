@@ -1015,6 +1015,107 @@ TEST(MeshLinkTest, LinkEventsConnectedThenDeadDrop) {
   EXPECT_EQ(events_b.size(), 1u) << "removed listener must not fire";
 }
 
+namespace {
+
+/** A hot A→B link on a lossy fixture (losses off). Returns A's link handle. */
+LinkHandle ConnectHotLink(MeshLinkFixture& f) {
+  auto bob_addr = FormatAdpMultiaddr(f.addr_b, "QmBob");
+  EXPECT_TRUE(static_cast<bool>(bob_addr));
+  EXPECT_TRUE(static_cast<bool>(f.mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  f.mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  f.PumpUntil([&] { return associated && f.mgr_b->FindConnectedInboundLink() != nullptr; });
+  EXPECT_TRUE(associated);
+  f.mgr_a->MarkHot("bob");
+  for (int i = 0; i < 10; ++i) {  // settle: nothing of the handshake still in flight
+    f.clock->Advance(100);
+    f.PumpBoth();
+  }
+  auto* link = f.mgr_a->FindLink("bob");
+  EXPECT_NE(link, nullptr);
+  return link ? link->Handle() : LinkHandle{};
+}
+
+} // namespace
+
+// A network change probes every ADP link; one whose peer no longer answers is evicted after the
+// grace (2 s) — not after its hot liveness window (50 s here).
+TEST(MeshLinkTest, NetworkChangeEvictsASilentLinkWithinTheGrace) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  const LinkHandle handle = ConnectHotLink(*fixture);
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
+
+  fixture->lossy_b->SetDropRate(1.0);  // B's replies no longer reach A
+  // Without a network change, 10 s of silence is well inside the hot window.
+  for (int i = 0; i < 20; ++i) {
+    fixture->clock->Advance(500);
+    fixture->PumpBoth();
+  }
+  ASSERT_NE(fixture->mgr_a->FindLink("bob"), nullptr) << "hot link survives 10 s of silence";
+
+  EXPECT_EQ(fixture->mgr_a->OnNetworkChanged(), 1u);
+  bool dropped = false;
+  int elapsed_ms = 0;
+  for (; elapsed_ms <= 3000 && !dropped; elapsed_ms += 100) {
+    fixture->clock->Advance(100);
+    fixture->PumpBoth();
+    for (const auto& event : events) {
+      dropped = dropped || (event.kind == LinkEvent::Kind::Dropped && event.handle == handle);
+    }
+  }
+  ASSERT_TRUE(dropped) << "evicted within the grace";
+  EXPECT_GE(elapsed_ms, 2000);
+  EXPECT_LE(elapsed_ms, 2200);
+  EXPECT_EQ(events.back().reason, LinkDropReason::NetworkChanged);
+  EXPECT_STREQ(LinkDropReasonName(events.back().reason), "network-changed");
+}
+
+// A link whose peer answers the probe stays; it is no longer suspect.
+TEST(MeshLinkTest, NetworkChangeKeepsALinkThatAnswers) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  const LinkHandle handle = ConnectHotLink(*fixture);
+
+  EXPECT_EQ(fixture->mgr_a->OnNetworkChanged(), 1u);
+  auto* link = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(link, nullptr);
+  EXPECT_NE(link->SuspectSinceMs(), 0);
+  for (int i = 0; i < 40; ++i) {  // 4 s: twice the grace
+    fixture->clock->Advance(100);
+    fixture->PumpBoth();
+  }
+  link = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(link, nullptr) << "the peer echoed the probe";
+  EXPECT_EQ(link->Handle(), handle);
+  EXPECT_EQ(link->SuspectSinceMs(), 0);
+  EXPECT_EQ(link->Phase(), PeerLinkPhase::Connected);
+}
+
+// Only the probe's echo clears suspicion: a lost first probe is resent within the grace.
+TEST(MeshLinkTest, NetworkChangeResendsALostProbe) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  ConnectHotLink(*fixture);
+
+  fixture->lossy_a->SetDropRate(1.0);  // the first probe is lost
+  EXPECT_EQ(fixture->mgr_a->OnNetworkChanged(), 1u);
+  fixture->clock->Advance(100);
+  fixture->PumpBoth();
+  fixture->lossy_a->SetDropRate(0.0);
+  for (int i = 0; i < 40; ++i) {
+    fixture->clock->Advance(100);
+    fixture->PumpBoth();
+  }
+  auto* link = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(link, nullptr) << "a resent probe got through";
+  EXPECT_EQ(link->SuspectSinceMs(), 0);
+}
+
 TEST(MeshRuntimeTest, PumpDrivesAssociationRoundTrip) {
   ASSERT_GE(sodium_init(), 0);
   auto created = pbr::test::AmpMeshHarness::Create();

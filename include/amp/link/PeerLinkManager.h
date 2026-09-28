@@ -184,6 +184,16 @@ public:
   void ClearWarm(const std::string& peer_key);
 
   void ClearDialBackoff(const std::string& peer_key);
+
+  /**
+   * The local network changed (interface / address / default route): every Connected ADP link may
+   * be dead, or reachable only from our new address. Probe each at once — the probe from the new
+   * address also moves the peer's path to it — and evict those with no authenticated RX within
+   * `PeerLinkConfig::network_change_grace` (`LinkDropReason::NetworkChanged`) instead of waiting
+   * out their liveness window. Dial backoffs are cleared: a peer that failed may be reachable now.
+   * Nested links follow their carrier. @return number of links probed.
+   */
+  size_t OnNetworkChanged();
   void AbortInflightDial(const std::string& peer_key);
   /**
    * Drop the ADP link(s) behind `peer_key` (dial key and/or PeerId) on the next Tick, closing the

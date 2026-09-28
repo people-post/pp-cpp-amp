@@ -47,6 +47,17 @@ On receipt: record the peer cadence; if echo is requested, reply at once with a 
 
 Configure cadences via `PeerLinkConfig::keepalive_hot_interval` / `keepalive_warm_interval`; products choose tiers (pp-browser: call-path-resilience K008).
 
+## Network change
+
+A link's liveness window can be long (5/2 × a 20 s hot cadence = 50 s), and a local network change — Wi-Fi ↔ cellular, new address, sleep / wake — can kill every path at once or leave them reachable only from the new address. The product reports it with `MeshRuntime::NotifyNetworkChanged()` (any thread; runs `PeerLinkManager::OnNetworkChanged()` on the IO lane):
+
+- Every Connected ADP link is marked **suspect** and sent a **probe** at once: a keepalive at the link's current cadence (unchanged) with the echo flag. Sent from our new address, it also moves the peer's path to that address (the peer learns paths from fresh authenticated packets).
+- An authenticated packet received after the change clears the suspicion. Otherwise the probe is resent every `network_change_grace / 4`, and after `PeerLinkConfig::network_change_grace` (2 s) the link is evicted with reason **`network-changed`** — instead of lingering for its liveness window.
+- Dial backoffs are cleared: a peer that failed from the old network may be reachable from the new one.
+- Nested (carrier-backed) links are not probed; they live and die with their carrier.
+
+Tests: `MeshLinkTest.NetworkChangeEvictsASilentLinkWithinTheGrace`, `NetworkChangeKeepsALinkThatAnswers`, `NetworkChangeResendsALostProbe`.
+
 ## Integration
 
 Drive via `MeshRuntime::Tick()` / `MeshPump::Tick()`. Tests: `AdpConnTest.KeepaliveAnnouncesCadenceAndEchoes`, `AmpIntegrationTest.HotDialerKeepsColdInboundAlive`, `AmpIntegrationTest.HotLinkEvictedWhenPeerGoesSilent`.

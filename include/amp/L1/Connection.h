@@ -88,6 +88,11 @@ public:
   Roe<void> SendKeepalive(int64_t now_ms, uint32_t interval_ms);
   /** Tier dropped to cold: tell the peer our cadence stopped (interval 0, no echo). */
   Roe<void> StopKeepalive(int64_t now_ms);
+  /**
+   * Liveness probe: a keepalive at our current cadence (unchanged) that asks for an echo. Used after
+   * a local network change; the probe from our new address also moves the peer's path to it.
+   */
+  Roe<void> SendProbe(int64_t now_ms);
 
   /** Drive retransmits / close drain. */
   void Tick(int64_t now_ms);

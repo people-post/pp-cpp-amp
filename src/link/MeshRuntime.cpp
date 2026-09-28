@@ -340,6 +340,10 @@ void MeshRuntime::ClearDialBackoff(const DialKey& peer_key) { links_.ClearDialBa
 
 void MeshRuntime::AbortInflightDial(const DialKey& peer_key) { links_.AbortInflightDial(peer_key); }
 
+void MeshRuntime::NotifyNetworkChanged() {
+  PostToIo([this]() { (void)links_.OnNetworkChanged(); });
+}
+
 void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chrono::milliseconds window,
                             BurstDialCb on_done) {
   if (!on_done) {

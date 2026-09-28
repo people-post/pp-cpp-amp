@@ -53,6 +53,7 @@ public:
   void PromoteDialWinner(const DialKey& peer_key, const std::string& multiaddr);
 
   void ClearBackoff(const DialKey& peer_key) { dial_failed_until_.erase(peer_key); }
+  void ClearAllBackoff() { dial_failed_until_.clear(); }
   void ArmBackoff(const DialKey& peer_key);
   bool InBackoff(const DialKey& peer_key, std::chrono::steady_clock::time_point now) const;
   std::optional<std::chrono::milliseconds> BackoffRemaining(const DialKey& peer_key,

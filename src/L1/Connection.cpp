@@ -111,6 +111,10 @@ Connection::Roe<void> Connection::SendKeepalivePacket(const int64_t now_ms, cons
   return SendPacket(PacketType::Keepalive, 0, payload, now_ms);
 }
 
+Connection::Roe<void> Connection::SendProbe(const int64_t now_ms) {
+  return SendKeepalivePacket(now_ms, local_keepalive_interval_ms_, kKeepaliveFlagEchoRequest);
+}
+
 void Connection::HandleKeepalive(const WirePacket& pkt, const int64_t now_ms) {
   if (pkt.payload.size() < kKeepalivePayloadBytes) {
     return;
