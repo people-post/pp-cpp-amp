@@ -492,7 +492,7 @@ struct ConnectedNested {
   std::string nested_key = "nested:bob";
 };
 
-std::optional<ConnectedNested> BringUpConnectedNested(MeshLinkFixture& f) {
+std::optional<ConnectedNested> BringUpConnectedNested(MeshLinkFixture& f, const std::string& nested_key = "nested:bob") {
   f.mgr_b->EnableNestedCarrierAccept(true);
   auto bob_addr = FormatAdpMultiaddr(f.addr_b, "QmBob");
   if (!bob_addr || !f.mgr_a->RegisterEndpoint("bob", *bob_addr)) {
@@ -525,6 +525,7 @@ std::optional<ConnectedNested> BringUpConnectedNested(MeshLinkFixture& f) {
   ConnectedNested out;
   out.carrier_channel = *channel_id;
   out.outer_b = outer_b;
+  out.nested_key = nested_key;
   bool nested_ok = false;
   f.mgr_a->EstablishNestedOverCarrier(out.nested_key, carrier, true,
                                       [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
@@ -712,6 +713,26 @@ TEST(MeshLinkTest, ConnectedLinkByPeerIdHonoursTheTransportClass) {
   EXPECT_TRUE(carrier->IsCarrierBacked());
   EXPECT_EQ(carrier, nested_a);
   EXPECT_EQ(fixture->mgr_a->FindConnectedLinkByPeerId("QmNobody", TransportClass::Adp), nullptr);
+}
+
+// A024: a nested link comes up under a key whose ADP link is already Connected — a call on a
+// direct link that wants a relayed one beside it. It used to report OK at once (the key was
+// "connected") without building the nested link, orphaning the carrier.
+TEST(MeshLinkTest, NestedLinkComesUpBesideAConnectedAdpLinkUnderTheSameKey) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture, /*nested_key=*/"bob");  // same key as the ADP link
+  ASSERT_TRUE(nested.has_value());
+  auto* adp = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(adp, nullptr);
+  const std::string bob = adp->RemotePeerId().empty() ? std::string("QmBob") : adp->RemotePeerId();
+  auto* carrier = fixture->mgr_a->FindConnectedLinkByPeerId(bob, TransportClass::Carrier);
+  auto* direct = fixture->mgr_a->FindConnectedLinkByPeerId(bob, TransportClass::Adp);
+  ASSERT_NE(carrier, nullptr) << "the nested link exists";
+  ASSERT_NE(direct, nullptr) << "and the ADP link is still there";
+  EXPECT_TRUE(carrier->IsCarrierBacked());
+  EXPECT_FALSE(direct->IsCarrierBacked());
 }
 
 // k1 (call-path-resilience): a Connected nested link whose carrier closes used to drop to Backoff
