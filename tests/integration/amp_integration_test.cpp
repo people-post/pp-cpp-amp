@@ -701,6 +701,32 @@ TEST_F(AmpIntegrationTest, AdversarialPendingInboundQuotaAdv10) {
   EXPECT_TRUE(associated) << err;
 }
 
+// Regression: an MshChunk claiming a chunk count above the largest real MSH message must be
+// rejected outright, not accepted into a peer-sized std::vector<vector<uint8_t>>. Calls the
+// reassembler directly (PushMshChunkForTest) since the bound is on the count itself, not on any
+// externally observable handshake behavior (a corrupted chunk stream fails either way).
+TEST_F(AmpIntegrationTest, AdversarialMshChunkCountBombAdv11) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  h.ep_b->SetAcceptEnabled(true);
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
+  h.mgr_a().EnsureAssociation("b", {});
+  h.PumpUntil([&] { return h.mgr_a().FindLink("b") != nullptr; });
+  auto* link = h.mgr_a().FindLink("b");
+  ASSERT_NE(link, nullptr);
+
+  const uint16_t bad_count = pp::amp::kMaxMshChunkCount + 1;
+  const std::vector<uint8_t> chunk = {0xAB, 0xCD};
+  auto rejected = link->PushMshChunkForTest(pp::amp::MshMessageType::ClientHello, 0, bad_count, chunk);
+  EXPECT_FALSE(static_cast<bool>(rejected));
+
+  // A within-limit count still reassembles normally afterwards (the bound didn't wedge state).
+  auto ok_single = link->PushMshChunkForTest(pp::amp::MshMessageType::ClientHello, 0, 1, chunk);
+  ASSERT_TRUE(static_cast<bool>(ok_single));
+  ASSERT_TRUE(ok_single->has_value());
+}
+
 TEST_F(AmpIntegrationTest, AdversarialGarbageMshMidHandshakeAdv03) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));

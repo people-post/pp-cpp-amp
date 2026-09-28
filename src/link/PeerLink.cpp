@@ -285,15 +285,25 @@ Roe<std::optional<std::vector<uint8_t>>> PeerLink::PushMshChunk(const MshMessage
   if (count == 0 || index >= count) {
     return Error("amp link: bad msh chunk meta");
   }
+  // A peer-declared count backs a msh_chunk_parts_.assign(count, {}) below: bound it to what the
+  // largest real MSH message could ever need, not the full uint16_t range.
+  if (count > kMaxMshChunkCount) {
+    return Error("amp link: msh chunk count exceeds limit");
+  }
   if (msh_chunk_count_ == 0) {
     msh_chunk_type_ = type;
     msh_chunk_count_ = count;
     msh_chunk_parts_.assign(count, {});
+    msh_chunk_bytes_ = 0;
   }
   if (type != msh_chunk_type_ || count != msh_chunk_count_) {
     return Error("amp link: msh chunk stream mismatch");
   }
   if (msh_chunk_parts_[index].empty()) {
+    if (msh_chunk_bytes_ + chunk.size() > kMaxMshMessageBytes) {
+      return Error("amp link: msh chunk stream too large");
+    }
+    msh_chunk_bytes_ += chunk.size();
     msh_chunk_parts_[index].assign(chunk.begin(), chunk.end());
   }
   for (const auto& part : msh_chunk_parts_) {
@@ -307,6 +317,7 @@ Roe<std::optional<std::vector<uint8_t>>> PeerLink::PushMshChunk(const MshMessage
   }
   msh_chunk_count_ = 0;
   msh_chunk_parts_.clear();
+  msh_chunk_bytes_ = 0;
   auto wire = AmpAdpCarrier::EncodeMsh(msh_chunk_type_, body);
   if (!wire) {
     return wire.error();
