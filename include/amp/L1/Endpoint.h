@@ -38,6 +38,12 @@ public:
   void SetAcceptEnabled(bool on) { accept_enabled_ = on; }
   using AcceptHandler = std::function<void(std::shared_ptr<Connection>)>;
   void SetAcceptHandler(AcceptHandler handler) { accept_handler_ = std::move(handler); }
+  /**
+   * Backstop cap on newly *accepted* associations (explicit Open()/outbound dials are never
+   * capped here). Independent of any higher-level link-table cap: even if a consumer forgets to
+   * wire one, or its accept handler is slow to reject, conns_ cannot grow without bound.
+   */
+  void SetMaxAcceptedConnections(size_t max) { max_accepted_conns_ = max; }
 
 private:
   void HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram);
@@ -48,6 +54,7 @@ private:
   std::optional<PeerKey> accept_key_;
   bool accept_enabled_ = false;
   AcceptHandler accept_handler_;
+  size_t max_accepted_conns_ = 4096;
 };
 
 } // namespace pp::adp

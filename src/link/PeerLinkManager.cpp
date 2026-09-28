@@ -903,6 +903,20 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
   std::lock_guard lock(strand_mu_);
   if (table_.size() >= book_.Config().max_links) {
+    connection->Close();
+    return;
+  }
+  // Pending (Handshaking) inbound links have their own quota, separate from max_links: a flood
+  // of cheap forged-source connection attempts must not fill the whole table before any of them
+  // authenticates, starving outbound dials and already-Connected links of a slot.
+  size_t pending_inbound = 0;
+  table_.ForEach([&](PeerLink& link) {
+    if (!link.IsOutbound() && link.Phase() == PeerLinkPhase::Handshaking) {
+      ++pending_inbound;
+    }
+  });
+  if (pending_inbound >= book_.Config().max_pending_inbound) {
+    connection->Close();
     return;
   }
   static constexpr char kHex[] = "0123456789abcdef";
@@ -912,6 +926,7 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
     peer_key.push_back(kHex[byte & 0x0f]);
   }
   if (table_.ContainsDialKey(peer_key)) {
+    connection->Close();
     return;
   }
   auto link = std::make_unique<PeerLink>(peer_key, std::string{}, false, std::move(connection), local_identity_,

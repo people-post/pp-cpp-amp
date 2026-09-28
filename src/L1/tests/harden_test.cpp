@@ -149,6 +149,44 @@ TEST_F(AdpHardenTest, MultiConnectionStressMemory) {
   EXPECT_EQ(received, static_cast<size_t>(N));
 }
 
+// Regression: Reliable payloads must not accumulate in the out-of-order hold when nobody will
+// ever drain it (no OnMessage handler wired, e.g. a link the manager has already rejected).
+TEST_F(AdpHardenTest, ReliableHoldStaysEmptyWithoutHandler) {
+  auto clock = std::make_shared<pp::adp::VirtualClock>(1);
+  auto hub = pp::adp::MemoryDatagramIo::MakeHub();
+  auto addr_a = pp::adp::IpEndpoint::V4(10, 2, 2, 1, 1);
+  auto addr_b = pp::adp::IpEndpoint::V4(10, 2, 2, 2, 2);
+  auto io_a = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_a);
+  auto io_b = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_b);
+  auto ep_a = std::make_unique<pp::adp::Endpoint>(io_a, clock);
+  auto ep_b = std::make_unique<pp::adp::Endpoint>(io_b, clock);
+  ep_b->SetAcceptKey(Key());
+  ep_b->SetAcceptEnabled(true);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = addr_b;
+  auto ca = ep_a->Open(op);
+  ASSERT_TRUE(ca);
+  pp::adp::OpenParams opb = op;
+  opb.peer = addr_a;
+  auto cb = ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  // No OnMessage on B: DeliverReliableInOrder can never drain rx_rel_hold_.
+
+  // Drop the first Reliable send so every later one arrives out of order on B.
+  io_a->DropNext(1);
+  for (int i = 0; i < 20; ++i) {
+    const uint8_t b = static_cast<uint8_t>(i);
+    ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(&b, 1)));
+  }
+  ep_b->Pump();
+
+  EXPECT_EQ((*cb)->ReliableHoldSizeForTest(), 0u);
+}
+
 TEST_F(AdpHardenTest, BindIpv6Wildcard) {
   auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V6({}, 0));
   ASSERT_TRUE(static_cast<bool>(bound)) << (bound ? "" : bound.error().message);

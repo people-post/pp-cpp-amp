@@ -353,8 +353,13 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     if (!fresh_data) {
       break;
     }
-    rx_rel_hold_[pkt.seq] = pkt.payload;
-    DeliverReliableInOrder();
+    // Nothing will ever drain the hold without a handler (DeliverReliableInOrder is a no-op),
+    // and a forged out-of-order seq per packet would otherwise grow it without bound; cap it to
+    // the reliable window either way.
+    if (on_message_ && (rx_rel_hold_.size() < params_.reliable_window || rx_rel_hold_.count(pkt.seq) != 0)) {
+      rx_rel_hold_[pkt.seq] = pkt.payload;
+      DeliverReliableInOrder();
+    }
     break;
   }
   }

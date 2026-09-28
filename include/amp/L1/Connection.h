@@ -99,6 +99,8 @@ public:
   void HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram, int64_t now_ms);
 
   const HmacBinder& Binder() const { return binder_; }
+  /** Out-of-order Reliable payloads currently held awaiting the gap to fill. */
+  size_t ReliableHoldSizeForTest() const { return rx_rel_hold_.size(); }
 
 private:
   Connection(Endpoint& endpoint, OpenParams params);

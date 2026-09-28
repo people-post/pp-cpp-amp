@@ -652,6 +652,55 @@ TEST_F(AmpIntegrationTest, AdversarialMaxLinksAdv02) {
   EXPECT_EQ(h.CountLinks(HarnessSide::B), 1);
 }
 
+// Regression: a flood of half-open inbound associations (forged sources, never completing MSH)
+// must not fill the whole link table — max_pending_inbound reserves room for real dials/links.
+TEST_F(AmpIntegrationTest, AdversarialPendingInboundQuotaAdv10) {
+  pp::amp::PeerLinkConfig cfg = AmpMeshTestLinkConfig();
+  cfg.max_links = 50;
+  cfg.max_pending_inbound = 3;
+  cfg.dial_timeout = std::chrono::milliseconds(200);
+  auto created = MakeAmpIntegrationHarness(cfg);
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  h.ep_b->SetAcceptEnabled(true);
+
+  for (int i = 0; i < 10; ++i) {
+    pp::adp::OpenParams params;
+    params.key = pp::amp::PreSessionPeerKey();
+    params.mint_id = true;
+    params.peer = h.addr_b;
+    h.AdvanceMs(1);
+    auto opened = h.ep_a->Open(params);
+    ASSERT_TRUE(static_cast<bool>(opened));
+    // Authenticate the association (HMAC binder) without ever sending MSH ClientHello, so it
+    // stays Handshaking on B rather than failing outright.
+    (void)(*opened)->SendKeepalive(h.clock->NowMs(), 0);
+  }
+  h.PumpBoth();
+
+  EXPECT_LE(h.CountLinks(HarnessSide::B), cfg.max_pending_inbound);
+
+  // Let the flood's half-open handshakes time out (same budget as any other Handshaking link) so
+  // the quota is not a permanent jam, then confirm a real dial still gets a table slot.
+  h.AdvanceMs(250);
+  h.PumpBoth();
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
+  bool associated = false;
+  bool done = false;
+  std::string err;
+  h.mgr_a().EnsureAssociation("b", [&](pp::amp::PeerLinkManager::LinkRoe result) {
+    associated = result.isOk();
+    if (!result) {
+      err = result.error().message;
+    }
+    done = true;
+  });
+  h.PumpUntil([&] { return done; });
+  EXPECT_TRUE(done) << "dial never completed; table size b=" << h.CountLinks(HarnessSide::B)
+                    << " a=" << h.CountLinks(HarnessSide::A);
+  EXPECT_TRUE(associated) << err;
+}
+
 TEST_F(AmpIntegrationTest, AdversarialGarbageMshMidHandshakeAdv03) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));

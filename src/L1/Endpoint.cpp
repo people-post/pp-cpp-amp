@@ -98,6 +98,9 @@ void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> d
     return;
   }
   const bool is_new = Find(id) == nullptr;
+  if (is_new && conns_.size() >= max_accepted_conns_) {
+    return;
+  }
   // Skew check before creating an association.
   const int64_t now = clock_->NowMs();
   const uint32_t now_trunc = static_cast<uint32_t>(static_cast<uint64_t>(now) & 0xffffffffull);
