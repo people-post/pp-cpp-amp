@@ -96,5 +96,39 @@ TEST(MessageReassemblyTest, SweepExpiredDropsStalePartial) {
   EXPECT_EQ(done->value(), (std::vector<uint8_t>{'q', 'r'}));
 }
 
+// Regression: frag_count must not exceed total_len (each fragment carries >=1 byte) — otherwise
+// a tiny message can still claim up to 65535 assembly slots.
+TEST(MessageReassemblyTest, RejectsFragCountAboveTotalLen) {
+  MessageReassembly asmbl;
+  auto bomb = MakeFrag(6, 0, /*count=*/1000, {'z'}, /*total_len=*/4);
+  auto rejected = asmbl.Push(bomb, 0);
+  EXPECT_FALSE(static_cast<bool>(rejected));
+}
+
+// Regression: a chunk that would push cumulative received bytes past the declared total_len is
+// rejected before the final length check, not silently over-assembled.
+TEST(MessageReassemblyTest, RejectsChunkOverflowingDeclaredLength) {
+  MessageReassembly asmbl;
+  auto oversized_first_chunk = MakeFrag(7, 0, 2, std::vector<uint8_t>(10, 'a'), /*total_len=*/4);
+  auto rejected = asmbl.Push(oversized_first_chunk, 0);
+  EXPECT_FALSE(static_cast<bool>(rejected));
+}
+
+// Regression: distinct in-flight msg_ids are capped independent of max_message_bytes_, so a
+// flood of never-completed messages cannot grow assembly state without bound.
+TEST(MessageReassemblyTest, CapsConcurrentPartialMessages) {
+  MessageReassembly asmbl(256 * 1024, /*max_partials=*/2);
+  ASSERT_TRUE(static_cast<bool>(asmbl.Push(MakeFrag(100, 0, 2, {'a'}, 2), 0)));
+  ASSERT_TRUE(static_cast<bool>(asmbl.Push(MakeFrag(101, 0, 2, {'a'}, 2), 0)));
+  // A third distinct msg_id exceeds the quota.
+  auto rejected = asmbl.Push(MakeFrag(102, 0, 2, {'a'}, 2), 0);
+  EXPECT_FALSE(static_cast<bool>(rejected));
+  // The two already in flight still complete normally.
+  auto done = asmbl.Push(MakeFrag(100, 1, 2, {'b'}, 2), 0);
+  ASSERT_TRUE(static_cast<bool>(done));
+  ASSERT_TRUE(done->has_value());
+  EXPECT_EQ(done->value(), (std::vector<uint8_t>{'a', 'b'}));
+}
+
 } // namespace
 } // namespace pp::amp

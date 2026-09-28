@@ -119,6 +119,35 @@ TEST(ChannelMuxTest, OpenCarriesMaxMessageBytesForBlob) {
   EXPECT_EQ(received, large);
 }
 
+// Regression: an inbound Open declaring Control class but a Bulk-sized max_message_bytes must be
+// clamped to the local Control ceiling, not trusted at face value — the offered byte count is a
+// hint, not policy (a Bulk channel genuinely gets the larger ceiling; see
+// OpenCarriesMaxMessageBytesForBlob above).
+TEST(ChannelMuxTest, InboundOpenClampsOfferedBytesToLocalClassCeiling) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+
+  ChannelPolicy spoofed;
+  spoofed.cls = ChannelClass::Control;
+  spoofed.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
+  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", spoofed);
+  ASSERT_TRUE(static_cast<bool>(ch));
+
+  // Between the Control ceiling and the Bulk ceiling: must be refused on the responder, which
+  // only ever saw channel_class=Control on the wire.
+  std::vector<uint8_t> mid(AmpChannelLimits::kMaxChatStreamJsonBytes + 4096, 0xEE);
+  EXPECT_FALSE(static_cast<bool>(link.responder.mux.SendData(*ch, mid)));
+
+  std::vector<uint8_t> received;
+  link.initiator.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    received = std::move(payload);
+  });
+  std::vector<uint8_t> small(1024, 0xAA);
+  ASSERT_TRUE(static_cast<bool>(link.responder.mux.SendData(*ch, small)));
+  EXPECT_EQ(received, small);
+}
+
 TEST(ChannelMuxTest, ApplyChannelPolicyRaisesReassemblyBudget) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));

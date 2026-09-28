@@ -1187,6 +1187,11 @@ void PeerLinkManager::Tick() {
 
   std::vector<std::pair<LinkHandle, LinkDropReason>> evict;
   table_.ForEach([&](PeerLink& link) {
+    if (auto* mux = link.Mux()) {
+      // Sweeps stale FRAG partial-assembly state (Adv08 / N12) — production code never called
+      // this before, so partials only ever left via a completed assembly.
+      mux->Tick(now);
+    }
     if (link.IsCarrierBacked()) {
       // A closed carrier ends the nested link whatever phase its close left it in: a Connected
       // link's closed callback drops it to Backoff, which nothing else evicts (it lingered

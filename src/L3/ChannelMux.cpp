@@ -11,6 +11,17 @@ inline constexpr size_t kMaxSingleDataBytes = 900;
 
 int64_t DefaultNowMs() { return 0; }
 
+/**
+ * Local ceiling for an inbound Open's declared max_message_bytes, by advertised channel class.
+ * A peer's own byte count is a hint, not policy: without this, any channel — including a Control
+ * one meant only for small JSON — could claim it wants up to kMaxBulkFrameBytes (~4 MiB) of
+ * reassembly buffer per message.
+ */
+size_t LocalMaxMessageBytesCeiling(const ChannelClass cls) {
+  return cls == ChannelClass::Bulk ? AmpChannelLimits::kMaxBulkFrameBytes
+                                    : AmpChannelLimits::kMaxChatStreamJsonBytes;
+}
+
 } // namespace
 
 ChannelMux::ChannelMux(Session& session) : session_(session), now_ms_(DefaultNowMs) {
@@ -209,8 +220,8 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
   rec.policy.cls = frame.open.channel_class;
   if (frame.open.max_message_bytes > 0) {
     const size_t offered = frame.open.max_message_bytes;
-    rec.policy.max_message_bytes =
-        offered > AmpChannelLimits::kMaxBulkFrameBytes ? AmpChannelLimits::kMaxBulkFrameBytes : offered;
+    const size_t ceiling = LocalMaxMessageBytesCeiling(rec.policy.cls);
+    rec.policy.max_message_bytes = offered > ceiling ? ceiling : offered;
   }
   rec.reassembly = MessageReassembly(rec.policy.max_message_bytes);
   rec.state = ChannelState::Open;
@@ -482,6 +493,12 @@ Roe<void> ChannelMux::InjectSealedForTest(const uint32_t channel_id, const uint3
   }
   last_send_qos_ = QosForClass(channel->policy.cls);
   return transport_(channel_id, channel_seq, last_send_qos_, std::move(sealed));
+}
+
+void ChannelMux::Tick(const int64_t now_ms) {
+  for (auto& [_, channel] : channels_) {
+    channel.reassembly.SweepExpired(now_ms);
+  }
 }
 
 } // namespace pp::amp
