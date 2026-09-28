@@ -1152,9 +1152,10 @@ void PeerLinkManager::Tick() {
   const int64_t dial_attempt_ms = book_.Config().dial_attempt_timeout.count();
   std::vector<LinkHandle> timed_out;
   table_.ForEach([&](PeerLink& link) {
-    if (link.IsCarrierBacked()) {
-      return;
-    }
+    // Nested (carrier-backed) handshakes share this same budget: previously excluded
+    // entirely, so a stalled nested handshake (peer never finishes MSH) never timed out.
+    // book_.Find below just misses for a carrier's provisional key, leaving the full
+    // dial_timeout budget, which is what a nested handshake should get anyway.
     const auto phase = link.Phase();
     if (phase != PeerLinkPhase::Handshaking && phase != PeerLinkPhase::Dialing) {
       return;

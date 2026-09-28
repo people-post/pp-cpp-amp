@@ -11,6 +11,11 @@
 
 namespace pp::amp {
 
+namespace {
+/** Cap on lane_backlog_: frames the CarrierLane delivered before the mux exists to drain them. */
+constexpr size_t kMaxLaneBacklogFrames = 256;
+} // namespace
+
 PeerLink::Failure PeerLink::WrapConnectionFailure(const adp::Connection::Failure& child) {
   switch (child.GetCode()) {
   case adp::Connection::Err::Closed:
@@ -236,6 +241,11 @@ void PeerLink::HandleLaneFrame(const AmpAdpPayloadKind kind, const std::span<con
   auto received = lane_->OnData(data->first, data->second);
   (void)SendCarrierWire(AmpAdpCarrier::EncodeLaneAck(received.ack));
   for (auto& inner : received.deliver) {
+    // Bounded independent of the mux existing yet: the peer may still be handshaking, and
+    // nothing drains this backlog before Connected (FlushLaneBacklog no-ops until then).
+    if (lane_backlog_.size() >= kMaxLaneBacklogFrames) {
+      break;
+    }
     lane_backlog_.push_back(std::move(inner));
   }
   FlushLaneBacklog();
