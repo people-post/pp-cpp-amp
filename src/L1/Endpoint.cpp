@@ -33,6 +33,7 @@ Roe<std::shared_ptr<Connection>> Endpoint::AcceptOrCreate(const AssocId& id, con
   p.id = id;
   p.mint_id = false;
   p.peer = peer;
+  p.reduce_rtx_until_authenticated = true;
   return Open(std::move(p));
 }
 

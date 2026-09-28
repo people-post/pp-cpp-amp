@@ -14,7 +14,12 @@ namespace pp::adp {
 Connection::Connection(Endpoint& endpoint, OpenParams params)
     : endpoint_(&endpoint), id_(params.id), binder_(params.key), peer_(params.peer),
       params_(std::move(params)), rx_be_(params_.replay_window, /*slide_on_gap=*/true),
-      rx_rel_(params_.replay_window, /*slide_on_gap=*/false) {}
+      rx_rel_(params_.replay_window, /*slide_on_gap=*/false) {
+  authenticated_max_rtx_ = params_.max_rtx;
+  if (params_.reduce_rtx_until_authenticated) {
+    params_.max_rtx = std::min(params_.max_rtx, kPreAuthMaxRtx);
+  }
+}
 
 Connection::Roe<std::shared_ptr<Connection>> Connection::Open(Endpoint& endpoint, OpenParams params) {
   if (params.mint_id) {
@@ -70,7 +75,10 @@ void Connection::SetPeerEndpoint(IpEndpoint peer) {
   }
 }
 
-void Connection::UpgradeBinder(PeerKey key) { binder_.SetKey(key); }
+void Connection::UpgradeBinder(PeerKey key) {
+  binder_.SetKey(key);
+  params_.max_rtx = authenticated_max_rtx_;
+}
 
 bool Connection::LooksAlive(int64_t now_ms) const {
   if (closed_ || last_auth_rx_ms_ == 0) {

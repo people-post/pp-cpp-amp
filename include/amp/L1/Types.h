@@ -27,6 +27,14 @@ inline constexpr size_t kDefaultReplayWindow = 64;
 inline constexpr size_t kDefaultReliableWindow = 128;
 inline constexpr int64_t kDefaultRtxIntervalMs = 50;
 inline constexpr int kDefaultMaxRtx = 20;
+/**
+ * Reliable retransmit cap before the association authenticates (UpgradeBinder). A forged
+ * ClientHello from a spoofed source gets our Reliable ServerHello resent this many extra times
+ * toward the victim address before we give up — kDefaultMaxRtx would be a ~21x reflection
+ * amplification; this keeps it small while still tolerating a lost packet or two during a real
+ * handshake.
+ */
+inline constexpr int kPreAuthMaxRtx = 2;
 /** Liveness window for a connection with no keepalive cadence on either side (cold). */
 inline constexpr int64_t kAliveTimeoutMs = 5'000;
 /** Keepalive payload: u32 BE sender keepalive interval ms (0 = stopped) + u8 flags. */

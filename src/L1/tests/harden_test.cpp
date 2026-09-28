@@ -187,6 +187,58 @@ TEST_F(AdpHardenTest, ReliableHoldStaysEmptyWithoutHandler) {
   EXPECT_EQ((*cb)->ReliableHoldSizeForTest(), 0u);
 }
 
+// Regression: an accepted (inbound) association retransmits an unacked Reliable send only
+// kPreAuthMaxRtx times, not kDefaultMaxRtx — the reflection-amplification vector (a forged
+// packet from a spoofed source pulls a Reliable reply that gets resent toward the victim).
+TEST_F(AdpHardenTest, AcceptedConnectionCapsRetransmitsBeforeAuth) {
+  auto clock = std::make_shared<pp::adp::VirtualClock>(1);
+  auto hub = pp::adp::MemoryDatagramIo::MakeHub();
+  auto addr_a = pp::adp::IpEndpoint::V4(10, 3, 3, 1, 1); // the (possibly spoofed) "victim" source
+  auto addr_b = pp::adp::IpEndpoint::V4(10, 3, 3, 2, 2);
+  auto io_a = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_a);
+  auto io_b = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_b);
+  auto ep_b = std::make_unique<pp::adp::Endpoint>(io_b, clock);
+  ep_b->SetAcceptKey(Key());
+  ep_b->SetAcceptEnabled(true);
+
+  // Raw forged packet (no Connection on A's side — nothing will ever ack B's reply).
+  pp::adp::WirePacket pkt;
+  pkt.type = pp::adp::PacketType::Ack;
+  pkt.assoc = Aid();
+  pkt.seq = 0;
+  pkt.timestamp_ms = 42;
+  auto enc = pp::adp::WireCodec::Encode(pkt);
+  ASSERT_TRUE(enc);
+  auto sealed = pp::adp::HmacBinder(Key()).Seal(*enc);
+  ASSERT_TRUE(sealed);
+  ASSERT_TRUE(static_cast<bool>(io_a->SendTo(addr_b, *sealed)));
+  ep_b->Pump();
+
+  auto accepted = ep_b->Find(Aid());
+  ASSERT_NE(accepted, nullptr);
+  const uint8_t data = 0xAA;
+  ASSERT_TRUE(static_cast<bool>(
+      accepted->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(&data, 1))));
+
+  size_t reliable_sends = 0;
+  for (int round = 0; round < 200; ++round) {
+    clock->Advance(50);
+    ep_b->Tick();
+    for (;;) {
+      auto got = io_a->RecvFrom();
+      if (!got || !*got) {
+        break;
+      }
+      auto decoded = pp::adp::WireCodec::Decode((*got)->second);
+      if (decoded && decoded->type == pp::adp::PacketType::DataReliable) {
+        ++reliable_sends;
+      }
+    }
+  }
+  // 1 initial send + kPreAuthMaxRtx retries.
+  EXPECT_EQ(reliable_sends, static_cast<size_t>(1 + pp::adp::kPreAuthMaxRtx));
+}
+
 TEST_F(AdpHardenTest, BindIpv6Wildcard) {
   auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V6({}, 0));
   ASSERT_TRUE(static_cast<bool>(bound)) << (bound ? "" : bound.error().message);

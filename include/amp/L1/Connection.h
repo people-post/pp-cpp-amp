@@ -29,6 +29,12 @@ struct OpenParams {
   size_t reliable_window = kDefaultReliableWindow;
   int64_t rtx_interval_ms = kDefaultRtxIntervalMs;
   int max_rtx = kDefaultMaxRtx;
+  /**
+   * Start retransmits capped at kPreAuthMaxRtx instead of max_rtx, restoring max_rtx once
+   * UpgradeBinder proves the association is real. Endpoint sets this for accepted (inbound)
+   * connections — the reflection-amplification vector; explicit Open() dials are unaffected.
+   */
+  bool reduce_rtx_until_authenticated = false;
 };
 
 class Connection : public std::enable_shared_from_this<Connection> {
@@ -56,6 +62,11 @@ public:
   bool PeerUnreachable() const { return peer_unreachable_; }
 
   void SetPeerEndpoint(IpEndpoint peer);
+  /**
+   * Also lifts the pre-auth Reliable retransmit cap (see kPreAuthMaxRtx): a forged ClientHello
+   * cannot make an unauthenticated association resend the same reflected packet 21x toward a
+   * spoofed victim address.
+   */
   void UpgradeBinder(PeerKey key);
   IpEndpoint PeerEndpoint() const { return peer_; }
   /** Amp-clock ms of the last authenticated RX; 0 if none yet. */
@@ -123,6 +134,8 @@ private:
   bool closed_ = false;
   bool peer_closed_ = false;
   bool peer_unreachable_ = false;
+  /** params_.max_rtx to restore once UpgradeBinder proves the association is real (post-MSH). */
+  int authenticated_max_rtx_ = 0;
 
   uint32_t tx_seq_be_ = 0;
   uint32_t tx_seq_rel_ = 0;
