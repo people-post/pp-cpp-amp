@@ -355,6 +355,13 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   master_ikm_ = std::move(established.master_ikm);
   transcript_hash_ = std::move(established.transcript_hash);
   remote_identity_public_key_ = std::move(established.remote_identity_public_key);
+  // Outbound ADP dials to a known PeerId carry it as remote_peer_id_ from construction (inbound
+  // accepts start it empty). Snapshot it before the handshake result overwrites the field, so a
+  // handshake that authenticates as a *different* identity can be rejected below instead of
+  // silently rebinding the dial to whoever answered. Carrier-backed (nested) links key by a
+  // caller-chosen join key that is not necessarily a pre-known PeerId (FinishNestedCarrier
+  // handles their identity/alias policy separately) — do not apply that check here.
+  const std::string expected_peer_id = (outbound_ && !carrier_) ? remote_peer_id_ : std::string{};
   if (!remote_identity_public_key_.empty()) {
     if (host_.derive_peer_id) {
       if (auto derived = host_.derive_peer_id(remote_identity_public_key_); !derived.empty()) {
@@ -365,6 +372,11 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
     } else if (remote_peer_id_.empty()) {
       remote_peer_id_ = IdentityPublicKeyFingerprint(remote_identity_public_key_);
     }
+  }
+  if (!expected_peer_id.empty() && remote_peer_id_ != expected_peer_id) {
+    FailAssociationMessage(Error("amp link: authenticated peer id does not match dial target"),
+                           Err::HandshakeFailed);
+    return;
   }
 
   auto session = Session::FromMaterial(established.local_material, master_ikm_, transcript_hash_);

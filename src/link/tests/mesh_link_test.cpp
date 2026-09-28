@@ -74,8 +74,20 @@ struct MeshLinkFixture {
     f.bob.ml_dsa_secret_key = std::move(bob_keys->secret_key);
     f.bob.ml_dsa_public_key = std::move(bob_keys->public_key);
 
-    f.mgr_a = std::make_unique<PeerLinkManager>(*f.ep_a, f.alice, "QmAlice");
-    f.mgr_b = std::make_unique<PeerLinkManager>(*f.ep_b, f.bob, "QmBob");
+    // Outbound dials now require the authenticated remote identity to match the expected
+    // PeerId (fix: PeerLink no longer rebinds a dial's remote_peer_id_ on mismatch). Map the
+    // fixture's fixed dial-key labels to their real identities so existing "QmBob"/"QmAlice"
+    // dial keys keep authenticating as themselves.
+    PeerLinkConfig config_a;
+    config_a.peer_id_from_identity = [bob_pub = f.bob.ml_dsa_public_key](const ByteVector& pk) -> std::string {
+      return pk == bob_pub ? "QmBob" : IdentityPublicKeyFingerprint(pk);
+    };
+    PeerLinkConfig config_b;
+    config_b.peer_id_from_identity = [alice_pub = f.alice.ml_dsa_public_key](const ByteVector& pk) -> std::string {
+      return pk == alice_pub ? "QmAlice" : IdentityPublicKeyFingerprint(pk);
+    };
+    f.mgr_a = std::make_unique<PeerLinkManager>(*f.ep_a, f.alice, "QmAlice", config_a);
+    f.mgr_b = std::make_unique<PeerLinkManager>(*f.ep_b, f.bob, "QmBob", config_b);
     f.pump_a = std::make_unique<MeshPump>(*f.ep_a, *f.mgr_a);
     f.pump_b = std::make_unique<MeshPump>(*f.ep_b, *f.mgr_b);
     return f;
@@ -1335,7 +1347,11 @@ TEST(MeshLinkTest, EnsureAssociationOverMemoryIoIpv6) {
   bob.ml_dsa_secret_key = std::move(bob_keys->secret_key);
   bob.ml_dsa_public_key = std::move(bob_keys->public_key);
 
-  PeerLinkManager mgr_a(*ep_a, alice, "QmAlice6");
+  PeerLinkConfig config_a;
+  config_a.peer_id_from_identity = [bob_pub = bob.ml_dsa_public_key](const ByteVector& pk) -> std::string {
+    return pk == bob_pub ? "QmBob6" : IdentityPublicKeyFingerprint(pk);
+  };
+  PeerLinkManager mgr_a(*ep_a, alice, "QmAlice6", config_a);
   PeerLinkManager mgr_b(*ep_b, bob, "QmBob6");
   MeshPump pump_a(*ep_a, mgr_a);
   MeshPump pump_b(*ep_b, mgr_b);

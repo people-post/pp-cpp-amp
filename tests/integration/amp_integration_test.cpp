@@ -742,6 +742,36 @@ TEST_F(AmpIntegrationTest, AdversarialFragPartialBombAdv08) {
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
 }
 
+// Regression: dialing a peer_id whose multiaddr resolves to a *different* peer's socket must
+// fail the association instead of silently rebinding to whoever answers.
+TEST_F(AmpIntegrationTest, AdversarialDialIdentityMismatchAdv09) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  h.ep_b->SetAcceptEnabled(true);
+
+  auto wrong_ma = pp::amp::FormatAdpMultiaddr(h.addr_b, "not-actually-" + h.peer_id_b);
+  ASSERT_TRUE(static_cast<bool>(wrong_ma));
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", *wrong_ma)));
+
+  bool done = false;
+  bool ok = true;
+  pp::amp::PeerLinkManager::Err err_code = pp::amp::PeerLinkManager::Err::Ok;
+  h.mgr_a().EnsureAssociation("b", [&](pp::amp::PeerLinkManager::LinkRoe result) {
+    ok = result.isOk();
+    if (!result) {
+      err_code = result.error().GetCode();
+    }
+    done = true;
+  });
+  h.PumpUntil([&] { return done; });
+  EXPECT_TRUE(done);
+  EXPECT_FALSE(ok);
+  EXPECT_EQ(err_code, pp::amp::PeerLinkManager::Err::HandshakeFailed);
+  EXPECT_FALSE(h.mgr_a().IsConnected("b"));
+  EXPECT_EQ(h.mgr_a().FindLinkByPeerId(h.peer_id_b), nullptr);
+}
+
 TEST_F(AmpIntegrationTest, ColdLinkEvictedAfterIdle) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));
