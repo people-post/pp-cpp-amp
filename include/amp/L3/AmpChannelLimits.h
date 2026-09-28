@@ -31,6 +31,12 @@ struct AmpChannelLimits {
   static constexpr size_t kMaxMediaRelayClientOutboundFrames = 6;
   /** Control JSON (chat / history): one request or ack queued. */
   static constexpr size_t kMaxControlOutboundFrames = 1;
+  /**
+   * Concurrent channel records (any state) a single ChannelMux will hold. Closed channels are
+   * erased promptly, so this mainly bounds how many channels a peer can have Open at once — not
+   * total channels opened over the session's lifetime.
+   */
+  static constexpr size_t kMaxConcurrentChannels = 256;
 };
 
 } // namespace pp::amp

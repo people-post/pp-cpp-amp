@@ -284,6 +284,42 @@ TEST(ChannelMuxTest, FragPreflightRefusesWhenCreditsLow) {
   EXPECT_GE(transport_calls, 3u);
 }
 
+// Regression: an Open whose channel id has the *same* parity as the receiver's own dynamic ids
+// (i.e. the parity the receiver expects for ITS OWN opens, not the peer's) is a glare / squatting
+// attempt and must be refused, not silently accepted.
+TEST(ChannelMuxTest, RejectsOpenWithWrongIdParity) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+
+  // Responder's own opens use even ids; the initiator must use odd. Force an even fixed_id from
+  // the initiator to simulate a peer violating that.
+  auto bad = link.initiator.mux.OpenOutbound("/x/1", ControlJsonChannelPolicy(), /*fixed_id=*/2u);
+  ASSERT_TRUE(static_cast<bool>(bad));
+  EXPECT_EQ(link.responder.mux.State(*bad), ChannelState::Closed) << "no record kept on the receiver";
+  EXPECT_EQ(link.initiator.mux.State(*bad), ChannelState::Closed) << "rejection round-trips back";
+}
+
+// Regression: a peer cannot Open more than kMaxConcurrentChannels channel records at once.
+TEST(ChannelMuxTest, RejectsOpenBeyondConcurrentChannelCap) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+
+  // Fixed ids, odd (initiator's own parity), starting past the capability/default ids in use.
+  uint32_t id = 101;
+  for (size_t i = 0; i < AmpChannelLimits::kMaxConcurrentChannels; ++i, id += 2) {
+    auto ch = link.initiator.mux.OpenOutbound("/x/1", ControlJsonChannelPolicy(), id);
+    ASSERT_TRUE(static_cast<bool>(ch)) << "open #" << i;
+    ASSERT_EQ(link.responder.mux.State(*ch), ChannelState::Open) << "open #" << i;
+  }
+
+  auto over_cap = link.initiator.mux.OpenOutbound("/x/1", ControlJsonChannelPolicy(), id);
+  ASSERT_TRUE(static_cast<bool>(over_cap));
+  EXPECT_EQ(link.responder.mux.State(*over_cap), ChannelState::Closed);
+  EXPECT_EQ(link.initiator.mux.State(*over_cap), ChannelState::Closed);
+}
+
 TEST(ChannelMuxTest, RefusingMuxRejectsOpensNobodyHandles) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));

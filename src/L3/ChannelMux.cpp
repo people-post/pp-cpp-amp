@@ -91,7 +91,9 @@ Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPo
   rec.policy = std::move(policy);
   rec.state = ChannelState::Opening;
   rec.reassembly = MessageReassembly(rec.policy.max_message_bytes);
-  channels_.emplace(id, std::move(rec));
+  if (!channels_.emplace(id, std::move(rec)).second) {
+    return Error("amp mux: channel id already recorded");
+  }
   if (auto it = pending_handlers_.find(id); it != pending_handlers_.end()) {
     channels_.at(id).on_data = std::move(it->second);
     pending_handlers_.erase(it);
@@ -194,25 +196,41 @@ Roe<void> ChannelMux::DeliverPayload(ChannelRecord& channel, std::vector<uint8_t
   return Roe<void>();
 }
 
+Roe<void> ChannelMux::RefuseOpen(const ChannelFrame& frame, const uint8_t result) {
+  // No record: the id stays free, and nothing is left behind for a request nobody reads.
+  ChannelRecord refused;
+  refused.id = frame.header.channel_id;
+  refused.policy.cls = frame.open.channel_class;
+  ChannelFrame nack;
+  nack.header.frame_type = ChannelFrameType::OpenAck;
+  nack.header.channel_id = frame.header.channel_id;
+  nack.header.channel_seq = 0;
+  nack.open_ack_result = result;
+  pending_terminal_handlers_.erase(frame.header.channel_id);
+  return SendFrame(nack, refused);
+}
+
 Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
   if (channels_.contains(frame.header.channel_id)) {
     return Error("amp mux: duplicate open");
+  }
+  if (frame.header.channel_id != kCapabilityChannelId) {
+    // Dual-open scheme (ctor): the local side's own opens use odd ids if we are the session
+    // initiator, even otherwise — so a genuine peer's opens must land on the opposite parity.
+    const bool we_use_odd = next_dynamic_id_ % 2 == 1;
+    const bool remote_id_is_odd = frame.header.channel_id % 2 == 1;
+    if (remote_id_is_odd == we_use_odd) {
+      return RefuseOpen(frame, kOpenAckBadIdParity);
+    }
+  }
+  if (channels_.size() >= AmpChannelLimits::kMaxConcurrentChannels) {
+    return RefuseOpen(frame, kOpenAckTooManyChannels);
   }
   const bool handled = frame.header.channel_id == kCapabilityChannelId ||
                        protocol_handlers_.contains(frame.open.protocol_id) ||
                        pending_handlers_.contains(frame.header.channel_id);
   if (refuse_unhandled_opens_ && !handled) {
-    // No record: the id stays free, and nothing is left behind for a request nobody reads.
-    ChannelRecord refused;
-    refused.id = frame.header.channel_id;
-    refused.policy.cls = frame.open.channel_class;
-    ChannelFrame nack;
-    nack.header.frame_type = ChannelFrameType::OpenAck;
-    nack.header.channel_id = frame.header.channel_id;
-    nack.header.channel_seq = 0;
-    nack.open_ack_result = kOpenAckNoHandler;
-    pending_terminal_handlers_.erase(frame.header.channel_id);
-    return SendFrame(nack, refused);
+    return RefuseOpen(frame, kOpenAckNoHandler);
   }
   ChannelRecord rec;
   rec.id = frame.header.channel_id;
@@ -263,6 +281,7 @@ Roe<void> ChannelMux::HandleOpenAck(ChannelFrame frame) {
     pending_open_data_.erase(frame.header.channel_id);
     NotifyTerminal(*channel, frame.open_ack_result == kOpenAckNoHandler ? "open rejected: no handler"
                                                                         : "open rejected");
+    channels_.erase(frame.header.channel_id);
     return Error("amp mux: open rejected");
   }
   channel->state = ChannelState::Open;
@@ -295,12 +314,14 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
     if (channel) {
       channel->state = ChannelState::Closed;
       NotifyTerminal(*channel, "peer_reset");
+      channels_.erase(frame.header.channel_id);
     }
     return Roe<void>();
   case ChannelFrameType::Close:
     if (channel) {
       channel->state = ChannelState::Closed;
       NotifyTerminal(*channel, "peer_close");
+      channels_.erase(frame.header.channel_id);
     }
     return Roe<void>();
   case ChannelFrameType::Data:
@@ -428,7 +449,9 @@ Roe<void> ChannelMux::ResetChannel(const uint32_t channel_id, const uint32_t cod
   frame.header.channel_seq = channel->tx_seq++;
   frame.reset_code = code;
   channel->state = ChannelState::Closed;
-  return SendFrame(frame, *channel);
+  auto sent = SendFrame(frame, *channel);
+  channels_.erase(channel_id);
+  return sent;
 }
 
 Roe<void> ChannelMux::CloseChannel(const uint32_t channel_id, std::string reason) {

@@ -69,6 +69,10 @@ public:
 
   /** OpenAck result: the responder has no handler for the channel's protocol. */
   static constexpr uint8_t kOpenAckNoHandler = 1;
+  /** OpenAck result: too many concurrent channels already open on this mux. */
+  static constexpr uint8_t kOpenAckTooManyChannels = 2;
+  /** OpenAck result: channel id parity does not match the opener's role (dual-open glare guard). */
+  static constexpr uint8_t kOpenAckBadIdParity = 3;
   /**
    * When true, an inbound OPEN is refused (OpenAck kOpenAckNoHandler, no channel record) unless a
    * protocol handler is registered for its protocol, a data handler was bound to its id before it
@@ -116,6 +120,7 @@ private:
   Roe<void> DispatchFrame(ChannelFrame frame);
   Roe<void> DeliverPayload(ChannelRecord& channel, std::vector<uint8_t> payload);
   Roe<void> HandleOpen(ChannelFrame frame);
+  Roe<void> RefuseOpen(const ChannelFrame& frame, uint8_t result);
   Roe<void> HandleOpenAck(ChannelFrame frame);
   void NotifyTerminal(ChannelRecord& channel, const char* reason);
 
