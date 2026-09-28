@@ -28,6 +28,8 @@ enum class LinkDropReason : uint8_t {
   Displaced,
   /** Product asked to drop it (RequestDropLink — e.g. stale link after the peer changed network). */
   Requested,
+  /** Local network changed and the link did not answer a probe within the grace (OnNetworkChanged). */
+  NetworkChanged,
 };
 
 inline const char* LinkDropReasonName(const LinkDropReason reason) {
@@ -54,6 +56,8 @@ inline const char* LinkDropReasonName(const LinkDropReason reason) {
     return "displaced";
   case LinkDropReason::Requested:
     return "requested";
+  case LinkDropReason::NetworkChanged:
+    return "network-changed";
   }
   return "unknown";
 }

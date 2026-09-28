@@ -858,6 +858,22 @@ void PeerLinkManager::ClearDialBackoff(const std::string& peer_key) {
   book_.ClearBackoff(peer_key);
 }
 
+size_t PeerLinkManager::OnNetworkChanged() {
+  std::lock_guard lock(strand_mu_);
+  const int64_t now = endpoint_.GetClock().NowMs();
+  book_.ClearAllBackoff();
+  size_t probed = 0;
+  table_.ForEach([&](PeerLink& link) {
+    if (link.Phase() != PeerLinkPhase::Connected || link.IsCarrierBacked() || !link.ConnectionOrNull()) {
+      return;
+    }
+    link.MarkSuspect(now);
+    (void)link.SendProbe(now);
+    ++probed;
+  });
+  return probed;
+}
+
 void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   book_.ClearBackoff(peer_key);
@@ -1190,6 +1206,17 @@ void PeerLinkManager::Tick() {
       return;
     }
     auto* conn = link.ConnectionOrNull();
+    if (conn && link.Phase() == PeerLinkPhase::Connected && link.SuspectSinceMs() != 0 && !conn->IsClosed()) {
+      const int64_t grace = book_.Config().network_change_grace.count();
+      if (conn->LastAuthRxMs() > link.SuspectSinceMs()) {
+        link.ClearSuspect();  // answered since the network changed
+      } else if (now - link.SuspectSinceMs() >= grace) {
+        evict.emplace_back(link.Handle(), LinkDropReason::NetworkChanged);
+        return;
+      } else if (now - link.LastProbeMs() >= std::max<int64_t>(grace / 4, 1)) {
+        (void)link.SendProbe(now);
+      }
+    }
     // Closed, or silent past its liveness window. Warm/hot links are no longer exempt: their
     // keepalives request an echo and widen the window to 5/2 × cadence, so silence past it
     // means the peer / path is dead (B25 + dead-peer detection, docs/KEEPALIVE.md).

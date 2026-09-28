@@ -505,6 +505,18 @@ PeerLink::LinkRoe PeerLink::SendKeepalive(const int64_t now_ms, const uint32_t i
   return LinkRoe();
 }
 
+PeerLink::LinkRoe PeerLink::SendProbe(const int64_t now_ms) {
+  if (IsCarrierBacked() || !connection_) {
+    return LinkRoe::error(Failure::Of(Err::TransportUnavailable, "amp link: probe unavailable"));
+  }
+  last_probe_ms_ = now_ms;
+  auto sent = connection_->SendProbe(now_ms);
+  if (!sent) {
+    return LinkRoe::error(WrapConnectionFailure(sent.error()));
+  }
+  return LinkRoe();
+}
+
 void PeerLink::RequestSessionRekey(std::function<void(Roe<void>)> on_complete) {
   if (phase_ != PeerLinkPhase::Connected || !mux_ || !session_) {
     if (on_complete) {

@@ -124,6 +124,21 @@ public:
   int64_t LastKeepaliveTxMs() const { return last_keepalive_tx_ms_; }
   void SetLastKeepaliveTxMs(int64_t ms) { last_keepalive_tx_ms_ = ms; }
 
+  /**
+   * Network changed under this link (PeerLinkManager::OnNetworkChanged): it is probed until an
+   * authenticated packet arrives after `SuspectSinceMs()`, and evicted if none does within the grace.
+   */
+  void MarkSuspect(int64_t now_ms) {
+    suspect_since_ms_ = now_ms;
+    last_probe_ms_ = 0;
+  }
+  void ClearSuspect() { suspect_since_ms_ = 0; }
+  /** 0 when not suspect. */
+  int64_t SuspectSinceMs() const { return suspect_since_ms_; }
+  int64_t LastProbeMs() const { return last_probe_ms_; }
+  /** Echo-requesting keepalive at the link's current cadence (ADP only). */
+  LinkRoe SendProbe(int64_t now_ms);
+
   void RequestSessionRekey(std::function<void(Roe<void>)> on_complete);
   void HandleSessionControl(std::span<const uint8_t> payload);
 
@@ -189,6 +204,8 @@ private:
   PeerLinkPhase phase_ = PeerLinkPhase::Handshaking;
   KeepaliveTier keepalive_tier_ = KeepaliveTier::None;
   int64_t last_keepalive_tx_ms_ = 0;
+  int64_t suspect_since_ms_ = 0;
+  int64_t last_probe_ms_ = 0;
   bool capability_exchange_started_ = false;
   bool capability_offer_sent_ = false;
   std::optional<CapabilityPayload> remote_capability_;

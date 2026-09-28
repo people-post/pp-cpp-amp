@@ -146,6 +146,8 @@ public:
   void MarkHot(const DialKey& peer_key);
   void ClearWarm(const DialKey& peer_key);
   void ClearDialBackoff(const DialKey& peer_key);
+  /** Local network changed: probe every ADP link, evict the silent ones fast (PeerLinkManager::OnNetworkChanged). Any thread. */
+  void NotifyNetworkChanged();
   void AbortInflightDial(const DialKey& peer_key);
 
   /**

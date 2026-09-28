@@ -71,6 +71,11 @@ struct PeerLinkConfig {
   std::chrono::milliseconds keepalive_hot_interval{20000};
   /** Outbound keepalive interval for MarkWarm links. */
   std::chrono::milliseconds keepalive_warm_interval{60000};
+  /**
+   * After OnNetworkChanged: a Connected ADP link with no authenticated RX within this long is
+   * evicted (reason network-changed); it is re-probed every quarter of it meanwhile.
+   */
+  std::chrono::milliseconds network_change_grace{2000};
   /** When set, derives remote PeerId string from authenticated MSH identity key. */
   std::function<std::string(const ByteVector& identity_public_key)> peer_id_from_identity;
 };
