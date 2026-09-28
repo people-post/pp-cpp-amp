@@ -1410,6 +1410,28 @@ TEST(DialBookTest, RegisterEndpointPromotesWithoutDroppingPrior) {
   EXPECT_EQ(book.Find("k")->candidates[1], a);
 }
 
+// Regression: a peer's self-reported listen_multiaddrs (IngestRemoteAddrs) must not repoint an
+// already-authenticated record's peer_id — a /p2p/<id> disagreeing with the authenticated id is
+// dropped, not adopted.
+TEST(DialBookTest, IngestRemoteAddrsDropsMismatchedPeerId) {
+  DialBook book({});
+  const std::string real_peer = "QmReal";
+  const std::string spoofed_peer = "QmSpoofed";
+  const std::string consistent = "/ip4/10.0.1.1/udp/1/adp/1.0.0/p2p/" + real_peer;
+  const std::string consistent2 = "/ip4/10.0.1.3/udp/3/adp/1.0.0/p2p/" + real_peer;
+  const std::string spoofed = "/ip4/10.0.1.2/udp/2/adp/1.0.0/p2p/" + spoofed_peer;
+
+  book.IngestRemoteAddrs(real_peer, {spoofed, consistent, consistent2});
+
+  const auto* rec = book.Find(real_peer);
+  ASSERT_NE(rec, nullptr);
+  EXPECT_EQ(rec->peer_id, real_peer);
+  for (const auto& candidate : rec->candidates) {
+    EXPECT_NE(candidate, spoofed) << "mismatched /p2p/ candidate must be discarded";
+  }
+  EXPECT_EQ(rec->candidates.size(), 2u);
+}
+
 TEST(MeshLinkTest, EnsureAssociationFallsBackToSecondCandidate) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();
