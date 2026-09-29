@@ -1280,15 +1280,21 @@ void PeerLinkManager::Tick() {
 
   // WhenChannelOpen waiters (product H1/H2 replacement).
   if (!channel_open_waiters_.empty()) {
-    std::vector<std::tuple<DialKey, uint32_t, int64_t, std::function<void(bool)>>> remaining;
+    std::vector<ChannelOpenWaiter> remaining;
     std::vector<std::function<void()>> completions;
-    for (auto& [key, ch, deadline, done] : channel_open_waiters_) {
-      auto* link = table_.FindByDialKey(key);
-      if (!link) {
-        link = table_.FindByPeerId(key);
+    for (auto& waiter : channel_open_waiters_) {
+      PeerLink* link = nullptr;
+      if (waiter.link.valid()) {
+        link = table_.FindLive(waiter.link);
+      } else {
+        link = table_.FindByDialKey(waiter.key);
+        if (!link) {
+          link = table_.FindByPeerId(waiter.key);
+        }
       }
+      const uint32_t ch = waiter.channel_id;
       bool open = false;
-      bool refused = false;
+      bool refused = waiter.link.valid() && !link;  // the bound link is gone; its channel went with it
       if (link && link->Mux() && link->Phase() == PeerLinkPhase::Connected && ch != 0) {
         const auto state = link->Mux()->State(ch);
         open = state == ChannelState::Open;
@@ -1297,15 +1303,15 @@ void PeerLinkManager::Tick() {
         refused = state == ChannelState::Closed;
       }
       if (open) {
-        if (done) {
-          completions.push_back([done = std::move(done)]() mutable { done(true); });
+        if (waiter.done) {
+          completions.push_back([done = std::move(waiter.done)]() mutable { done(true); });
         }
-      } else if (refused || (deadline > 0 && now >= deadline)) {
-        if (done) {
-          completions.push_back([done = std::move(done)]() mutable { done(false); });
+      } else if (refused || (waiter.deadline_ms > 0 && now >= waiter.deadline_ms)) {
+        if (waiter.done) {
+          completions.push_back([done = std::move(waiter.done)]() mutable { done(false); });
         }
       } else {
-        remaining.emplace_back(std::move(key), ch, deadline, std::move(done));
+        remaining.push_back(std::move(waiter));
       }
     }
     channel_open_waiters_ = std::move(remaining);
@@ -1745,7 +1751,13 @@ void PeerLinkManager::WhenChannelOpen(const DialKey& peer_key, uint32_t channel_
   std::lock_guard lock(strand_mu_);
   // deadline_ms is absolute Amp clock (Endpoint::GetClock().NowMs()). Prefer WhenChannelOpenIn
   // when converting from a steady_clock wall deadline — never pass steady epoch ms here.
-  channel_open_waiters_.emplace_back(peer_key, channel_id, deadline_ms, std::move(done));
+  channel_open_waiters_.push_back(ChannelOpenWaiter{peer_key, {}, channel_id, deadline_ms, std::move(done)});
+}
+
+void PeerLinkManager::WhenChannelOpenOnLink(const LinkHandle link, const uint32_t channel_id,
+                                            const int64_t deadline_ms, std::function<void(bool ok)> done) {
+  std::lock_guard lock(strand_mu_);
+  channel_open_waiters_.push_back(ChannelOpenWaiter{{}, link, channel_id, deadline_ms, std::move(done)});
 }
 
 void PeerLinkManager::WhenChannelOpenIn(const DialKey& peer_key, uint32_t channel_id,

@@ -230,6 +230,58 @@ TEST(MeshLinkTest, UnservedProtocolOpenIsRefusedPromptly) {
   EXPECT_NE(fixture->mgr_a->FindLink("bob"), nullptr) << "a refused channel does not cost the link";
 }
 
+// A channel opened on one link is awaited on that link: it opens there, and the link's drop fails
+// the wait at once (#235 — a call leg opened on the relay carrier while a dial holds the key).
+TEST(MeshLinkTest, WhenChannelOpenOnLinkFollowsTheBoundLink) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  fixture->mgr_b->SetProtocolHandler("/served/1", [](LinkHandle, const std::string&, uint32_t) {});
+  bool linked = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { linked = r.isOk(); });
+  fixture->PumpUntil([&] { return linked; });
+  ASSERT_TRUE(linked);
+  PeerLink* link = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(link, nullptr);
+  const LinkHandle handle = link->Handle();
+
+  const auto open_on_link = [&]() -> std::optional<uint32_t> {
+    std::optional<uint32_t> id;
+    bool done = false;
+    fixture->mgr_a->OpenChannelOnLink(*link, "/served/1", ControlJsonChannelPolicy(),
+                                      [&](PeerLinkManager::ChannelRoe ch) {
+                                        if (ch.isOk()) {
+                                          id = ch.value();
+                                        }
+                                        done = true;
+                                      });
+    fixture->PumpUntil([&] { return done; });
+    return id;
+  };
+  const int64_t far = fixture->mgr_a->GetEndpoint().GetClock().NowMs() + 30000;
+
+  const auto first = open_on_link();
+  ASSERT_TRUE(first.has_value());
+  std::optional<bool> opened;
+  fixture->mgr_a->WhenChannelOpenOnLink(handle, *first, far, [&](bool ok) { opened = ok; });
+  fixture->PumpUntil([&] { return opened.has_value(); }, 200);
+  ASSERT_TRUE(opened.has_value());
+  EXPECT_TRUE(*opened);
+
+  // A handle whose link is gone (same id, a later generation: never live) — the drop case.
+  const auto second = open_on_link();
+  ASSERT_TRUE(second.has_value());
+  const LinkHandle gone{handle.id, handle.generation + 1};
+  std::optional<bool> dropped_wait;
+  fixture->mgr_a->WhenChannelOpenOnLink(gone, *second, far, [&](bool ok) { dropped_wait = ok; });
+  fixture->PumpUntil([&] { return dropped_wait.has_value(); }, 200);
+  ASSERT_TRUE(dropped_wait.has_value()) << "waited for the deadline after the bound link dropped";
+  EXPECT_FALSE(*dropped_wait);
+}
+
 // Dogfood SIGSEGV: far end resets the carrier while the nested handshake is in flight. The failure
 // runs inside the nested link's carrier closed-callback → establish_cb_; the drop must be deferred to
 // Tick, not free the PeerLink (and the running callbacks) synchronously.

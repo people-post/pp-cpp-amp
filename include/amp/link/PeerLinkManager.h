@@ -170,6 +170,12 @@ public:
   void WhenChannelOpenIn(const DialKey& peer_key, uint32_t channel_id, std::chrono::milliseconds remaining,
                          std::function<void(bool ok)> done);
   /**
+   * WhenChannelOpen for a channel opened on one link (OpenChannelOnLink): polls that link's mux,
+   * not whichever link a key resolves to, and fails at once if the link is dropped.
+   */
+  void WhenChannelOpenOnLink(LinkHandle link, uint32_t channel_id, int64_t deadline_ms,
+                             std::function<void(bool ok)> done);
+  /**
    * Bind ChannelSession under strand lock; returns empty if link/mux missing.
    * `peer_key` may be a dial alias or authenticated PeerId.
    */
@@ -322,7 +328,16 @@ private:
   /** After a failed dial, try next DialBook candidate once the link is dropped (Tick). */
   std::vector<std::string> pending_candidate_retry_;
   std::vector<std::pair<std::string, std::string>> pending_alias_adopt_;
-  std::vector<std::tuple<DialKey, uint32_t, int64_t, std::function<void(bool)>>> channel_open_waiters_;
+  struct ChannelOpenWaiter {
+    /** Resolved by dial key, then PeerId — unless `link` is set. */
+    DialKey key;
+    /** Bound to this link: its drop fails the wait (the channel lives on its mux only). */
+    LinkHandle link;
+    uint32_t channel_id = 0;
+    int64_t deadline_ms = 0;
+    std::function<void(bool)> done;
+  };
+  std::vector<ChannelOpenWaiter> channel_open_waiters_;
 
   std::recursive_mutex owned_mu_;
   std::recursive_mutex& strand_mu_;
