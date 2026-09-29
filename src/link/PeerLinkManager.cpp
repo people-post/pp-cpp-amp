@@ -647,6 +647,7 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
   params.key = PreSessionPeerKey();
   params.mint_id = true;
   params.peer = ep_it->second.endpoint;
+  params.reduce_rtx_until_authenticated = true;
   auto opened = endpoint_.Open(params);
   // Same-ms mint collision (pre-seq fix) or rare id clash — remint once.
   if (!opened && opened.error().message.find("assoc already open") != std::string::npos) {
@@ -919,6 +920,20 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
   std::lock_guard lock(strand_mu_);
   if (table_.size() >= book_.Config().max_links) {
+    connection->Close();
+    return;
+  }
+  // Pending (Handshaking) inbound links have their own quota, separate from max_links: a flood
+  // of cheap forged-source connection attempts must not fill the whole table before any of them
+  // authenticates, starving outbound dials and already-Connected links of a slot.
+  size_t pending_inbound = 0;
+  table_.ForEach([&](PeerLink& link) {
+    if (!link.IsOutbound() && link.Phase() == PeerLinkPhase::Handshaking) {
+      ++pending_inbound;
+    }
+  });
+  if (pending_inbound >= book_.Config().max_pending_inbound) {
+    connection->Close();
     return;
   }
   static constexpr char kHex[] = "0123456789abcdef";
@@ -928,6 +943,7 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
     peer_key.push_back(kHex[byte & 0x0f]);
   }
   if (table_.ContainsDialKey(peer_key)) {
+    connection->Close();
     return;
   }
   auto link = std::make_unique<PeerLink>(peer_key, std::string{}, false, std::move(connection), local_identity_,
@@ -1153,9 +1169,10 @@ void PeerLinkManager::Tick() {
   const int64_t dial_attempt_ms = book_.Config().dial_attempt_timeout.count();
   std::vector<LinkHandle> timed_out;
   table_.ForEach([&](PeerLink& link) {
-    if (link.IsCarrierBacked()) {
-      return;
-    }
+    // Nested (carrier-backed) handshakes share this same budget: previously excluded
+    // entirely, so a stalled nested handshake (peer never finishes MSH) never timed out.
+    // book_.Find below just misses for a carrier's provisional key, leaving the full
+    // dial_timeout budget, which is what a nested handshake should get anyway.
     const auto phase = link.Phase();
     if (phase != PeerLinkPhase::Handshaking && phase != PeerLinkPhase::Dialing) {
       return;
@@ -1188,6 +1205,11 @@ void PeerLinkManager::Tick() {
 
   std::vector<std::pair<LinkHandle, LinkDropReason>> evict;
   table_.ForEach([&](PeerLink& link) {
+    if (auto* mux = link.Mux()) {
+      // Sweeps stale FRAG partial-assembly state (Adv08 / N12) — production code never called
+      // this before, so partials only ever left via a completed assembly.
+      mux->Tick(now);
+    }
     if (link.IsCarrierBacked()) {
       // A closed carrier ends the nested link whatever phase its close left it in: a Connected
       // link's closed callback drops it to Backoff, which nothing else evicts (it lingered

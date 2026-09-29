@@ -29,6 +29,15 @@ struct OpenParams {
   size_t reliable_window = kDefaultReliableWindow;
   int64_t rtx_interval_ms = kDefaultRtxIntervalMs;
   int max_rtx = kDefaultMaxRtx;
+  /**
+   * Pre-auth hardening, lifted by UpgradeBinder once the association is real: retransmits cap
+   * at kPreAuthMaxRtx instead of max_rtx (reflection amplification), and inbound Close /
+   * Keepalive are ignored (both are trivially forgeable pre-auth — the binder key is still the
+   * well-known pre-session key). Set by Endpoint for accepted connections and by
+   * PeerLinkManager for its own outbound dials; explicit Open() calls (tests, and any other
+   * direct L1 use) are unaffected.
+   */
+  bool reduce_rtx_until_authenticated = false;
 };
 
 class Connection : public std::enable_shared_from_this<Connection> {
@@ -56,6 +65,11 @@ public:
   bool PeerUnreachable() const { return peer_unreachable_; }
 
   void SetPeerEndpoint(IpEndpoint peer);
+  /**
+   * Also lifts the pre-auth Reliable retransmit cap (see kPreAuthMaxRtx): a forged ClientHello
+   * cannot make an unauthenticated association resend the same reflected packet 21x toward a
+   * spoofed victim address.
+   */
   void UpgradeBinder(PeerKey key);
   IpEndpoint PeerEndpoint() const { return peer_; }
   /** Amp-clock ms of the last authenticated RX; 0 if none yet. */
@@ -104,6 +118,8 @@ public:
   void HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram, int64_t now_ms);
 
   const HmacBinder& Binder() const { return binder_; }
+  /** Out-of-order Reliable payloads currently held awaiting the gap to fill. */
+  size_t ReliableHoldSizeForTest() const { return rx_rel_hold_.size(); }
 
 private:
   Connection(Endpoint& endpoint, OpenParams params);
@@ -126,6 +142,14 @@ private:
   bool closed_ = false;
   bool peer_closed_ = false;
   bool peer_unreachable_ = false;
+  /** params_.max_rtx to restore once UpgradeBinder proves the association is real (post-MSH). */
+  int authenticated_max_rtx_ = 0;
+  /**
+   * Set by UpgradeBinder. Before it, the binder key is the well-known pre-session key (anyone
+   * can forge a valid HMAC), so Close / Keepalive — which can tear down or degrade the
+   * association — are ignored rather than trusted.
+   */
+  bool authenticated_ = false;
 
   uint32_t tx_seq_be_ = 0;
   uint32_t tx_seq_rel_ = 0;

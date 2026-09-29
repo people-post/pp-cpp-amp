@@ -27,6 +27,14 @@ inline constexpr size_t kDefaultReplayWindow = 64;
 inline constexpr size_t kDefaultReliableWindow = 128;
 inline constexpr int64_t kDefaultRtxIntervalMs = 50;
 inline constexpr int kDefaultMaxRtx = 20;
+/**
+ * Reliable retransmit cap before the association authenticates (UpgradeBinder). A forged
+ * ClientHello from a spoofed source gets our Reliable ServerHello resent this many extra times
+ * toward the victim address before we give up — kDefaultMaxRtx would be a ~21x reflection
+ * amplification; this keeps it small while still tolerating a lost packet or two during a real
+ * handshake.
+ */
+inline constexpr int kPreAuthMaxRtx = 2;
 /** Liveness window for a connection with no keepalive cadence on either side (cold). */
 inline constexpr int64_t kAliveTimeoutMs = 5'000;
 /** Keepalive payload: u32 BE sender keepalive interval ms (0 = stopped) + u8 flags. */
@@ -36,6 +44,14 @@ inline constexpr uint8_t kKeepaliveFlagEchoRequest = 0x01;
 /** Liveness window = max(kAliveTimeoutMs, interval × 5 / 2): ~2 keepalives may be lost. */
 inline constexpr int64_t kKeepaliveLivenessNumerator = 5;
 inline constexpr int64_t kKeepaliveLivenessDenominator = 2;
+/**
+ * Cap on a peer-announced keepalive interval. LivenessWindowMs scales with it, so an
+ * unbounded peer claim (up to 0xFFFFFFFF ms) would let a peer stretch how long it looks
+ * "alive" after going silent, well past any real keepalive config.
+ */
+inline constexpr uint32_t kMaxPeerKeepaliveIntervalMs = 600'000; // 10 minutes
+/** Endpoint::Pump's default per-call datagram budget — see its doc comment. */
+inline constexpr size_t kDefaultPumpBudget = 256;
 
 enum class QosClass : uint8_t {
   BestEffort = 0,

@@ -166,6 +166,12 @@ public:
   bool CapabilityOfferSent() const { return capability_offer_sent_; }
   void MarkCapabilityOfferSent() { capability_offer_sent_ = true; }
 
+  /** Exercises the MshChunk reassembly bound directly, without a live handshake. */
+  Roe<std::optional<std::vector<uint8_t>>> PushMshChunkForTest(MshMessageType type, uint16_t index, uint16_t count,
+                                                                std::span<const uint8_t> chunk) {
+    return PushMshChunk(type, index, count, chunk);
+  }
+
 private:
   Roe<void> SendAdp(std::vector<uint8_t> payload, adp::QosClass qos);
   LinkRoe SendAdpLink(std::vector<uint8_t> payload, adp::QosClass qos);
@@ -220,6 +226,7 @@ private:
   MshMessageType msh_chunk_type_{};
   uint16_t msh_chunk_count_ = 0;
   std::vector<std::vector<uint8_t>> msh_chunk_parts_;
+  size_t msh_chunk_bytes_ = 0;
 
   std::function<void(Roe<void>)> rekey_cb_;
   int64_t handshake_started_ms_ = 0;

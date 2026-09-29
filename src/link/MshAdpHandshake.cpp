@@ -198,6 +198,9 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
       if (auto verified = VerifyPayload(*parsed); !verified) {
         return Fail(verified.error().message);
       }
+      if (parsed->static_kem_public_key != remote_hello_->kem_public_key) {
+        return Fail("amp msh adp: client payload kem key does not match client hello");
+      }
       remote_payload_ = std::move(*parsed);
       AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
 
@@ -287,6 +290,9 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
     }
     if (auto verified = VerifyPayload(*parsed); !verified) {
       return Fail(verified.error().message);
+    }
+    if (parsed->static_kem_public_key != remote_hello_->kem_public_key) {
+      return Fail("amp msh adp: server payload kem key does not match server hello");
     }
     remote_payload_ = std::move(*parsed);
     AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));

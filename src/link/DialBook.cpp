@@ -208,7 +208,15 @@ void DialBook::IngestRemoteAddrs(const std::string& peer_id, const std::vector<s
     merged = existing->candidates;
   }
   for (const auto& ma : addrs) {
-    if (!ParseAdpMultiaddr(ma)) {
+    auto parsed = ParseAdpMultiaddr(ma);
+    if (!parsed) {
+      continue;
+    }
+    // These addresses are the peer's own self-reported "here's where else to reach me" —
+    // unauthenticated. A /p2p/<id> that disagrees with the identity this session already
+    // authenticated (peer_id) must not be trusted, or RegisterEndpoints below would let it
+    // silently repoint this record's peer_id at whatever the peer claims.
+    if (!parsed->peer_id.empty() && parsed->peer_id != peer_id) {
       continue;
     }
     if (std::find(merged.begin(), merged.end(), ma) != merged.end()) {

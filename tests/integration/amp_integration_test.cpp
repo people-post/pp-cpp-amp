@@ -652,6 +652,81 @@ TEST_F(AmpIntegrationTest, AdversarialMaxLinksAdv02) {
   EXPECT_EQ(h.CountLinks(HarnessSide::B), 1);
 }
 
+// Regression: a flood of half-open inbound associations (forged sources, never completing MSH)
+// must not fill the whole link table — max_pending_inbound reserves room for real dials/links.
+TEST_F(AmpIntegrationTest, AdversarialPendingInboundQuotaAdv10) {
+  pp::amp::PeerLinkConfig cfg = AmpMeshTestLinkConfig();
+  cfg.max_links = 50;
+  cfg.max_pending_inbound = 3;
+  cfg.dial_timeout = std::chrono::milliseconds(200);
+  auto created = MakeAmpIntegrationHarness(cfg);
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  h.ep_b->SetAcceptEnabled(true);
+
+  for (int i = 0; i < 10; ++i) {
+    pp::adp::OpenParams params;
+    params.key = pp::amp::PreSessionPeerKey();
+    params.mint_id = true;
+    params.peer = h.addr_b;
+    h.AdvanceMs(1);
+    auto opened = h.ep_a->Open(params);
+    ASSERT_TRUE(static_cast<bool>(opened));
+    // Authenticate the association (HMAC binder) without ever sending MSH ClientHello, so it
+    // stays Handshaking on B rather than failing outright.
+    (void)(*opened)->SendKeepalive(h.clock->NowMs(), 0);
+  }
+  h.PumpBoth();
+
+  EXPECT_LE(h.CountLinks(HarnessSide::B), cfg.max_pending_inbound);
+
+  // Let the flood's half-open handshakes time out (same budget as any other Handshaking link) so
+  // the quota is not a permanent jam, then confirm a real dial still gets a table slot.
+  h.AdvanceMs(250);
+  h.PumpBoth();
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
+  bool associated = false;
+  bool done = false;
+  std::string err;
+  h.mgr_a().EnsureAssociation("b", [&](pp::amp::PeerLinkManager::LinkRoe result) {
+    associated = result.isOk();
+    if (!result) {
+      err = result.error().message;
+    }
+    done = true;
+  });
+  h.PumpUntil([&] { return done; });
+  EXPECT_TRUE(done) << "dial never completed; table size b=" << h.CountLinks(HarnessSide::B)
+                    << " a=" << h.CountLinks(HarnessSide::A);
+  EXPECT_TRUE(associated) << err;
+}
+
+// Regression: an MshChunk claiming a chunk count above the largest real MSH message must be
+// rejected outright, not accepted into a peer-sized std::vector<vector<uint8_t>>. Calls the
+// reassembler directly (PushMshChunkForTest) since the bound is on the count itself, not on any
+// externally observable handshake behavior (a corrupted chunk stream fails either way).
+TEST_F(AmpIntegrationTest, AdversarialMshChunkCountBombAdv11) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  h.ep_b->SetAcceptEnabled(true);
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
+  h.mgr_a().EnsureAssociation("b", {});
+  h.PumpUntil([&] { return h.mgr_a().FindLink("b") != nullptr; });
+  auto* link = h.mgr_a().FindLink("b");
+  ASSERT_NE(link, nullptr);
+
+  const uint16_t bad_count = pp::amp::kMaxMshChunkCount + 1;
+  const std::vector<uint8_t> chunk = {0xAB, 0xCD};
+  auto rejected = link->PushMshChunkForTest(pp::amp::MshMessageType::ClientHello, 0, bad_count, chunk);
+  EXPECT_FALSE(static_cast<bool>(rejected));
+
+  // A within-limit count still reassembles normally afterwards (the bound didn't wedge state).
+  auto ok_single = link->PushMshChunkForTest(pp::amp::MshMessageType::ClientHello, 0, 1, chunk);
+  ASSERT_TRUE(static_cast<bool>(ok_single));
+  ASSERT_TRUE(ok_single->has_value());
+}
+
 TEST_F(AmpIntegrationTest, AdversarialGarbageMshMidHandshakeAdv03) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));
@@ -740,6 +815,36 @@ TEST_F(AmpIntegrationTest, AdversarialFragPartialBombAdv08) {
   h.AdvanceMs(pp::amp::kDefaultFragAssemblyTimeoutMs + 100);
   h.PumpBudget(5);
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
+// Regression: dialing a peer_id whose multiaddr resolves to a *different* peer's socket must
+// fail the association instead of silently rebinding to whoever answers.
+TEST_F(AmpIntegrationTest, AdversarialDialIdentityMismatchAdv09) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  h.ep_b->SetAcceptEnabled(true);
+
+  auto wrong_ma = pp::amp::FormatAdpMultiaddr(h.addr_b, "not-actually-" + h.peer_id_b);
+  ASSERT_TRUE(static_cast<bool>(wrong_ma));
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", *wrong_ma)));
+
+  bool done = false;
+  bool ok = true;
+  pp::amp::PeerLinkManager::Err err_code = pp::amp::PeerLinkManager::Err::Ok;
+  h.mgr_a().EnsureAssociation("b", [&](pp::amp::PeerLinkManager::LinkRoe result) {
+    ok = result.isOk();
+    if (!result) {
+      err_code = result.error().GetCode();
+    }
+    done = true;
+  });
+  h.PumpUntil([&] { return done; });
+  EXPECT_TRUE(done);
+  EXPECT_FALSE(ok);
+  EXPECT_EQ(err_code, pp::amp::PeerLinkManager::Err::HandshakeFailed);
+  EXPECT_FALSE(h.mgr_a().IsConnected("b"));
+  EXPECT_EQ(h.mgr_a().FindLinkByPeerId(h.peer_id_b), nullptr);
 }
 
 TEST_F(AmpIntegrationTest, ColdLinkEvictedAfterIdle) {

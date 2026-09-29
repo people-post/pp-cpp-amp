@@ -27,6 +27,14 @@ struct LaneAckFields {
 };
 
 inline constexpr size_t kMaxMshBodyPerDatagram = 900;
+/**
+ * Largest real MSH v1 message (ClientPayload/ServerPayload: ML-KEM ciphertext + ML-DSA identity
+ * key + signature + framing) is ~7.5 KiB; this leaves headroom without letting a peer-declared
+ * chunk count reserve an unbounded number of assembly slots.
+ */
+inline constexpr size_t kMaxMshMessageBytes = 12'288;
+inline constexpr uint16_t kMaxMshChunkCount =
+    static_cast<uint16_t>((kMaxMshMessageBytes + kMaxMshBodyPerDatagram - 1) / kMaxMshBodyPerDatagram);
 
 class AmpAdpCarrier {
 public:
