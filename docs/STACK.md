@@ -24,6 +24,8 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
   (OpenAck `kOpenAckNoHandler`) — the opener's `WhenChannelOpen` fails at once instead of seeing an
   open channel whose requests vanish. Off by default (raw muxes / tests bind by channel id).
   `WhenChannelOpen` also fails as soon as a connected link reports the channel Closed.
+  A channel opened with `OpenChannelOnLink` is awaited with `WhenChannelOpenOnLink` (polls that
+  link's mux, not whatever the key resolves to; fails at once when the link is gone).
 - Nested carrier: `EstablishNestedOverCarrier`, `EnableNestedCarrierAccept`
 - Drive: `Start` / `Stop`, `Drive` / `Pump` / `Tick`, `PostToIo`, `WithIoLock`
 

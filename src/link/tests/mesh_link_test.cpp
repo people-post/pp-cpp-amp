@@ -230,6 +230,58 @@ TEST(MeshLinkTest, UnservedProtocolOpenIsRefusedPromptly) {
   EXPECT_NE(fixture->mgr_a->FindLink("bob"), nullptr) << "a refused channel does not cost the link";
 }
 
+// A channel opened on one link is awaited on that link: it opens there, and the link's drop fails
+// the wait at once (#235 — a call leg opened on the relay carrier while a dial holds the key).
+TEST(MeshLinkTest, WhenChannelOpenOnLinkFollowsTheBoundLink) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  fixture->mgr_b->SetProtocolHandler("/served/1", [](LinkHandle, const std::string&, uint32_t) {});
+  bool linked = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { linked = r.isOk(); });
+  fixture->PumpUntil([&] { return linked; });
+  ASSERT_TRUE(linked);
+  PeerLink* link = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(link, nullptr);
+  const LinkHandle handle = link->Handle();
+
+  const auto open_on_link = [&]() -> std::optional<uint32_t> {
+    std::optional<uint32_t> id;
+    bool done = false;
+    fixture->mgr_a->OpenChannelOnLink(*link, "/served/1", ControlJsonChannelPolicy(),
+                                      [&](PeerLinkManager::ChannelRoe ch) {
+                                        if (ch.isOk()) {
+                                          id = ch.value();
+                                        }
+                                        done = true;
+                                      });
+    fixture->PumpUntil([&] { return done; });
+    return id;
+  };
+  const int64_t far = fixture->mgr_a->GetEndpoint().GetClock().NowMs() + 30000;
+
+  const auto first = open_on_link();
+  ASSERT_TRUE(first.has_value());
+  std::optional<bool> opened;
+  fixture->mgr_a->WhenChannelOpenOnLink(handle, *first, far, [&](bool ok) { opened = ok; });
+  fixture->PumpUntil([&] { return opened.has_value(); }, 200);
+  ASSERT_TRUE(opened.has_value());
+  EXPECT_TRUE(*opened);
+
+  // A handle whose link is gone (same id, a later generation: never live) — the drop case.
+  const auto second = open_on_link();
+  ASSERT_TRUE(second.has_value());
+  const LinkHandle gone{handle.id, handle.generation + 1};
+  std::optional<bool> dropped_wait;
+  fixture->mgr_a->WhenChannelOpenOnLink(gone, *second, far, [&](bool ok) { dropped_wait = ok; });
+  fixture->PumpUntil([&] { return dropped_wait.has_value(); }, 200);
+  ASSERT_TRUE(dropped_wait.has_value()) << "waited for the deadline after the bound link dropped";
+  EXPECT_FALSE(*dropped_wait);
+}
+
 // Dogfood SIGSEGV: far end resets the carrier while the nested handshake is in flight. The failure
 // runs inside the nested link's carrier closed-callback → establish_cb_; the drop must be deferred to
 // Tick, not free the PeerLink (and the running callbacks) synchronously.
@@ -1609,6 +1661,132 @@ TEST(DialBookTest, IngestRemoteAddrsDropsMismatchedPeerId) {
     EXPECT_NE(candidate, spoofed) << "mismatched /p2p/ candidate must be discarded";
   }
   EXPECT_EQ(rec->candidates.size(), 2u);
+}
+
+// pp-browser #235: a peer's self-reported link-local / loopback / unspecified addresses are only
+// meaningful on its own host or link. Ingested, a stale one (a Mac's old USB-tether 169.254
+// address) became the first dial candidate and every call-media dial timed out on it.
+TEST(DialBookTest, IngestRemoteAddrsDropsUndialableAddresses) {
+  DialBook book({});
+  const std::string peer = "QmReal";
+  const std::string link_local_v4 = "/ip4/169.254.132.227/udp/55777/adp/1.0.0/p2p/" + peer;
+  const std::string link_local_v6 = "/ip6/fe80::1/udp/55777/adp/1.0.0/p2p/" + peer;
+  const std::string loopback = "/ip4/127.0.0.1/udp/55777/adp/1.0.0/p2p/" + peer;
+  const std::string unspecified = "/ip4/0.0.0.0/udp/55777/adp/1.0.0/p2p/" + peer;
+  const std::string lan = "/ip4/192.168.1.20/udp/55777/adp/1.0.0/p2p/" + peer;
+  const std::string global_v6 = "/ip6/2001:db8::20/udp/55777/adp/1.0.0/p2p/" + peer;
+
+  book.IngestRemoteAddrs(peer, {link_local_v4, link_local_v6, loopback, unspecified, lan, global_v6});
+
+  const auto* rec = book.Find(peer);
+  ASSERT_NE(rec, nullptr);
+  EXPECT_EQ(rec->candidates, (std::vector<std::string>{lan, global_v6}));
+
+  DialBook only_undialable({});
+  only_undialable.IngestRemoteAddrs(peer, {link_local_v4, loopback});
+  EXPECT_EQ(only_undialable.Find(peer), nullptr) << "nothing dialable: no record";
+}
+
+// pp-browser #235 (Mac side): a dial still in flight under a peer's PeerId key must not hide
+// another Connected link to that peer — IsConnected falls back to the PeerId lookup.
+TEST(MeshLinkTest, IsConnectedSeesAConnectedLinkPastAPendingDialUnderTheKey) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  const std::string key = "QmBob";
+  auto dead = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 1, 901), key);
+  ASSERT_TRUE(static_cast<bool>(dead));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint(key, *dead)));
+  fixture->mgr_a->EnsureAssociation(key, [](PeerLinkManager::LinkRoe) {});
+  ASSERT_NE(fixture->mgr_a->FindLink(key), nullptr) << "the dial holds the key";
+
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
+  for (int i = 0; i < 200 && !associated; ++i) {
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+  }
+  ASSERT_TRUE(associated);
+  ASSERT_NE(fixture->mgr_a->FindLink(key)->Phase(), PeerLinkPhase::Connected) << "the key still names the dial";
+  EXPECT_TRUE(fixture->mgr_a->IsConnected(key));
+}
+
+// pp-browser #235 (phone side): the reach dials a peer's PeerId key, pivots to a relay, and the
+// nested carrier link takes that key (A024). The ADP dial's first candidate then times out and its
+// queued retry must not dial over the Connected carrier — it used to take the key and, failing,
+// erase it, so every call-media OpenChannel re-dialed the stale candidates.
+TEST(MeshLinkTest, CandidateRetryDoesNotDialOverAConnectedCarrierUnderTheKey) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_b->EnableNestedCarrierAccept(true);
+  fixture->mgr_a->Book().Config().dial_attempt_timeout = std::chrono::milliseconds(30);
+  fixture->mgr_a->Book().Config().dial_timeout = std::chrono::milliseconds(5000);
+
+  // The reach's direct dial: two dead candidates under the PeerId key.
+  const std::string key = "QmBob";
+  auto dead1 = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 1, 901), key);
+  auto dead2 = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 2, 902), key);
+  ASSERT_TRUE(dead1 && dead2);
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoints(key, {*dead1, *dead2})));
+  std::optional<bool> dial_ok;
+  fixture->mgr_a->EnsureAssociation(key, [&](PeerLinkManager::LinkRoe result) { dial_ok = result.isOk(); });
+
+  // The relay: a link to bob under another key, and a carrier channel over it.
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
+  for (int i = 0; i < 200 && !associated; ++i) {  // Pump only: keep the dead dial's first attempt pending
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+  }
+  ASSERT_TRUE(associated);
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", kAmpCircuitCarrierProtocolId, CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  const auto carrier_open = [&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  };
+  for (int i = 0; i < 40 && !carrier_open(); ++i) {
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+  }
+  ASSERT_TRUE(carrier_open());
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+  bool nested_ok = false;
+  fixture->mgr_a->EstablishNestedOverCarrier(key, carrier, true,
+                                             [&](PeerLinkManager::LinkRoe result) { nested_ok = result.isOk(); });
+  for (int i = 0; i < 200 && !nested_ok; ++i) {
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+  }
+  ASSERT_TRUE(nested_ok);
+  ASSERT_TRUE(fixture->mgr_a->FindLink(key)->IsCarrierBacked()) << "the carrier holds the key";
+
+  // The dead dial's first attempt times out; its candidate retry runs at the next Tick.
+  for (int i = 0; i < 50; ++i) {
+    fixture->clock->Advance(10);
+    fixture->PumpBoth();
+  }
+  auto* holder = fixture->mgr_a->FindLink(key);
+  ASSERT_NE(holder, nullptr) << "the key must still name a link";
+  EXPECT_TRUE(holder->IsCarrierBacked()) << "the retry did not take the key";
+  EXPECT_EQ(holder->Phase(), PeerLinkPhase::Connected);
+  EXPECT_TRUE(fixture->mgr_a->IsConnected(key));
+  ASSERT_TRUE(dial_ok.has_value()) << "the reach's association completed";
+  EXPECT_TRUE(*dial_ok) << "on the Connected carrier, not a failed re-dial";
 }
 
 TEST(MeshLinkTest, EnsureAssociationFallsBackToSecondCandidate) {

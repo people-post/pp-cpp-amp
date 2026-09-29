@@ -191,6 +191,32 @@ void DialBook::EraseExpiredBackoff(const DialKey& peer_key, std::chrono::steady_
   }
 }
 
+namespace {
+
+/** False for link-local (169.254/16, fe80::/10), loopback and unspecified addresses. */
+bool IsRemotelyDialable(const pp::adp::IpEndpoint& ep) {
+  const auto& a = ep.addr;
+  if (ep.family == pp::adp::IpEndpoint::Family::V4) {
+    if (a[0] == 169 && a[1] == 254) {
+      return false;
+    }
+    if (a[0] == 127 || (a[0] == 0 && a[1] == 0 && a[2] == 0 && a[3] == 0)) {
+      return false;
+    }
+    return true;
+  }
+  if (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) {
+    return false;
+  }
+  bool all_zero = true;
+  for (size_t i = 0; i < 15; ++i) {
+    all_zero = all_zero && a[i] == 0;
+  }
+  return !(all_zero && (a[15] == 0 || a[15] == 1));
+}
+
+} // namespace
+
 void DialBook::IngestRemoteAddrs(const std::string& peer_id, const std::vector<std::string>& addrs) {
   if (peer_id.empty()) {
     return;
@@ -217,6 +243,12 @@ void DialBook::IngestRemoteAddrs(const std::string& peer_id, const std::vector<s
     // authenticated (peer_id) must not be trusted, or RegisterEndpoints below would let it
     // silently repoint this record's peer_id at whatever the peer claims.
     if (!parsed->peer_id.empty() && parsed->peer_id != peer_id) {
+      continue;
+    }
+    // A peer's link-local / loopback / unspecified addresses are only meaningful on its own host
+    // or link (an IPv6 scope id is the peer's own interface index): never dialable from here, and
+    // a stale one (e.g. a USB-tether 169.254 address) would be tried first and time out.
+    if (!IsRemotelyDialable(parsed->endpoint)) {
       continue;
     }
     if (std::find(merged.begin(), merged.end(), ma) != merged.end()) {
