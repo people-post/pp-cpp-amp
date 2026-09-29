@@ -224,6 +224,16 @@ public:
    */
   PeerLink* FindConnectedLinkByPeerId(const std::string& peer_id, TransportClass transport);
   PeerLink* FindConnectedInboundLink();
+  /**
+   * Peer lookup, as opposed to dial state: the link traffic "to `peer_key`" should use. The key's
+   * own link when Connected; else the best Connected link to the key's peer (ADP, then carrier) —
+   * a dial in flight or backing off under the key does not hide a live link (#235). Null when
+   * nothing to that peer is Connected. OpenChannel, WhenChannelOpen, BindChannel, IsConnected and
+   * GetLinkSnapshot resolve through this; dial state (EnsureAssociation, DropLink, backoff) stays
+   * on the key's own link.
+   */
+  PeerLink* ResolveConnectedLink(const std::string& peer_key);
+  const PeerLink* ResolveConnectedLink(const std::string& peer_key) const;
 
   size_t CountConnectedLinksForPeerId(const std::string& peer_id) const;
   size_t CountLinks() const;
@@ -270,6 +280,10 @@ private:
   PeerLink* FindAdpLinkForKey(const DialKey& key);
   PeerLink* FindNestedLinkForKey(const DialKey& key);
   PeerLink* FindConnectedLinkForPeerId(const std::string& peer_id);
+  /** The PeerId behind a dial key: its link's authenticated peer, the book's /p2p id, or the key. */
+  std::string PeerIdForKeyLocked(const std::string& peer_key) const;
+  /** ResolveConnectedLink, else the key's own link (a dial in flight) — for channel waits / binds. */
+  PeerLink* ResolveLinkLocked(const std::string& peer_key);
   PeerLink* FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id);
   PeerLink* ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const;
   void DropLink(const std::string& peer_key, LinkDropReason reason);
@@ -329,7 +343,7 @@ private:
   std::vector<std::string> pending_candidate_retry_;
   std::vector<std::pair<std::string, std::string>> pending_alias_adopt_;
   struct ChannelOpenWaiter {
-    /** Resolved by dial key, then PeerId — unless `link` is set. */
+    /** Resolved like ResolveConnectedLink (else the key's dial) — unless `link` is set. */
     DialKey key;
     /** Bound to this link: its drop fails the wait (the channel lives on its mux only). */
     LinkHandle link;
