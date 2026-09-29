@@ -33,6 +33,7 @@ Roe<std::shared_ptr<Connection>> Endpoint::AcceptOrCreate(const AssocId& id, con
   p.id = id;
   p.mint_id = false;
   p.peer = peer;
+  p.reduce_rtx_until_authenticated = true;
   return Open(std::move(p));
 }
 
@@ -50,8 +51,8 @@ Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::span<const uint8_t> dat
   return io_->SendTo(peer, datagram);
 }
 
-void Endpoint::Pump() {
-  for (;;) {
+void Endpoint::Pump(const size_t budget) {
+  for (size_t n = 0; n < budget; ++n) {
     auto got = io_->RecvFrom();
     if (!got) {
       break;
@@ -98,6 +99,9 @@ void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> d
     return;
   }
   const bool is_new = Find(id) == nullptr;
+  if (is_new && conns_.size() >= max_accepted_conns_) {
+    return;
+  }
   // Skew check before creating an association.
   const int64_t now = clock_->NowMs();
   const uint32_t now_trunc = static_cast<uint32_t>(static_cast<uint64_t>(now) & 0xffffffffull);

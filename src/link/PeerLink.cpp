@@ -11,6 +11,11 @@
 
 namespace pp::amp {
 
+namespace {
+/** Cap on lane_backlog_: frames the CarrierLane delivered before the mux exists to drain them. */
+constexpr size_t kMaxLaneBacklogFrames = 256;
+} // namespace
+
 PeerLink::Failure PeerLink::WrapConnectionFailure(const adp::Connection::Failure& child) {
   switch (child.GetCode()) {
   case adp::Connection::Err::Closed:
@@ -236,6 +241,11 @@ void PeerLink::HandleLaneFrame(const AmpAdpPayloadKind kind, const std::span<con
   auto received = lane_->OnData(data->first, data->second);
   (void)SendCarrierWire(AmpAdpCarrier::EncodeLaneAck(received.ack));
   for (auto& inner : received.deliver) {
+    // Bounded independent of the mux existing yet: the peer may still be handshaking, and
+    // nothing drains this backlog before Connected (FlushLaneBacklog no-ops until then).
+    if (lane_backlog_.size() >= kMaxLaneBacklogFrames) {
+      break;
+    }
     lane_backlog_.push_back(std::move(inner));
   }
   FlushLaneBacklog();
@@ -285,15 +295,25 @@ Roe<std::optional<std::vector<uint8_t>>> PeerLink::PushMshChunk(const MshMessage
   if (count == 0 || index >= count) {
     return Error("amp link: bad msh chunk meta");
   }
+  // A peer-declared count backs a msh_chunk_parts_.assign(count, {}) below: bound it to what the
+  // largest real MSH message could ever need, not the full uint16_t range.
+  if (count > kMaxMshChunkCount) {
+    return Error("amp link: msh chunk count exceeds limit");
+  }
   if (msh_chunk_count_ == 0) {
     msh_chunk_type_ = type;
     msh_chunk_count_ = count;
     msh_chunk_parts_.assign(count, {});
+    msh_chunk_bytes_ = 0;
   }
   if (type != msh_chunk_type_ || count != msh_chunk_count_) {
     return Error("amp link: msh chunk stream mismatch");
   }
   if (msh_chunk_parts_[index].empty()) {
+    if (msh_chunk_bytes_ + chunk.size() > kMaxMshMessageBytes) {
+      return Error("amp link: msh chunk stream too large");
+    }
+    msh_chunk_bytes_ += chunk.size();
     msh_chunk_parts_[index].assign(chunk.begin(), chunk.end());
   }
   for (const auto& part : msh_chunk_parts_) {
@@ -307,6 +327,7 @@ Roe<std::optional<std::vector<uint8_t>>> PeerLink::PushMshChunk(const MshMessage
   }
   msh_chunk_count_ = 0;
   msh_chunk_parts_.clear();
+  msh_chunk_bytes_ = 0;
   auto wire = AmpAdpCarrier::EncodeMsh(msh_chunk_type_, body);
   if (!wire) {
     return wire.error();
@@ -355,6 +376,13 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   master_ikm_ = std::move(established.master_ikm);
   transcript_hash_ = std::move(established.transcript_hash);
   remote_identity_public_key_ = std::move(established.remote_identity_public_key);
+  // Outbound ADP dials to a known PeerId carry it as remote_peer_id_ from construction (inbound
+  // accepts start it empty). Snapshot it before the handshake result overwrites the field, so a
+  // handshake that authenticates as a *different* identity can be rejected below instead of
+  // silently rebinding the dial to whoever answered. Carrier-backed (nested) links key by a
+  // caller-chosen join key that is not necessarily a pre-known PeerId (FinishNestedCarrier
+  // handles their identity/alias policy separately) — do not apply that check here.
+  const std::string expected_peer_id = (outbound_ && !carrier_) ? remote_peer_id_ : std::string{};
   if (!remote_identity_public_key_.empty()) {
     if (host_.derive_peer_id) {
       if (auto derived = host_.derive_peer_id(remote_identity_public_key_); !derived.empty()) {
@@ -365,6 +393,11 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
     } else if (remote_peer_id_.empty()) {
       remote_peer_id_ = IdentityPublicKeyFingerprint(remote_identity_public_key_);
     }
+  }
+  if (!expected_peer_id.empty() && remote_peer_id_ != expected_peer_id) {
+    FailAssociationMessage(Error("amp link: authenticated peer id does not match dial target"),
+                           Err::HandshakeFailed);
+    return;
   }
 
   auto session = Session::FromMaterial(established.local_material, master_ikm_, transcript_hash_);

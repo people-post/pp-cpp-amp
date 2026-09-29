@@ -74,8 +74,20 @@ struct MeshLinkFixture {
     f.bob.ml_dsa_secret_key = std::move(bob_keys->secret_key);
     f.bob.ml_dsa_public_key = std::move(bob_keys->public_key);
 
-    f.mgr_a = std::make_unique<PeerLinkManager>(*f.ep_a, f.alice, "QmAlice");
-    f.mgr_b = std::make_unique<PeerLinkManager>(*f.ep_b, f.bob, "QmBob");
+    // Outbound dials now require the authenticated remote identity to match the expected
+    // PeerId (fix: PeerLink no longer rebinds a dial's remote_peer_id_ on mismatch). Map the
+    // fixture's fixed dial-key labels to their real identities so existing "QmBob"/"QmAlice"
+    // dial keys keep authenticating as themselves.
+    PeerLinkConfig config_a;
+    config_a.peer_id_from_identity = [bob_pub = f.bob.ml_dsa_public_key](const ByteVector& pk) -> std::string {
+      return pk == bob_pub ? "QmBob" : IdentityPublicKeyFingerprint(pk);
+    };
+    PeerLinkConfig config_b;
+    config_b.peer_id_from_identity = [alice_pub = f.alice.ml_dsa_public_key](const ByteVector& pk) -> std::string {
+      return pk == alice_pub ? "QmAlice" : IdentityPublicKeyFingerprint(pk);
+    };
+    f.mgr_a = std::make_unique<PeerLinkManager>(*f.ep_a, f.alice, "QmAlice", config_a);
+    f.mgr_b = std::make_unique<PeerLinkManager>(*f.ep_b, f.bob, "QmBob", config_b);
     f.pump_a = std::make_unique<MeshPump>(*f.ep_a, *f.mgr_a);
     f.pump_b = std::make_unique<MeshPump>(*f.ep_b, *f.mgr_b);
     return f;
@@ -290,6 +302,63 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
   EXPECT_EQ(events[0].transport, TransportClass::Carrier);
   EXPECT_EQ(events[0].reason, LinkDropReason::CarrierClosed);
   EXPECT_FALSE(events[0].was_connected);
+}
+
+// Regression: a nested handshake the peer never answers must time out like any other dial
+// (previously excluded from the dial_timeout sweep entirely, so it stayed Handshaking forever).
+TEST(MeshLinkTest, NestedHandshakeTimesOutWhenPeerNeverAnswers) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] {
+    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
+  });
+  ASSERT_TRUE(associated);
+
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", "/pp-test/carrier/1.0.0", CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  fixture->PumpUntil([&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() &&
+           outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(channel_id.has_value());
+
+  auto* outbound = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(outbound, nullptr);
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*outbound->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+
+  // Bob never answers the nested handshake: it stays Handshaking indefinitely on its own.
+  std::optional<PeerLinkManager::LinkRoe> nested;
+  fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", carrier, true,
+                                             [&](PeerLinkManager::LinkRoe result) { nested = result; });
+  carrier.reset();
+  ASSERT_NE(fixture->mgr_a->FindLink("nested:bob"), nullptr);
+  EXPECT_FALSE(nested.has_value());
+
+  fixture->clock->Advance(8'100); // past PeerLinkConfig's default dial_timeout (8s)
+  fixture->pump_a->Tick();
+
+  ASSERT_TRUE(nested.has_value());
+  EXPECT_FALSE(nested->isOk());
+  // FinishNestedCarrier's DropLink is deferred to the next Tick (see
+  // NestedCarrierResetDuringHandshakeDefersDrop for why).
+  fixture->pump_a->Tick();
+  EXPECT_EQ(fixture->mgr_a->FindLink("nested:bob"), nullptr);
 }
 
 // k1 (call-path-resilience): a drop scheduled for a failed link must not hit the link that took
@@ -1457,7 +1526,11 @@ TEST(MeshLinkTest, EnsureAssociationOverMemoryIoIpv6) {
   bob.ml_dsa_secret_key = std::move(bob_keys->secret_key);
   bob.ml_dsa_public_key = std::move(bob_keys->public_key);
 
-  PeerLinkManager mgr_a(*ep_a, alice, "QmAlice6");
+  PeerLinkConfig config_a;
+  config_a.peer_id_from_identity = [bob_pub = bob.ml_dsa_public_key](const ByteVector& pk) -> std::string {
+    return pk == bob_pub ? "QmBob6" : IdentityPublicKeyFingerprint(pk);
+  };
+  PeerLinkManager mgr_a(*ep_a, alice, "QmAlice6", config_a);
   PeerLinkManager mgr_b(*ep_b, bob, "QmBob6");
   MeshPump pump_a(*ep_a, mgr_a);
   MeshPump pump_b(*ep_b, mgr_b);
@@ -1514,6 +1587,28 @@ TEST(DialBookTest, RegisterEndpointPromotesWithoutDroppingPrior) {
   ASSERT_EQ(book.Find("k")->candidates.size(), 2u);
   EXPECT_EQ(book.Find("k")->multiaddr, b);
   EXPECT_EQ(book.Find("k")->candidates[1], a);
+}
+
+// Regression: a peer's self-reported listen_multiaddrs (IngestRemoteAddrs) must not repoint an
+// already-authenticated record's peer_id — a /p2p/<id> disagreeing with the authenticated id is
+// dropped, not adopted.
+TEST(DialBookTest, IngestRemoteAddrsDropsMismatchedPeerId) {
+  DialBook book({});
+  const std::string real_peer = "QmReal";
+  const std::string spoofed_peer = "QmSpoofed";
+  const std::string consistent = "/ip4/10.0.1.1/udp/1/adp/1.0.0/p2p/" + real_peer;
+  const std::string consistent2 = "/ip4/10.0.1.3/udp/3/adp/1.0.0/p2p/" + real_peer;
+  const std::string spoofed = "/ip4/10.0.1.2/udp/2/adp/1.0.0/p2p/" + spoofed_peer;
+
+  book.IngestRemoteAddrs(real_peer, {spoofed, consistent, consistent2});
+
+  const auto* rec = book.Find(real_peer);
+  ASSERT_NE(rec, nullptr);
+  EXPECT_EQ(rec->peer_id, real_peer);
+  for (const auto& candidate : rec->candidates) {
+    EXPECT_NE(candidate, spoofed) << "mismatched /p2p/ candidate must be discarded";
+  }
+  EXPECT_EQ(rec->candidates.size(), 2u);
 }
 
 TEST(MeshLinkTest, EnsureAssociationFallsBackToSecondCandidate) {

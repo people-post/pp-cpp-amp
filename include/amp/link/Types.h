@@ -62,6 +62,12 @@ struct PeerLinkSnapshot {
 
 struct PeerLinkConfig {
   size_t max_links = 48;
+  /**
+   * Cap on inbound links still Handshaking, separate from and smaller than max_links: a flood of
+   * cheap forged-source inbound attempts must not fill the whole table and starve outbound dials
+   * or already-Connected links of a slot.
+   */
+  size_t max_pending_inbound = 16;
   size_t max_concurrent_dials = 6;
   std::chrono::milliseconds dial_timeout{8000};
   /** Per-candidate handshake budget when DialBook has further fallbacks (B15/B28). */
