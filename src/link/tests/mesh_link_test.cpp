@@ -1714,6 +1714,67 @@ TEST(MeshLinkTest, IsConnectedSeesAConnectedLinkPastAPendingDialUnderTheKey) {
   EXPECT_TRUE(fixture->mgr_a->IsConnected(key));
 }
 
+// Peer lookup is not dial state: with a dead dial holding the peer's key and another link to the
+// peer Connected, OpenChannel / WhenChannelOpen / BindChannel / snapshots all use the live link, and
+// the dial keeps the key (#235 — no redial of the stale candidates per channel).
+TEST(MeshLinkTest, PeerLookupsResolvePastADialHoldingTheKey) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  const std::string key = "QmBob";
+  auto dead = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 1, 901), key);
+  ASSERT_TRUE(static_cast<bool>(dead));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint(key, *dead)));
+  fixture->mgr_a->EnsureAssociation(key, [](PeerLinkManager::LinkRoe) {});
+  PeerLink* dial = fixture->mgr_a->FindLink(key);
+  ASSERT_NE(dial, nullptr);
+  const LinkHandle dial_handle = dial->Handle();
+
+  fixture->mgr_b->SetProtocolHandler("/served/1", [](LinkHandle, const std::string&, uint32_t) {});
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
+  for (int i = 0; i < 200 && !associated; ++i) {  // Pump only: keep the dead dial pending
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+  }
+  ASSERT_TRUE(associated);
+  PeerLink* live = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(live, nullptr);
+  ASSERT_EQ(fixture->mgr_a->FindLink(key)->Handle(), dial_handle);
+
+  EXPECT_EQ(fixture->mgr_a->ResolveConnectedLink(key), live);
+  EXPECT_EQ(fixture->mgr_a->GetLinkSnapshot(key).phase, PeerLinkPhase::Connected);
+
+  std::optional<uint32_t> channel_id;
+  bool opened_cb = false;
+  fixture->mgr_a->OpenChannel(key, "/served/1", ControlJsonChannelPolicy(), [&](PeerLinkManager::ChannelRoe ch) {
+    if (ch.isOk()) {
+      channel_id = ch.value();
+    }
+    opened_cb = true;
+  });
+  for (int i = 0; i < 50 && !opened_cb; ++i) {
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+  }
+  ASSERT_TRUE(channel_id.has_value()) << "OpenChannel waited on the dead dial";
+  std::optional<bool> open;
+  fixture->mgr_a->WhenChannelOpenIn(key, *channel_id, std::chrono::seconds(30), [&](bool ok) { open = ok; });
+  for (int i = 0; i < 200 && !open.has_value(); ++i) {
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+    fixture->mgr_a->Tick();
+  }
+  ASSERT_TRUE(open.has_value());
+  EXPECT_TRUE(*open);
+  EXPECT_NE(fixture->mgr_a->BindChannel(key, *channel_id, ControlJsonChannelPolicy(), {}), nullptr);
+  ASSERT_NE(fixture->mgr_a->FindLink(key), nullptr);
+  EXPECT_EQ(fixture->mgr_a->FindLink(key)->Handle(), dial_handle) << "dial state stays on the key";
+}
+
 // pp-browser #235 (phone side): the reach dials a peer's PeerId key, pivots to a relay, and the
 // nested carrier link takes that key (A024). The ADP dial's first candidate then times out and its
 // queued retry must not dial over the Connected carrier — it used to take the key and, failing,

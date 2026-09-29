@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <utility>
 
 namespace pp::amp {
 
@@ -200,6 +201,50 @@ PeerLink* PeerLinkManager::FindConnectedLinkByPeerId(const std::string& peer_id,
     }
   });
   return found;
+}
+
+std::string PeerLinkManager::PeerIdForKeyLocked(const std::string& peer_key) const {
+  if (const auto* occupant = table_.FindByDialKey(peer_key); occupant && !occupant->RemotePeerId().empty()) {
+    return occupant->RemotePeerId();
+  }
+  if (const auto* ep = book_.Find(peer_key); ep && !ep->peer_id.empty()) {
+    return ep->peer_id;
+  }
+  return peer_key;
+}
+
+const PeerLink* PeerLinkManager::ResolveConnectedLink(const std::string& peer_key) const {
+  std::lock_guard lock(strand_mu_);
+  if (peer_key.empty()) {
+    return nullptr;
+  }
+  if (const auto* occupant = table_.FindByDialKey(peer_key); occupant && occupant->Phase() == PeerLinkPhase::Connected) {
+    return occupant;
+  }
+  const std::string peer_id = PeerIdForKeyLocked(peer_key);
+  const PeerLink* adp = nullptr;
+  const PeerLink* carrier = nullptr;
+  table_.ForEach([&](const PeerLink& link) {
+    if (link.Phase() != PeerLinkPhase::Connected || link.RemotePeerId() != peer_id) {
+      return;
+    }
+    const PeerLink*& slot = link.IsCarrierBacked() ? carrier : adp;
+    if (!slot) {
+      slot = &link;
+    }
+  });
+  return adp ? adp : carrier;
+}
+
+PeerLink* PeerLinkManager::ResolveConnectedLink(const std::string& peer_key) {
+  return const_cast<PeerLink*>(std::as_const(*this).ResolveConnectedLink(peer_key));
+}
+
+PeerLink* PeerLinkManager::ResolveLinkLocked(const std::string& peer_key) {
+  if (auto* live = ResolveConnectedLink(peer_key)) {
+    return live;
+  }
+  return FindLink(peer_key);
 }
 
 const PeerLink* PeerLinkManager::FindLinkByPeerId(const std::string& peer_id) const {
@@ -491,21 +536,16 @@ PeerLink* PeerLinkManager::FindConnectedInboundLink() {
 }
 
 bool PeerLinkManager::IsConnected(const std::string& peer_key) const {
-  std::lock_guard lock(strand_mu_);
-  if (const PeerLink* link = table_.FindByDialKey(peer_key); link && link->Phase() == PeerLinkPhase::Connected) {
-    return true;
-  }
   // A dial still in flight (or backing off) can hold the key while another link to the same
-  // PeerId — e.g. an accepted relay carrier — is already Connected: that peer is connected.
-  const PeerLink* by_peer = table_.FindByPeerId(peer_key);
-  return by_peer && by_peer->Phase() == PeerLinkPhase::Connected;
+  // peer — e.g. an accepted relay carrier — is already Connected: that peer is connected.
+  return ResolveConnectedLink(peer_key) != nullptr;
 }
 
 PeerLinkSnapshot PeerLinkManager::GetLinkSnapshot(const std::string& peer_key) const {
   std::lock_guard lock(strand_mu_);
   PeerLinkSnapshot snap;
   snap.has_endpoint = book_.Contains(peer_key);
-  if (const auto* link = FindLink(peer_key); link && link->Phase() == PeerLinkPhase::Connected) {
+  if (const auto* link = ResolveConnectedLink(peer_key)) {
     snap.phase = PeerLinkPhase::Connected;
     snap.carrier_backed = link->IsCarrierBacked();
     if (snap.has_endpoint) {
@@ -727,6 +767,11 @@ void PeerLinkManager::OpenChannelOnLink(PeerLink& link, const std::string& proto
 void PeerLinkManager::OpenChannel(const std::string& peer_key, const std::string& protocol_id, ChannelPolicy policy,
                                   ChannelCb on_complete) {
   std::lock_guard lock(strand_mu_);
+  // Any Connected link to the peer carries the channel; only with none up do we dial (#235).
+  if (auto* live = ResolveConnectedLink(peer_key)) {
+    OpenChannelOnLink(*live, protocol_id, std::move(policy), std::move(on_complete));
+    return;
+  }
   EnsureAssociation(peer_key, [this, peer_key, protocol_id, policy = std::move(policy),
                                  on_complete = std::move(on_complete)](LinkRoe assoc) mutable {
     if (!assoc) {
@@ -735,7 +780,7 @@ void PeerLinkManager::OpenChannel(const std::string& peer_key, const std::string
       }
       return;
     }
-    auto* link = FindLink(peer_key);
+    auto* link = ResolveConnectedLink(peer_key);
     if (!link) {
       if (on_complete) {
         on_complete(ChannelRoe::error(Failure::Of(Err::AssociationNotReady, "amp link: association not ready")));
@@ -1287,10 +1332,7 @@ void PeerLinkManager::Tick() {
       if (waiter.link.valid()) {
         link = table_.FindLive(waiter.link);
       } else {
-        link = table_.FindByDialKey(waiter.key);
-        if (!link) {
-          link = table_.FindByPeerId(waiter.key);
-        }
+        link = ResolveLinkLocked(waiter.key);
       }
       const uint32_t ch = waiter.channel_id;
       bool open = false;
@@ -1751,7 +1793,13 @@ void PeerLinkManager::WhenChannelOpen(const DialKey& peer_key, uint32_t channel_
   std::lock_guard lock(strand_mu_);
   // deadline_ms is absolute Amp clock (Endpoint::GetClock().NowMs()). Prefer WhenChannelOpenIn
   // when converting from a steady_clock wall deadline — never pass steady epoch ms here.
-  channel_open_waiters_.push_back(ChannelOpenWaiter{peer_key, {}, channel_id, deadline_ms, std::move(done)});
+  // Pin to the link the key resolves to now — the one OpenChannel just used. Re-resolving each
+  // Tick could move to another link to the peer (a direct link landing) and poll the wrong mux.
+  LinkHandle pinned;
+  if (const auto* live = ResolveConnectedLink(peer_key)) {
+    pinned = live->Handle();
+  }
+  channel_open_waiters_.push_back(ChannelOpenWaiter{peer_key, pinned, channel_id, deadline_ms, std::move(done)});
 }
 
 void PeerLinkManager::WhenChannelOpenOnLink(const LinkHandle link, const uint32_t channel_id,
@@ -1773,8 +1821,8 @@ std::shared_ptr<ChannelSession> PeerLinkManager::BindChannel(const DialKey& peer
                                                              ChannelSession::FrameHandler on_frame,
                                                              ChannelSession::ClosedCallback on_closed) {
   std::lock_guard lock(strand_mu_);
-  auto* link = FindLink(peer_key);
-  if (!link || link->Phase() != PeerLinkPhase::Connected || !link->Mux()) {
+  auto* link = ResolveConnectedLink(peer_key);
+  if (!link || !link->Mux()) {
     return {};
   }
   auto session = std::make_shared<ChannelSession>();

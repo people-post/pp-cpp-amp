@@ -19,6 +19,12 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
 
 - Dial / channel: `EnsureAssociation`, `OpenChannel`, `WhenChannelOpenIn`, `BindChannel`
 - Snapshots: `SnapshotByDialKey`, `SnapshotByPeerId`, `IsReachable`, `IsConnected`
+- Peer lookup vs dial state: a dial key names one dial slot, but a peer can have several links
+  (ADP + relay carrier, A024). `ResolveConnectedLink(key)` picks the link traffic uses — the key's
+  own link when Connected, else the best Connected link to the key's peer (ADP, then carrier).
+  `OpenChannel`, `WhenChannelOpen` (pinned to that link at registration), `BindChannel`,
+  `IsConnected` and `GetLinkSnapshot` resolve through it, so a dial in flight under the key never
+  hides a live link. Dial state (`EnsureAssociation`, drops, backoff) stays on the key's own link.
 - Handlers: `SetProtocolHandler`, `SetCapabilityHandler` (no `PeerLink&`)
 - `SetRefuseUnhandledOpens(true)`: inbound opens for protocols without a handler are refused
   (OpenAck `kOpenAckNoHandler`) — the opener's `WhenChannelOpen` fails at once instead of seeing an
