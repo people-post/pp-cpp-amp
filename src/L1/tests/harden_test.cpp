@@ -345,6 +345,49 @@ TEST_F(AdpHardenTest, PreAuthCloseAndKeepaliveAreIgnored) {
   EXPECT_TRUE(accepted->IsClosed()) << "post-auth Close is honored";
 }
 
+// Regression: Pump() drains at most its budget per call instead of looping until EAGAIN — a
+// flood must not make one Pump() call (and any lock a caller holds around it) run unbounded.
+TEST_F(AdpHardenTest, PumpRespectsItsBudget) {
+  auto clock = std::make_shared<pp::adp::VirtualClock>(1);
+  auto hub = pp::adp::MemoryDatagramIo::MakeHub();
+  auto addr_a = pp::adp::IpEndpoint::V4(10, 6, 6, 1, 1);
+  auto addr_b = pp::adp::IpEndpoint::V4(10, 6, 6, 2, 2);
+  auto io_a = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_a);
+  auto io_b = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr_b);
+  auto ep_a = std::make_unique<pp::adp::Endpoint>(io_a, clock);
+  auto ep_b = std::make_unique<pp::adp::Endpoint>(io_b, clock);
+  ep_b->SetAcceptKey(Key());
+  ep_b->SetAcceptEnabled(true);
+
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = addr_b;
+  auto ca = ep_a->Open(op);
+  ASSERT_TRUE(static_cast<bool>(ca));
+  pp::adp::OpenParams opb = op;
+  opb.peer = addr_a;
+  auto cb = ep_b->Open(opb);
+  ASSERT_TRUE(static_cast<bool>(cb));
+  size_t received = 0;
+  (*cb)->OnMessage([&](const pp::adp::Message&) { ++received; });
+
+  constexpr size_t kSent = 20;
+  for (size_t i = 0; i < kSent; ++i) {
+    const uint8_t b = static_cast<uint8_t>(i);
+    ASSERT_TRUE(static_cast<bool>(
+        (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(&b, 1))));
+  }
+
+  ep_b->Pump(/*budget=*/5);
+  EXPECT_EQ(received, 5u);
+  ep_b->Pump(/*budget=*/5);
+  EXPECT_EQ(received, 10u);
+  ep_b->Pump(); // default budget drains the rest.
+  EXPECT_EQ(received, kSent);
+}
+
 TEST_F(AdpHardenTest, BindIpv6Wildcard) {
   auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V6({}, 0));
   ASSERT_TRUE(static_cast<bool>(bound)) << (bound ? "" : bound.error().message);

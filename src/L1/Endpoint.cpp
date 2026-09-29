@@ -51,8 +51,8 @@ Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::span<const uint8_t> dat
   return io_->SendTo(peer, datagram);
 }
 
-void Endpoint::Pump() {
-  for (;;) {
+void Endpoint::Pump(const size_t budget) {
+  for (size_t n = 0; n < budget; ++n) {
     auto got = io_->RecvFrom();
     if (!got) {
       break;

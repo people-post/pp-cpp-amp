@@ -27,7 +27,13 @@ public:
 
   std::shared_ptr<Connection> Find(const AssocId& id) const;
 
-  void Pump();
+  /**
+   * Drains up to `budget` datagrams (default kDefaultPumpBudget), not until EAGAIN: an
+   * unbounded drain under a packet flood could hold a caller-shared lock (MeshRuntime's io_mu_)
+   * for as long as packets keep arriving, starving every other PeerLinkManager op. The caller's
+   * own loop (Tick cadence) picks up any remainder on the next call.
+   */
+  void Pump(size_t budget = kDefaultPumpBudget);
   void Tick();
 
   Roe<void> SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram);

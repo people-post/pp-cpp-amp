@@ -50,6 +50,8 @@ inline constexpr int64_t kKeepaliveLivenessDenominator = 2;
  * "alive" after going silent, well past any real keepalive config.
  */
 inline constexpr uint32_t kMaxPeerKeepaliveIntervalMs = 600'000; // 10 minutes
+/** Endpoint::Pump's default per-call datagram budget — see its doc comment. */
+inline constexpr size_t kDefaultPumpBudget = 256;
 
 enum class QosClass : uint8_t {
   BestEffort = 0,
