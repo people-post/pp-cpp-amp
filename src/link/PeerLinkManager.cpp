@@ -492,11 +492,13 @@ PeerLink* PeerLinkManager::FindConnectedInboundLink() {
 
 bool PeerLinkManager::IsConnected(const std::string& peer_key) const {
   std::lock_guard lock(strand_mu_);
-  const PeerLink* link = table_.FindByDialKey(peer_key);
-  if (!link) {
-    link = table_.FindByPeerId(peer_key);
+  if (const PeerLink* link = table_.FindByDialKey(peer_key); link && link->Phase() == PeerLinkPhase::Connected) {
+    return true;
   }
-  return link && link->Phase() == PeerLinkPhase::Connected;
+  // A dial still in flight (or backing off) can hold the key while another link to the same
+  // PeerId — e.g. an accepted relay carrier — is already Connected: that peer is connected.
+  const PeerLink* by_peer = table_.FindByPeerId(peer_key);
+  return by_peer && by_peer->Phase() == PeerLinkPhase::Connected;
 }
 
 PeerLinkSnapshot PeerLinkManager::GetLinkSnapshot(const std::string& peer_key) const {
@@ -603,6 +605,24 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
 }
 
 void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
+  // Never dial over a Connected occupant. A candidate retry queued before another link (e.g. a
+  // relay carrier, A024) connected under this key would otherwise take the key from it (Insert
+  // re-points the index) and, when that dial failed too, erase it — leaving the live link
+  // unfindable by key, so every later OpenChannel re-dialed the stale candidates.
+  if (const auto* occupant = table_.FindByDialKey(peer_key);
+      occupant && occupant->Phase() == PeerLinkPhase::Connected) {
+    book_.ResetDialIndex(peer_key);
+    auto waiters = std::move(inflight_associations_[peer_key]);
+    inflight_associations_.erase(peer_key);
+    PostCompletion([waiters = std::move(waiters)]() mutable {
+      for (auto& waiter : waiters) {
+        if (waiter) {
+          waiter(LinkRoe());
+        }
+      }
+    });
+    return;
+  }
   const auto ep_it = book_.Endpoints().find(peer_key);
   if (ep_it == book_.Endpoints().end()) {
     auto waiters = std::move(inflight_associations_[peer_key]);
