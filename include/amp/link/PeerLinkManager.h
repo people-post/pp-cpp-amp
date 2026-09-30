@@ -102,6 +102,13 @@ public:
   void SetAdvertisedProtocols(std::vector<std::string> protocols);
   void SetCapabilityHandler(CapabilityHandler handler);
   CapabilityPayload LocalCapability() const;
+  /**
+   * Which remote peers may receive our listen multiaddrs in the ch0 capability (an application's
+   * address-disclosure policy). Called on the io strand with the remote PeerId (empty when not
+   * known); must be cheap and thread-safe. Unset = every peer (the default).
+   */
+  using ListenAddrDisclosure = std::function<bool(const std::string& remote_peer_id)>;
+  void SetListenAddrDisclosure(ListenAddrDisclosure disclosure);
 
   std::optional<std::string> PreferredMultiaddr(const std::string& peer_id) const;
   Roe<void> RegisterEndpoint(const std::string& peer_key, const std::string& multiaddr);
@@ -326,6 +333,9 @@ private:
   std::vector<std::string> local_listen_multiaddrs_;
   std::vector<std::string> advertised_protocols_;
   CapabilityHandler capability_handler_;
+  ListenAddrDisclosure listen_addr_disclosure_;
+  /** LocalCapability for `link`: listen multiaddrs only when the disclosure policy allows its peer. */
+  CapabilityPayload CapabilityFor(const PeerLink& link) const;
   CompletionPoster completion_poster_;
   std::unordered_map<PeerConnectedListenerId, PeerConnectedListener> peer_connected_listeners_;
   std::atomic<PeerConnectedListenerId> next_peer_connected_listener_id_{1};

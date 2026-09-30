@@ -1424,6 +1424,46 @@ TEST(MeshLinkTest, CapabilityExchangeAfterAssociation) {
   EXPECT_EQ(seen_on_b.local_peer_id, h.peer_id_a);
 }
 
+// An application's address-disclosure policy: ch0 carries our listen multiaddrs only to peers it
+// allows; the rest of the capability (PeerId, protocols) goes to everyone.
+TEST(MeshLinkTest, CapabilityOmitsListenAddrsForPeersTheDisclosurePolicyRefuses) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created));
+  pbr::test::AmpMeshHarness& h = **created;
+  h.mgr_a().SetLocalListenMultiaddrs({h.ma_a});
+  h.mgr_b().SetLocalListenMultiaddrs({h.ma_b});
+  h.mgr_a().SetAdvertisedProtocols({"/pp-browser/chat/1.0.0"});
+  std::vector<std::string> asked;
+  h.mgr_a().SetListenAddrDisclosure([&](const std::string& remote_peer_id) {
+    asked.push_back(remote_peer_id);
+    return false;  // B may not learn A's addresses
+  });
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
+
+  bool associated = false;
+  h.mgr_a().EnsureAssociation("b", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  h.PumpUntil([&] {
+    auto* a_link = h.mgr_a().FindLink("b");
+    auto* b_link = h.mgr_b().FindConnectedInboundLink();
+    return associated && a_link && a_link->RemoteCapability() && b_link && b_link->RemoteCapability();
+  });
+  ASSERT_TRUE(associated);
+
+  auto* on_b = h.mgr_b().FindConnectedInboundLink();
+  ASSERT_NE(on_b, nullptr);
+  ASSERT_NE(on_b->RemoteCapability(), nullptr);
+  EXPECT_EQ(on_b->RemoteCapability()->local_peer_id, h.peer_id_a);
+  EXPECT_TRUE(on_b->RemoteCapability()->listen_multiaddrs.empty()) << "B learned A's addresses over ch0";
+  EXPECT_EQ(on_b->RemoteCapability()->protocols, std::vector<std::string>{"/pp-browser/chat/1.0.0"});
+  EXPECT_EQ(asked, std::vector<std::string>{h.peer_id_b}) << "asked once, with the authenticated PeerId";
+
+  auto* on_a = h.mgr_a().FindLink("b");
+  ASSERT_NE(on_a, nullptr);
+  EXPECT_EQ(on_a->RemoteCapability()->listen_multiaddrs, std::vector<std::string>{h.ma_b})
+      << "B has no policy: it still shares";
+}
+
 TEST(MeshLinkTest, CapabilityIngestEnablesPeerIdDial) {
   ASSERT_GE(sodium_init(), 0);
   auto created = pbr::test::AmpMeshHarness::Create();
