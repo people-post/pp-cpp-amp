@@ -5,6 +5,9 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <unordered_map>
+
 namespace pp::amp {
 namespace {
 
@@ -79,6 +82,32 @@ TEST(ChannelMuxTest, ResetDoesNotKillSiblingChannel) {
   const std::vector<uint8_t> msg = {'o', 'k'};
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch2, msg)));
   EXPECT_EQ(received, msg);
+}
+
+TEST(ChannelMuxTest, CountsOpenChannelsByProtocol) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+
+  auto chat1 = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+  auto chat2 = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+  auto media = link.initiator.mux.OpenOutbound("/pp-browser/call-media/1.0.0", TestRealtimePolicy());
+  ASSERT_TRUE(static_cast<bool>(chat1));
+  ASSERT_TRUE(static_cast<bool>(chat2));
+  ASSERT_TRUE(static_cast<bool>(media));
+
+  std::unordered_map<std::string, size_t> counts;
+  link.initiator.mux.CountOpenChannels(counts);
+  EXPECT_EQ(counts["/pp-browser/chat/1.0.0"], 2u);
+  EXPECT_EQ(counts["/pp-browser/call-media/1.0.0"], 1u);
+
+  // Closing and reset channels are no longer open.
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*chat1)));
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*media)));
+  counts.clear();
+  link.initiator.mux.CountOpenChannels(counts);
+  EXPECT_EQ(counts["/pp-browser/chat/1.0.0"], 1u);
+  EXPECT_EQ(counts.count("/pp-browser/call-media/1.0.0"), 0u);
 }
 
 TEST(ChannelMuxTest, LargePayloadFragments) {

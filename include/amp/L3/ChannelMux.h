@@ -90,6 +90,8 @@ public:
   Roe<void> OnSealedInbound(uint32_t channel_id, uint32_t channel_seq, std::span<const uint8_t> sealed);
 
   ChannelState State(uint32_t channel_id) const;
+  /** Add this mux's Open channels to `by_protocol` (protocol id → count). */
+  void CountOpenChannels(std::unordered_map<std::string, size_t>& by_protocol) const;
   ChannelClass Class(uint32_t channel_id) const;
   adp::QosClass LastSendQos() const { return last_send_qos_; }
 

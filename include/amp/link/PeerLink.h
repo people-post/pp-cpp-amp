@@ -106,6 +106,7 @@ public:
   adp::Connection* ConnectionOrNull() { return connection_.get(); }
   const adp::Connection* ConnectionOrNull() const { return connection_.get(); }
   ChannelMux* Mux() { return mux_.get(); }
+  const ChannelMux* Mux() const { return mux_.get(); }
   Session* GetSession() { return session_.get(); }
   ChannelSession* Carrier() { return carrier_.get(); }
 

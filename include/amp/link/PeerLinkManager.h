@@ -237,6 +237,8 @@ public:
 
   size_t CountConnectedLinksForPeerId(const std::string& peer_id) const;
   size_t CountLinks() const;
+  /** Open L3 channels across every link, by protocol id (aggregate; io-thread or under the io lock). */
+  std::unordered_map<std::string, size_t> CountOpenChannelsByProtocol() const;
 
   static bool IsAssociationNotReady(const Failure& failure) {
     return failure.GetCode() == Err::AssociationNotReady;

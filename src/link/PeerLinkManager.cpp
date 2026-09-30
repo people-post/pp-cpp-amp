@@ -1509,6 +1509,17 @@ size_t PeerLinkManager::CountLinks() const {
   return table_.size();
 }
 
+std::unordered_map<std::string, size_t> PeerLinkManager::CountOpenChannelsByProtocol() const {
+  std::lock_guard lock(strand_mu_);
+  std::unordered_map<std::string, size_t> by_protocol;
+  table_.ForEach([&](const PeerLink& link) {
+    if (const ChannelMux* mux = link.Mux()) {
+      mux->CountOpenChannels(by_protocol);
+    }
+  });
+  return by_protocol;
+}
+
 PeerLinkHostPorts PeerLinkManager::MakeHostPorts() {
   return PeerLinkHostPorts{
       .now_ms = [this]() { return endpoint_.GetClock().NowMs(); },
