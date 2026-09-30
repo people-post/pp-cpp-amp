@@ -239,6 +239,12 @@ public:
   size_t CountLinks() const;
   /** Open L3 channels across every link, by protocol id (aggregate; io-thread or under the io lock). */
   std::unordered_map<std::string, size_t> CountOpenChannelsByProtocol() const;
+  /**
+   * Reliable traffic figures of the UDP association `handle` rides: its own ADP connection, or for
+   * a carrier-backed link the connection of the link carrying it (followed down nested carriers).
+   * nullopt when the link is gone or no connection is found.
+   */
+  std::optional<adp::ConnectionStats> LinkConnectionStats(LinkHandle handle);
 
   static bool IsAssociationNotReady(const Failure& failure) {
     return failure.GetCode() == Err::AssociationNotReady;

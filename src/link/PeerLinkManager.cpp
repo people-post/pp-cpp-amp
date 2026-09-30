@@ -1520,6 +1520,29 @@ std::unordered_map<std::string, size_t> PeerLinkManager::CountOpenChannelsByProt
   return by_protocol;
 }
 
+std::optional<adp::ConnectionStats> PeerLinkManager::LinkConnectionStats(const LinkHandle handle) {
+  std::lock_guard lock(strand_mu_);
+  PeerLink* link = table_.FindLive(handle);
+  // A carrier rides a channel of another link's mux: walk down to the one with a UDP association.
+  for (int depth = 0; link && depth < 4; ++depth) {
+    if (const adp::Connection* connection = link->ConnectionOrNull()) {
+      return connection->Stats();
+    }
+    ChannelSession* carrier = link->Carrier();
+    const ChannelMux* carrier_mux = carrier ? carrier->Mux() : nullptr;
+    PeerLink* below = nullptr;
+    if (carrier_mux) {
+      table_.ForEach([&](PeerLink& candidate) {
+        if (!below && &candidate != link && candidate.Mux() == carrier_mux) {
+          below = &candidate;
+        }
+      });
+    }
+    link = below;
+  }
+  return std::nullopt;
+}
+
 PeerLinkHostPorts PeerLinkManager::MakeHostPorts() {
   return PeerLinkHostPorts{
       .now_ms = [this]() { return endpoint_.GetClock().NowMs(); },

@@ -257,8 +257,17 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
     return err.error();
   }
   endpoint_->NoteReliableSent();
+  ++stats_.reliable_sent;
   outstanding_.push_back(std::move(o));
   return {};
+}
+
+void Connection::NoteRttSample(const int64_t rtt_ms) {
+  endpoint_->NoteRttSample(rtt_ms);
+  const int64_t sample = rtt_ms < 0 ? 0 : rtt_ms;
+  ++stats_.rtt_samples;
+  stats_.rtt_sum_ms += static_cast<uint64_t>(sample);
+  stats_.srtt_ms = stats_.srtt_ms < 0 ? sample : stats_.srtt_ms + (sample - stats_.srtt_ms) / 8;
 }
 
 void Connection::Tick(int64_t now_ms) {
@@ -275,12 +284,14 @@ void Connection::Tick(int64_t now_ms) {
     ++o.attempts;
     o.next_rtx_ms = now_ms + params_.rtx_interval_ms;
     endpoint_->NoteRetransmit();
+    ++stats_.retransmits;
     (void)SendPacket(PacketType::DataReliable, o.seq, o.payload, now_ms);
   }
   // Drop permanently failed from front.
   while (!outstanding_.empty() && outstanding_.front().attempts >= params_.max_rtx &&
          now_ms >= outstanding_.front().next_rtx_ms) {
     endpoint_->NoteReliableLost();
+    ++stats_.reliable_lost;
     outstanding_.pop_front();
   }
 }
@@ -334,7 +345,7 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
   case PacketType::Ack: {
     for (const Outstanding& o : outstanding_) {
       if (o.seq == pkt.seq && o.attempts == 0) {
-        endpoint_->NoteRttSample(now_ms - o.first_sent_ms);  // Karn: never a retransmitted one
+        NoteRttSample(now_ms - o.first_sent_ms);  // Karn: never a retransmitted one
         break;
       }
     }

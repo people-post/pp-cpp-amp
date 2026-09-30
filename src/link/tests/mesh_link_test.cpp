@@ -356,6 +356,60 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
   EXPECT_FALSE(events[0].was_connected);
 }
 
+// Per-link figures: an ADP link reports its own association; a carrier-backed (nested) link reports
+// the association of the link carrying it.
+TEST(MeshLinkTest, LinkConnectionStatsFollowACarrierDownToItsAssociation) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] {
+    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
+  });
+  ASSERT_TRUE(associated);
+
+  auto* outbound = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(outbound, nullptr);
+  const auto direct = fixture->mgr_a->LinkConnectionStats(outbound->Handle());
+  ASSERT_TRUE(direct.has_value());
+  EXPECT_GT(direct->reliable_sent, 0u) << "the handshake went out Reliable";
+
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", "/pp-test/carrier/1.0.0", CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  fixture->PumpUntil([&] {
+    auto* link = fixture->mgr_a->FindLink("bob");
+    return channel_id && link && link->Mux() && link->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(channel_id.has_value());
+  outbound = fixture->mgr_a->FindLink("bob");
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*outbound->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+  fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", carrier, true, [](PeerLinkManager::LinkRoe) {});
+  auto* nested = fixture->mgr_a->FindLink("nested:bob");
+  ASSERT_NE(nested, nullptr);
+  ASSERT_TRUE(nested->IsCarrierBacked());
+
+  const auto via_carrier = fixture->mgr_a->LinkConnectionStats(nested->Handle());
+  const auto underneath = fixture->mgr_a->LinkConnectionStats(outbound->Handle());
+  ASSERT_TRUE(via_carrier.has_value());
+  ASSERT_TRUE(underneath.has_value());
+  EXPECT_EQ(via_carrier->reliable_sent, underneath->reliable_sent);
+  EXPECT_EQ(via_carrier->rtt_samples, underneath->rtt_samples);
+
+  EXPECT_FALSE(fixture->mgr_a->LinkConnectionStats(LinkHandle{}).has_value());
+}
+
 // Regression: a nested handshake the peer never answers must time out like any other dial
 // (previously excluded from the dial_timeout sweep entirely, so it stayed Handshaking forever).
 TEST(MeshLinkTest, NestedHandshakeTimesOutWhenPeerNeverAnswers) {

@@ -529,6 +529,38 @@ TEST_F(AdpReliableTest, PacketGivenUpAfterTheRetransmitCapCountsAsLost) {
   EXPECT_EQ(o.p.ep_a->Stats().reliable_lost, 1u);
 }
 
+// The per-association slice of the endpoint figures, plus a smoothed round trip.
+TEST_F(AdpReliableTest, ConnectionStatsTrackItsOwnTrafficAndSmoothedRoundTrip) {
+  auto o = OpenBoth();
+  EXPECT_EQ(o.a->Stats().srtt_ms, -1);
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("one")));
+  o.p.ep_b->Pump();
+  o.p.clock->Advance(80);
+  o.p.ep_a->Pump();
+  EXPECT_EQ(o.a->Stats().srtt_ms, 80);  // the first sample seeds it
+
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("two")));
+  o.p.ep_b->Pump();
+  o.p.clock->Advance(160);
+  o.p.ep_a->Pump();
+
+  const pp::adp::ConnectionStats& a = o.a->Stats();
+  EXPECT_EQ(a.reliable_sent, 2u);
+  EXPECT_EQ(a.retransmits, 0u);
+  EXPECT_EQ(a.rtt_samples, 2u);
+  EXPECT_EQ(a.rtt_sum_ms, 240u);
+  EXPECT_EQ(a.srtt_ms, 90);  // 80 + (160 - 80) / 8
+  EXPECT_EQ(o.b->Stats().reliable_sent, 0u) << "only the acks went back";
+
+  o.p.io_a->DropNext(1);
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("again")));
+  PumpBoth(o.p);
+  o.p.clock->Advance(10);
+  PumpBoth(o.p);
+  EXPECT_GE(o.a->Stats().retransmits, 1u);
+  EXPECT_EQ(o.a->Stats().rtt_samples, 2u) << "Karn: no sample from a retransmitted packet";
+}
+
 TEST_F(AdpReliableTest, GarbageDatagramsCountAsRejected) {
   auto p = MakePair();
   const std::vector<uint8_t> junk(64, 0xab);
