@@ -106,6 +106,20 @@ CapabilityPayload PeerLinkManager::LocalCapability() const {
   return payload;
 }
 
+void PeerLinkManager::SetListenAddrDisclosure(ListenAddrDisclosure disclosure) {
+  std::lock_guard lock(strand_mu_);
+  listen_addr_disclosure_ = std::move(disclosure);
+}
+
+CapabilityPayload PeerLinkManager::CapabilityFor(const PeerLink& link) const {
+  CapabilityPayload payload = LocalCapability();
+  std::lock_guard lock(strand_mu_);
+  if (listen_addr_disclosure_ && !listen_addr_disclosure_(link.RemotePeerId())) {
+    payload.listen_multiaddrs.clear();
+  }
+  return payload;
+}
+
 std::optional<std::string> PeerLinkManager::PreferredMultiaddr(const std::string& peer_id) const {
   std::lock_guard lock(strand_mu_);
   if (peer_id.empty()) {
@@ -1071,7 +1085,7 @@ void PeerLinkManager::StartCapabilityExchange(PeerLink& link) {
     return;
   }
   link.MarkCapabilityOfferSent();
-  (void)ChannelMux::SendCapabilityOffer(*link.Mux(), LocalCapability());
+  (void)ChannelMux::SendCapabilityOffer(*link.Mux(), CapabilityFor(link));
 }
 
 void PeerLinkManager::OnCh0Data(const std::string& peer_key, std::vector<uint8_t> payload) {
@@ -1102,7 +1116,7 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
   // Inbound peer replies once with local caps on the same ch0.
   if (!link->CapabilityOfferSent()) {
     link->MarkCapabilityOfferSent();
-    auto encoded = CapabilityCodec::Encode(LocalCapability());
+    auto encoded = CapabilityCodec::Encode(CapabilityFor(*link));
     if (encoded && link->Mux()->State(kCapabilityChannelId) == ChannelState::Open) {
       (void)link->Mux()->SendData(kCapabilityChannelId, std::move(*encoded));
     }
