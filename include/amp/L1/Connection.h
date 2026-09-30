@@ -176,6 +176,8 @@ private:
     std::vector<uint8_t> payload;
     int64_t next_rtx_ms = 0;
     int attempts = 0;
+    /** First send (a round-trip sample when acked before any retransmit). */
+    int64_t first_sent_ms = 0;
   };
   std::deque<Outstanding> outstanding_;
 };

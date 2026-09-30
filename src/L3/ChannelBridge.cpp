@@ -54,7 +54,7 @@ void ChannelBridge::ArmOneWay(std::shared_ptr<ChannelSession> from, std::shared_
     return false;
   };
 
-  from->SetFrameHandler([to, cancelled, finish](Roe<std::vector<uint8_t>> body) {
+  from->SetFrameHandler([to, cancelled, finish, forwarded = forwarded_bytes_](Roe<std::vector<uint8_t>> body) {
     if (cancelled()) {
       return false;
     }
@@ -62,10 +62,12 @@ void ChannelBridge::ArmOneWay(std::shared_ptr<ChannelSession> from, std::shared_
       finish();
       return false;
     }
+    const size_t bytes = body->size();
     if (!to || to->IsClosed() || !to->EnqueueOutbound(std::move(*body))) {
       finish();
       return false;
     }
+    forwarded->fetch_add(bytes, std::memory_order_relaxed);
     return true;
   });
   from->SetClosedCallback([finish](const char*) { finish(); });

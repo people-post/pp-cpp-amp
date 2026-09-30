@@ -4,6 +4,8 @@
 #include "amp/L1/DatagramIo.h"
 #include "amp/L1/Types.h"
 
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -11,6 +13,27 @@
 #include <vector>
 
 namespace pp::adp {
+
+/**
+ * Traffic totals for one Endpoint since it was made (all its associations; no per-peer split).
+ * Read from any thread with `Endpoint::Stats()`.
+ */
+struct EndpointStats {
+  uint64_t tx_datagrams = 0;
+  uint64_t tx_bytes = 0;
+  uint64_t rx_datagrams = 0;
+  uint64_t rx_bytes = 0;
+  /** Received datagrams dropped before any association took them (bad HMAC / decode, unknown). */
+  uint64_t rx_rejected = 0;
+  /** Reliable data packets sent (first sends only). */
+  uint64_t reliable_sent = 0;
+  uint64_t retransmits = 0;
+  /** Reliable packets given up after the retransmit cap (never acked). */
+  uint64_t reliable_lost = 0;
+  /** Round trips measured (Ack of a never-retransmitted Reliable packet — Karn) and their sum. */
+  uint64_t rtt_samples = 0;
+  uint64_t rtt_sum_ms = 0;
+};
 
 class Endpoint {
 public:
@@ -51,6 +74,22 @@ public:
    */
   void SetMaxAcceptedConnections(size_t max) { max_accepted_conns_ = max; }
 
+  /** Traffic totals so far. Any thread. */
+  EndpointStats Stats() const;
+  /**
+   * Called with each round-trip sample (ms), on the thread that drives this Endpoint (for a
+   * histogram). Set before traffic starts.
+   */
+  using RttObserver = std::function<void(int64_t rtt_ms)>;
+  void SetRttObserver(RttObserver observer) { rtt_observer_ = std::move(observer); }
+
+  // Counted by the associations (Connection); not for other callers.
+  void NoteReliableSent() { reliable_sent_.fetch_add(1, std::memory_order_relaxed); }
+  void NoteRetransmit() { retransmits_.fetch_add(1, std::memory_order_relaxed); }
+  void NoteReliableLost() { reliable_lost_.fetch_add(1, std::memory_order_relaxed); }
+  void NoteRejected() { rx_rejected_.fetch_add(1, std::memory_order_relaxed); }
+  void NoteRttSample(int64_t rtt_ms);
+
 private:
   void HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram);
 
@@ -61,6 +100,18 @@ private:
   bool accept_enabled_ = false;
   AcceptHandler accept_handler_;
   size_t max_accepted_conns_ = 4096;
+
+  std::atomic<uint64_t> tx_datagrams_{0};
+  std::atomic<uint64_t> tx_bytes_{0};
+  std::atomic<uint64_t> rx_datagrams_{0};
+  std::atomic<uint64_t> rx_bytes_{0};
+  std::atomic<uint64_t> rx_rejected_{0};
+  std::atomic<uint64_t> reliable_sent_{0};
+  std::atomic<uint64_t> retransmits_{0};
+  std::atomic<uint64_t> reliable_lost_{0};
+  std::atomic<uint64_t> rtt_samples_{0};
+  std::atomic<uint64_t> rtt_sum_ms_{0};
+  RttObserver rtt_observer_;
 };
 
 } // namespace pp::adp
