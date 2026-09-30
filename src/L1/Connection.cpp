@@ -251,10 +251,12 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   o.payload.assign(payload.begin(), payload.end());
   o.next_rtx_ms = now + params_.rtx_interval_ms;
   o.attempts = 0;
+  o.first_sent_ms = now;
   auto err = SendPacketAsFailure(PacketType::DataReliable, o.seq, payload, now);
   if (!err) {
     return err.error();
   }
+  endpoint_->NoteReliableSent();
   outstanding_.push_back(std::move(o));
   return {};
 }
@@ -272,11 +274,13 @@ void Connection::Tick(int64_t now_ms) {
     }
     ++o.attempts;
     o.next_rtx_ms = now_ms + params_.rtx_interval_ms;
+    endpoint_->NoteRetransmit();
     (void)SendPacket(PacketType::DataReliable, o.seq, o.payload, now_ms);
   }
   // Drop permanently failed from front.
   while (!outstanding_.empty() && outstanding_.front().attempts >= params_.max_rtx &&
          now_ms >= outstanding_.front().next_rtx_ms) {
+    endpoint_->NoteReliableLost();
     outstanding_.pop_front();
   }
 }
@@ -284,10 +288,12 @@ void Connection::Tick(int64_t now_ms) {
 void Connection::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram,
                                 int64_t now_ms) {
   if (!binder_.Verify(datagram)) {
+    endpoint_->NoteRejected();
     return;
   }
   auto decoded = WireCodec::Decode(datagram);
   if (!decoded) {
+    endpoint_->NoteRejected();
     return;
   }
   HandleAuthenticated(*decoded, from, now_ms);
@@ -326,6 +332,12 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
 
   switch (pkt.type) {
   case PacketType::Ack: {
+    for (const Outstanding& o : outstanding_) {
+      if (o.seq == pkt.seq && o.attempts == 0) {
+        endpoint_->NoteRttSample(now_ms - o.first_sent_ms);  // Karn: never a retransmitted one
+        break;
+      }
+    }
     outstanding_.erase(std::remove_if(outstanding_.begin(), outstanding_.end(),
                                       [&](const Outstanding& o) { return o.seq == pkt.seq; }),
                        outstanding_.end());

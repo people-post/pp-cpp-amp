@@ -3,6 +3,7 @@
 #include "amp/L3/ChannelSession.h"
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 
@@ -30,6 +31,9 @@ public:
 
   void Stop();
 
+  /** DATA bytes forwarded so far, both directions. Any thread. */
+  uint64_t ForwardedBytes() const { return forwarded_bytes_->load(std::memory_order_relaxed); }
+
 private:
   void ArmOneWay(std::shared_ptr<ChannelSession> from, std::shared_ptr<ChannelSession> to);
 
@@ -39,6 +43,7 @@ private:
   std::shared_ptr<std::atomic<bool>> cancelled_;
   ClosedCallback on_closed_;
   std::shared_ptr<std::atomic<bool>> closed_fired_;
+  std::shared_ptr<std::atomic<uint64_t>> forwarded_bytes_ = std::make_shared<std::atomic<uint64_t>>(0);
 };
 
 } // namespace pp::amp

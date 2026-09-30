@@ -48,7 +48,36 @@ std::shared_ptr<Connection> Endpoint::Find(const AssocId& id) const {
 void Endpoint::Unregister(const AssocId& id) { conns_.erase(id); }
 
 Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram) {
-  return io_->SendTo(peer, datagram);
+  auto sent = io_->SendTo(peer, datagram);
+  if (sent) {
+    tx_datagrams_.fetch_add(1, std::memory_order_relaxed);
+    tx_bytes_.fetch_add(datagram.size(), std::memory_order_relaxed);
+  }
+  return sent;
+}
+
+EndpointStats Endpoint::Stats() const {
+  EndpointStats s;
+  s.tx_datagrams = tx_datagrams_.load(std::memory_order_relaxed);
+  s.tx_bytes = tx_bytes_.load(std::memory_order_relaxed);
+  s.rx_datagrams = rx_datagrams_.load(std::memory_order_relaxed);
+  s.rx_bytes = rx_bytes_.load(std::memory_order_relaxed);
+  s.rx_rejected = rx_rejected_.load(std::memory_order_relaxed);
+  s.reliable_sent = reliable_sent_.load(std::memory_order_relaxed);
+  s.retransmits = retransmits_.load(std::memory_order_relaxed);
+  s.reliable_lost = reliable_lost_.load(std::memory_order_relaxed);
+  s.rtt_samples = rtt_samples_.load(std::memory_order_relaxed);
+  s.rtt_sum_ms = rtt_sum_ms_.load(std::memory_order_relaxed);
+  return s;
+}
+
+void Endpoint::NoteRttSample(const int64_t rtt_ms) {
+  const int64_t sample = rtt_ms < 0 ? 0 : rtt_ms;
+  rtt_samples_.fetch_add(1, std::memory_order_relaxed);
+  rtt_sum_ms_.fetch_add(static_cast<uint64_t>(sample), std::memory_order_relaxed);
+  if (rtt_observer_) {
+    rtt_observer_(sample);
+  }
 }
 
 void Endpoint::Pump(const size_t budget) {
@@ -60,6 +89,8 @@ void Endpoint::Pump(const size_t budget) {
     if (!*got) {
       break;
     }
+    rx_datagrams_.fetch_add(1, std::memory_order_relaxed);
+    rx_bytes_.fetch_add((*got)->second.size(), std::memory_order_relaxed);
     HandleDatagram((*got)->first, (*got)->second);
   }
 }
@@ -78,6 +109,7 @@ void Endpoint::Tick() {
 
 void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram) {
   if (datagram.size() < kHeaderBytes + kHmacBytes) {
+    NoteRejected();
     return;
   }
   AssocId id{};
@@ -88,14 +120,17 @@ void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> d
     return;
   }
   if (!accept_enabled_ || !accept_key_) {
+    NoteRejected();
     return;
   }
   HmacBinder binder(*accept_key_);
   if (!binder.Verify(datagram)) {
+    NoteRejected();
     return;
   }
   auto decoded = WireCodec::Decode(datagram);
   if (!decoded) {
+    NoteRejected();
     return;
   }
   const bool is_new = Find(id) == nullptr;

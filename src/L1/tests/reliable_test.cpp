@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include <sodium.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -448,3 +449,92 @@ TEST_F(AdpReliableTest, GiveUpAfterMaxRtx) {
 }
 
 } // namespace
+
+namespace {
+
+struct OpenPair {
+  Pair p = MakePair();
+  std::shared_ptr<pp::adp::Connection> a;
+  std::shared_ptr<pp::adp::Connection> b;
+};
+
+OpenPair OpenBoth(const int max_rtx = 10) {
+  OpenPair o;
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = o.p.addr_b;
+  op.rtx_interval_ms = 10;
+  op.max_rtx = max_rtx;
+  o.a = *o.p.ep_a->Open(op);
+  pp::adp::OpenParams opb = op;
+  opb.peer = o.p.addr_a;
+  o.b = *o.p.ep_b->Open(opb);
+  o.b->OnMessage([](const pp::adp::Message&) {});
+  return o;
+}
+
+std::span<const uint8_t> Bytes(const char* text) {
+  return std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
+}
+
+} // namespace
+
+// Stats: traffic totals and a round trip from the ack of a first send.
+TEST_F(AdpReliableTest, StatsCountTrafficAndARoundTrip) {
+  auto o = OpenBoth();
+  std::vector<int64_t> samples;
+  o.p.ep_a->SetRttObserver([&](int64_t rtt_ms) { samples.push_back(rtt_ms); });
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("stats")));
+  o.p.ep_b->Pump();  // B takes it and acks
+  o.p.clock->Advance(7);
+  o.p.ep_a->Pump();  // A sees the ack 7 ms after the send
+
+  const auto a = o.p.ep_a->Stats();
+  const auto b = o.p.ep_b->Stats();
+  EXPECT_EQ(a.reliable_sent, 1u);
+  EXPECT_EQ(a.retransmits, 0u);
+  EXPECT_GE(a.tx_datagrams, 1u);
+  EXPECT_GT(a.tx_bytes, 0u);
+  EXPECT_GE(b.rx_datagrams, 1u);
+  EXPECT_EQ(a.rtt_samples, 1u);
+  EXPECT_EQ(a.rtt_sum_ms, 7u);
+  EXPECT_EQ(samples, std::vector<int64_t>{7});
+}
+
+// Karn: a retransmitted packet's ack is ambiguous — no round-trip sample; the retransmit counts.
+TEST_F(AdpReliableTest, RetransmittedPacketGivesNoRoundTrip) {
+  auto o = OpenBoth();
+  o.p.io_a->DropNext(1);
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("again")));
+  PumpBoth(o.p);
+  o.p.clock->Advance(10);
+  PumpBoth(o.p);
+  const auto a = o.p.ep_a->Stats();
+  EXPECT_GE(a.retransmits, 1u);
+  EXPECT_EQ(a.rtt_samples, 0u);
+  EXPECT_EQ(a.reliable_lost, 0u);
+}
+
+TEST_F(AdpReliableTest, PacketGivenUpAfterTheRetransmitCapCountsAsLost) {
+  auto o = OpenBoth(/*max_rtx=*/2);
+  o.p.io_a->DropNext(100);
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("lost")));
+  for (int i = 0; i < 6; ++i) {
+    PumpBoth(o.p);
+    o.p.clock->Advance(10);
+  }
+  PumpBoth(o.p);
+  EXPECT_EQ(o.p.ep_a->Stats().reliable_lost, 1u);
+}
+
+TEST_F(AdpReliableTest, GarbageDatagramsCountAsRejected) {
+  auto p = MakePair();
+  const std::vector<uint8_t> junk(64, 0xab);
+  ASSERT_TRUE(p.io_a->SendTo(p.addr_b, junk));
+  p.ep_b->Pump();
+  const auto b = p.ep_b->Stats();
+  EXPECT_EQ(b.rx_datagrams, 1u);
+  EXPECT_EQ(b.rx_rejected, 1u);
+}
