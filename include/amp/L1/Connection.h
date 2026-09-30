@@ -40,6 +40,18 @@ struct OpenParams {
   bool reduce_rtx_until_authenticated = false;
 };
 
+/** One association's Reliable traffic figures (the per-link slice of `EndpointStats`). */
+struct ConnectionStats {
+  uint64_t reliable_sent = 0;
+  uint64_t retransmits = 0;
+  uint64_t reliable_lost = 0;
+  /** Round trips measured (Karn: acks of never-retransmitted packets) and their sum. */
+  uint64_t rtt_samples = 0;
+  uint64_t rtt_sum_ms = 0;
+  /** Smoothed round trip (RFC 6298 SRTT, α = 1/8); -1 before the first sample. */
+  int64_t srtt_ms = -1;
+};
+
 class Connection : public std::enable_shared_from_this<Connection> {
 public:
   enum class Err : int32_t {
@@ -75,6 +87,8 @@ public:
   /** Amp-clock ms of the last authenticated RX; 0 if none yet. */
   int64_t LastAuthRxMs() const { return last_auth_rx_ms_; }
   AssocId Id() const { return id_; }
+  /** Io-thread affine, like the rest of the connection. */
+  const ConnectionStats& Stats() const { return stats_; }
 
   Roe<void> Send(QosClass qos, std::span<const uint8_t> payload);
 
@@ -180,6 +194,8 @@ private:
     int64_t first_sent_ms = 0;
   };
   std::deque<Outstanding> outstanding_;
+  ConnectionStats stats_;
+  void NoteRttSample(int64_t rtt_ms);
 };
 
 } // namespace pp::adp
