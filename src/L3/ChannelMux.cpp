@@ -468,6 +468,14 @@ Roe<void> ChannelMux::CloseChannel(const uint32_t channel_id, std::string reason
   return SendFrame(frame, *channel);
 }
 
+void ChannelMux::CountOpenChannels(std::unordered_map<std::string, size_t>& by_protocol) const {
+  for (const auto& [id, channel] : channels_) {
+    if (channel.state == ChannelState::Open) {
+      ++by_protocol[channel.protocol_id];
+    }
+  }
+}
+
 ChannelState ChannelMux::State(const uint32_t channel_id) const {
   if (const auto* ch = ChannelById(channel_id)) {
     return ch->state;
