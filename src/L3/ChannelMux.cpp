@@ -61,12 +61,90 @@ Roe<void> ChannelMux::SendFrame(const ChannelFrame& frame, ChannelRecord& channe
   if (!wire) {
     return wire.error();
   }
-  last_send_qos_ = QosForClass(channel.policy.cls);
-  auto sealed = session_.Seal(frame.header.channel_id, frame.header.channel_seq, *wire);
+  return SendWire(frame.header.channel_id, frame.header.channel_seq, QosForClass(channel.policy.cls),
+                  std::move(*wire));
+}
+
+bool ChannelMux::HasReliableCredit() const { return !transport_credits_ || transport_credits_() > 0; }
+
+Roe<void> ChannelMux::SealAndTransport(const uint32_t channel_id, const uint32_t channel_seq, const adp::QosClass qos,
+                                       const std::vector<uint8_t>& wire) {
+  if (!transport_) {
+    return Error("amp mux: no transport");
+  }
+  last_send_qos_ = qos;
+  // Seal at send time, not queue time: a rekey may happen while a frame waits.
+  auto sealed = session_.Seal(channel_id, channel_seq, wire);
   if (!sealed) {
     return sealed.error();
   }
-  return transport_(frame.header.channel_id, frame.header.channel_seq, last_send_qos_, std::move(*sealed));
+  return transport_(channel_id, channel_seq, qos, std::move(*sealed));
+}
+
+Roe<void> ChannelMux::SendWire(const uint32_t channel_id, const uint32_t channel_seq, const adp::QosClass qos,
+                               std::vector<uint8_t> wire) {
+  if (qos != adp::QosClass::Reliable) {
+    return SealAndTransport(channel_id, channel_seq, qos, wire);
+  }
+  FlushQueued();
+  auto queue = send_queues_.find(channel_id);
+  const bool channelWaiting = queue != send_queues_.end() && !queue->second.empty();
+  if (!channelWaiting && HasReliableCredit()) {
+    return SealAndTransport(channel_id, channel_seq, qos, wire);
+  }
+  // Window full (or this channel is already waiting): hold it, in order.
+  if (queued_bytes_ + wire.size() > kMaxQueuedBytes) {
+    return Error("amp mux: send queue full");
+  }
+  queued_bytes_ += wire.size();
+  auto& channelQueue = send_queues_[channel_id];
+  if (channelQueue.empty()) {
+    send_order_.push_back(channel_id);
+  }
+  channelQueue.push_back(QueuedFrame{channel_seq, std::move(wire)});
+  return Roe<void>();
+}
+
+void ChannelMux::FlushQueued() {
+  while (!send_order_.empty() && HasReliableCredit()) {
+    const uint32_t channel_id = send_order_.front();
+    send_order_.pop_front();
+    auto it = send_queues_.find(channel_id);
+    if (it == send_queues_.end() || it->second.empty()) {
+      continue;
+    }
+    QueuedFrame frame = std::move(it->second.front());
+    it->second.pop_front();
+    queued_bytes_ -= frame.wire.size();
+    // A transport failure here has no caller to report to; the link layer
+    // handles a dead connection, and the peer's reassembly times out.
+    (void)SealAndTransport(channel_id, frame.channel_seq, adp::QosClass::Reliable, frame.wire);
+    if (it->second.empty()) {
+      send_queues_.erase(it);
+    } else {
+      send_order_.push_back(channel_id);  // round-robin: other channels go next
+    }
+  }
+}
+
+void ChannelMux::DropQueued(const uint32_t channel_id) {
+  auto it = send_queues_.find(channel_id);
+  if (it == send_queues_.end()) {
+    return;
+  }
+  for (const auto& frame : it->second) {
+    queued_bytes_ -= frame.wire.size();
+  }
+  send_queues_.erase(it);
+  // Its stale entry in send_order_ is skipped by FlushQueued.
+}
+
+size_t ChannelMux::QueuedFrameCount() const {
+  size_t count = 0;
+  for (const auto& [_, queue] : send_queues_) {
+    count += queue.size();
+  }
+  return count;
 }
 
 Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,
@@ -173,6 +251,9 @@ void ChannelMux::ClearProtocolHandlers() { protocol_handlers_.clear(); }
 
 std::vector<std::function<void()>> ChannelMux::DetachAllChannels() {
   std::vector<std::function<void()>> notices;
+  send_queues_.clear();
+  send_order_.clear();
+  queued_bytes_ = 0;
   for (auto& [id, channel] : channels_) {
     channel.state = ChannelState::Closed;
     channel.on_data = {};
@@ -402,12 +483,12 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
   const uint64_t msg_id = next_frag_msg_id_++;
   const uint16_t frag_count =
       static_cast<uint16_t>((payload.size() + kMaxSingleDataBytes - 1) / kMaxSingleDataBytes);
-  // Reliable ADP: refuse before any FRAG leaves so a WindowFull cannot strand a partial message.
-  if (QosForClass(channel->policy.cls) == adp::QosClass::Reliable && transport_credits_) {
-    const size_t credits = transport_credits_();
-    if (credits < frag_count) {
-      return Error("amp mux: transport window full");
-    }
+  // Fragments the window cannot take now wait in the send queue, so a message
+  // larger than the window (or several at once) still goes out in full.
+  const adp::QosClass qos = QosForClass(channel->policy.cls);
+  // Refuse up front rather than strand a partial message at the queue cap.
+  if (qos == adp::QosClass::Reliable && queued_bytes_ + payload.size() > kMaxQueuedBytes) {
+    return Error("amp mux: send queue full");
   }
   for (uint16_t i = 0; i < frag_count; ++i) {
     const size_t offset = static_cast<size_t>(i) * kMaxSingleDataBytes;
@@ -421,15 +502,7 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     if (!wire) {
       return wire.error();
     }
-    last_send_qos_ = QosForClass(channel->policy.cls);
-    auto sealed = session_.Seal(channel_id, channel->tx_seq, *wire);
-    if (!sealed) {
-      return sealed.error();
-    }
-    if (!transport_) {
-      return Error("amp mux: no transport");
-    }
-    auto sent = transport_(channel_id, channel->tx_seq, last_send_qos_, std::move(*sealed));
+    auto sent = SendWire(channel_id, channel->tx_seq, qos, std::move(*wire));
     if (!sent) {
       return sent.error();
     }
@@ -449,6 +522,7 @@ Roe<void> ChannelMux::ResetChannel(const uint32_t channel_id, const uint32_t cod
   frame.header.channel_seq = channel->tx_seq++;
   frame.reset_code = code;
   channel->state = ChannelState::Closed;
+  DropQueued(channel_id);  // abort: unsent data is discarded
   auto sent = SendFrame(frame, *channel);
   channels_.erase(channel_id);
   return sent;
@@ -530,6 +604,7 @@ void ChannelMux::Tick(const int64_t now_ms) {
   for (auto& [_, channel] : channels_) {
     channel.reassembly.SweepExpired(now_ms);
   }
+  FlushQueued();
 }
 
 } // namespace pp::amp

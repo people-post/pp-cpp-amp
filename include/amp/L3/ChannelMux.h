@@ -9,6 +9,7 @@
 
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -100,8 +101,17 @@ public:
   /** Test hook — send pre-sealed L3 bytes on the mux transport. */
   Roe<void> InjectSealedForTest(uint32_t channel_id, uint32_t channel_seq, std::vector<uint8_t> sealed);
 
-  /** Sweep expired FRAG partial-assembly state on every channel (drive periodically). */
+  /**
+   * Sweep expired FRAG partial-assembly state on every channel and send
+   * reliable frames waiting for transport window space (drive periodically).
+   */
   void Tick(int64_t now_ms);
+
+  /** Reliable frames waiting for transport window space (all channels). */
+  size_t QueuedFrameCount() const;
+
+  /** Upper bound on bytes waiting for window space; SendData beyond it fails. */
+  static constexpr size_t kMaxQueuedBytes = 32 * 1024 * 1024;
 
 private:
   struct ChannelRecord {
@@ -118,7 +128,25 @@ private:
 
   ChannelRecord* ChannelById(uint32_t channel_id);
   const ChannelRecord* ChannelById(uint32_t channel_id) const;
+  /** A reliable frame encoded but not yet sealed/sent (waiting for window space). */
+  struct QueuedFrame {
+    uint32_t channel_seq = 0;
+    std::vector<uint8_t> wire;
+  };
+
   Roe<void> SendFrame(const ChannelFrame& frame, ChannelRecord& channel);
+  /**
+   * Seal and send an encoded frame, or queue it: a reliable frame waits while
+   * the transport window is full or its channel already has frames waiting, so
+   * each channel's frames (and its CLOSE) stay in order.
+   */
+  Roe<void> SendWire(uint32_t channel_id, uint32_t channel_seq, adp::QosClass qos, std::vector<uint8_t> wire);
+  Roe<void> SealAndTransport(uint32_t channel_id, uint32_t channel_seq, adp::QosClass qos,
+                             const std::vector<uint8_t>& wire);
+  bool HasReliableCredit() const;
+  /** Send queued frames round-robin across channels while window space lasts. */
+  void FlushQueued();
+  void DropQueued(uint32_t channel_id);
   Roe<void> DispatchFrame(ChannelFrame frame);
   Roe<void> DeliverPayload(ChannelRecord& channel, std::vector<uint8_t> payload);
   Roe<void> HandleOpen(ChannelFrame frame);
@@ -130,6 +158,10 @@ private:
   Session* peer_session_ = nullptr;
   TransportSend transport_;
   TransportCredits transport_credits_;
+  std::unordered_map<uint32_t, std::deque<QueuedFrame>> send_queues_;
+  /** Channels with queued frames, in round-robin order. */
+  std::deque<uint32_t> send_order_;
+  size_t queued_bytes_ = 0;
   std::function<int64_t()> now_ms_;
   std::unordered_map<uint32_t, ChannelRecord> channels_;
   std::unordered_map<uint32_t, DataHandler> pending_handlers_;
