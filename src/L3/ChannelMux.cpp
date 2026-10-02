@@ -220,6 +220,7 @@ Roe<void> ChannelMux::ApplyChannelPolicy(const uint32_t channel_id, ChannelPolic
   }
   channel->policy = std::move(policy);
   channel->reassembly = MessageReassembly(channel->policy.max_message_bytes);
+  channel->read_clock_ms = -1;  // a (re)bound reader gets a full read_timeout
   return Roe<void>();
 }
 
@@ -415,6 +416,7 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
       }
       channel->rx_seq += 1;
     }
+    channel->read_clock_ms = -1;
     return DeliverPayload(*channel, std::move(frame.payload));
   case ChannelFrameType::Frag: {
     if (!channel || channel->state != ChannelState::Open) {
@@ -426,6 +428,7 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
       }
       channel->rx_seq += 1;
     }
+    channel->read_clock_ms = -1;
     auto assembled = channel->reassembly.Push(frame.frag, now_ms_ ? now_ms_() : 0);
     if (!assembled) {
       return assembled.error();
@@ -600,10 +603,36 @@ Roe<void> ChannelMux::InjectSealedForTest(const uint32_t channel_id, const uint3
   return transport_(channel_id, channel_seq, last_send_qos_, std::move(sealed));
 }
 
+void ChannelMux::ExpireIdleReaders(const int64_t now_ms) {
+  std::vector<uint32_t> expired;
+  for (auto& [id, channel] : channels_) {
+    if (channel.policy.read_timeout.count() <= 0 || channel.state == ChannelState::Closed) {
+      continue;
+    }
+    if (channel.read_clock_ms < 0) {
+      channel.read_clock_ms = now_ms;
+    } else if (now_ms - channel.read_clock_ms >= channel.policy.read_timeout.count()) {
+      expired.push_back(id);
+    }
+  }
+  for (const uint32_t id : expired) {
+    auto* channel = ChannelById(id);
+    if (!channel) {
+      continue;  // an earlier notice's handler closed it
+    }
+    TerminalHandler handler = channel->on_terminal;  // ResetChannel erases the record
+    (void)ResetChannel(id);
+    if (handler) {
+      handler(id, kReadTimeoutReason);
+    }
+  }
+}
+
 void ChannelMux::Tick(const int64_t now_ms) {
   for (auto& [_, channel] : channels_) {
     channel.reassembly.SweepExpired(now_ms, tuning_.frag_assembly_timeout_ms);
   }
+  ExpireIdleReaders(now_ms);
   FlushQueued();
 }
 

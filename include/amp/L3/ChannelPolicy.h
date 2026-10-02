@@ -21,6 +21,13 @@ struct ChannelPolicy {
   bool write_preferred = false;
   bool read_once = false;
   size_t max_message_bytes = AmpChannelLimits::kMaxChatStreamJsonBytes;
+  /**
+   * Reset the channel when nothing arrives on it for this long (0 = never). The
+   * clock runs from open / Bind and restarts on every inbound DATA or FRAG, so on
+   * a request/response channel it also covers the wait for the reply. The reader
+   * gets a terminal notice with ChannelMux::kReadTimeoutReason; the peer a RESET.
+   * Checked on ChannelMux::Tick, so it fires up to one tick late.
+   */
   std::chrono::milliseconds read_timeout{0};
   std::function<void()> on_outbound_drop;
 };
@@ -63,9 +70,11 @@ inline ChannelPolicy MakeBulkChannelPolicy() {
 /** Large Reliable binary / content-addressed object transfer (product-neutral). */
 inline ChannelPolicy BulkChannelPolicy() { return MakeBulkChannelPolicy(); }
 
-/** Call-media / realtime frames: BestEffort + drop Oldest under outbound burst. */
-inline ChannelPolicy CallMediaChannelPolicy(
-    std::chrono::milliseconds read_timeout = std::chrono::milliseconds{8000}) {
+/**
+ * Call-media / realtime frames: BestEffort + drop Oldest under outbound burst.
+ * No read timeout by default: a muted or paused stream is legitimately silent.
+ */
+inline ChannelPolicy CallMediaChannelPolicy(std::chrono::milliseconds read_timeout = std::chrono::milliseconds{0}) {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Realtime;
   policy.drop = ChannelDropPolicy::Oldest;
@@ -82,8 +91,7 @@ inline ChannelPolicy CallMediaChannelPolicy(
  * BestEffort (Realtime) so inner media FRAG bursts are not capped by ADP reliable_window.
  * Nested MSH is a few frames; MemoryDatagramIo tests are lossless. Dual QoS lanes later.
  */
-inline ChannelPolicy CircuitCarrierChannelPolicy(
-    std::chrono::milliseconds read_timeout = std::chrono::milliseconds{8000}) {
+inline ChannelPolicy CircuitCarrierChannelPolicy(std::chrono::milliseconds read_timeout = std::chrono::milliseconds{0}) {
   return CallMediaChannelPolicy(read_timeout);
 }
 
