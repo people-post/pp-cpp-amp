@@ -37,6 +37,10 @@ struct EndpointStats {
 
 class Endpoint {
 public:
+  /** Tuning for connections this endpoint accepts, and its pre-association skew check. */
+  void SetTuning(const AdpTuning& tuning) { tuning_ = tuning; }
+  const AdpTuning& Tuning() const { return tuning_; }
+
   Endpoint(std::shared_ptr<DatagramIo> io, std::shared_ptr<Clock> clock);
 
   DatagramIo& Io() { return *io_; }
@@ -112,6 +116,7 @@ private:
   std::atomic<uint64_t> rtt_samples_{0};
   std::atomic<uint64_t> rtt_sum_ms_{0};
   RttObserver rtt_observer_;
+  AdpTuning tuning_{};
 };
 
 } // namespace pp::adp

@@ -63,9 +63,9 @@ Roe<std::optional<std::vector<uint8_t>>> MessageReassembly::Push(const ChannelFr
   return std::optional<std::vector<uint8_t>>{std::move(out)};
 }
 
-void MessageReassembly::SweepExpired(const int64_t now_ms) {
+void MessageReassembly::SweepExpired(const int64_t now_ms, const int64_t timeout_ms) {
   for (auto it = partial_.begin(); it != partial_.end();) {
-    if (now_ms - it->second.started_ms > kDefaultFragAssemblyTimeoutMs) {
+    if (now_ms - it->second.started_ms > timeout_ms) {
       it = partial_.erase(it);
     } else {
       ++it;

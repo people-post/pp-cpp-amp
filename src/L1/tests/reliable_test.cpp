@@ -672,3 +672,45 @@ TEST_F(AdpReliableTest, TransientSendFailureIsRetransmitted) {
   EXPECT_EQ(w.got[0], 1u);
   EXPECT_EQ(w.got[1], 2u);
 }
+
+// Tuning: a connection's liveness floor comes from its parameters.
+TEST_F(AdpReliableTest, AliveTimeoutIsTunable) {
+  auto p = MakePair();
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  pp::adp::AdpTuning tuning;
+  tuning.alive_timeout_ms = 1234;
+  op.ApplyTuning(tuning);
+  auto c = p.ep_a->Open(op);
+  ASSERT_TRUE(c);
+  EXPECT_EQ((*c)->LivenessWindowMs(), 1234);
+}
+
+// Tuning: connections an endpoint accepts use the endpoint's tuning.
+TEST_F(AdpReliableTest, AcceptedConnectionUsesEndpointTuning) {
+  auto p = MakePair();
+  pp::adp::AdpTuning tuning;
+  tuning.reliable_window = 8;
+  tuning.replay_window = 8;
+  tuning.alive_timeout_ms = 4321;
+  p.ep_b->SetTuning(tuning);
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+  const uint8_t byte = 1;
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(&byte, 1)));
+  PumpBoth(p);
+  auto accepted = p.ep_b->Find(Aid());
+  ASSERT_NE(accepted, nullptr);
+  EXPECT_EQ(accepted->ReliableCreditsRemaining(), 8u);
+  EXPECT_EQ(accepted->LivenessWindowMs(), 4321);
+}

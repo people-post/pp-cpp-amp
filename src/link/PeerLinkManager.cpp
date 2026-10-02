@@ -54,6 +54,7 @@ PeerLinkManager::PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_iden
                                  PeerLinkConfig config)
     : endpoint_(endpoint), local_identity_(std::move(local_identity)), local_peer_id_(std::move(local_peer_id)),
       book_(std::move(config)), strand_mu_(owned_mu_) {
+  endpoint_.SetTuning(book_.Config().adp);
   endpoint_.SetAcceptKey(PreSessionPeerKey());
   InstallAcceptHandler();
 }
@@ -62,6 +63,7 @@ PeerLinkManager::PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_iden
                                  PeerLinkConfig config, std::recursive_mutex& strand_mu)
     : endpoint_(endpoint), local_identity_(std::move(local_identity)), local_peer_id_(std::move(local_peer_id)),
       book_(std::move(config)), strand_mu_(strand_mu) {
+  endpoint_.SetTuning(book_.Config().adp);
   endpoint_.SetAcceptKey(PreSessionPeerKey());
   InstallAcceptHandler();
 }
@@ -414,6 +416,9 @@ size_t PeerLinkManager::CountConnectedLinksForPeerId(const std::string& peer_id)
 }
 
 bool PeerLinkManager::OnLinkEstablished(PeerLink& link) {
+  if (auto* mux = link.Mux()) {
+    mux->SetTuning(book_.Config().mux);
+  }
   std::lock_guard lock(strand_mu_);
   // Punched: our burst dial won (ephemeral burst key), or the peer's punch reached us while we were
   // bursting toward it (simultaneous open). Read before adopt may rekey the link.
@@ -718,6 +723,7 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
   }
 
   adp::OpenParams params;
+  params.ApplyTuning(book_.Config().adp);
   params.key = PreSessionPeerKey();
   params.mint_id = true;
   params.peer = ep_it->second.endpoint;

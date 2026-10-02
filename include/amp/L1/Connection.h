@@ -29,6 +29,18 @@ struct OpenParams {
   size_t reliable_window = kDefaultReliableWindow;
   int64_t rtx_interval_ms = kDefaultRtxIntervalMs;
   int max_rtx = kDefaultMaxRtx;
+  /** Liveness floor for a cold connection (see LivenessWindowMs). */
+  int64_t alive_timeout_ms = kAliveTimeoutMs;
+
+  /** Copy a deployment's transport tuning into these parameters. */
+  void ApplyTuning(const AdpTuning& tuning) {
+    reliable_window = tuning.reliable_window;
+    replay_window = tuning.replay_window;
+    rtx_interval_ms = tuning.rtx_interval_ms;
+    max_rtx = tuning.max_rtx;
+    skew_ms = tuning.skew_ms;
+    alive_timeout_ms = tuning.alive_timeout_ms;
+  }
   /**
    * Pre-auth hardening, lifted by UpgradeBinder once the association is real: retransmits cap
    * at kPreAuthMaxRtx instead of max_rtx (reflection amplification), and inbound Close /

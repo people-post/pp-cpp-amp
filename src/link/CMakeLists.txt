@@ -10,6 +10,7 @@
   AmpStack.cpp
   MshAdpHandshake.cpp
   PeerLink.cpp
+  PeerLinkConfig.cpp
   PeerLinkManager.cpp
   Types.cpp)
 

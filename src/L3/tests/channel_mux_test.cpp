@@ -459,6 +459,41 @@ TEST(ChannelMuxTest, ResetDropsQueuedFrames) {
   EXPECT_FALSE(delivered);
 }
 
+TEST(ChannelMuxTest, ConcurrentChannelCapIsTunable) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  MuxTuning tuning;
+  tuning.max_concurrent_channels = 3;
+  link.responder.mux.SetTuning(tuning);
+  size_t open = 0;
+  uint32_t id = 101;
+  for (int i = 0; i < 6; ++i, id += 2) {
+    auto ch = link.initiator.mux.OpenOutbound("/x/1", ControlJsonChannelPolicy(), id);
+    ASSERT_TRUE(static_cast<bool>(ch));
+    open += link.responder.mux.State(*ch) == ChannelState::Open ? 1 : 0;
+  }
+  EXPECT_GE(open, 1u);
+  EXPECT_LE(open, 3u);
+}
+
+TEST(MessageReassemblyTest, AssemblyTimeoutIsTunable) {
+  MessageReassembly reassembly;
+  ChannelFragBody frag;
+  frag.msg_id = 7;
+  frag.frag_index = 0;
+  frag.frag_count = 2;
+  frag.total_len = 4;
+  frag.chunk = {1, 2};
+  ASSERT_TRUE(static_cast<bool>(reassembly.Push(frag, /*now_ms=*/1000)));
+  reassembly.SweepExpired(/*now_ms=*/1600, /*timeout_ms=*/500);  // expired: dropped
+  frag.frag_index = 1;
+  frag.chunk = {3, 4};
+  auto completed = reassembly.Push(frag, 1700);
+  ASSERT_TRUE(static_cast<bool>(completed));
+  EXPECT_FALSE(completed->has_value());  // the first half was swept
+}
+
 // Regression: an Open whose channel id has the *same* parity as the receiver's own dynamic ids
 // (i.e. the parity the receiver expects for ITS OWN opens, not the peer's) is a glare / squatting
 // attempt and must be refused, not silently accepted.
