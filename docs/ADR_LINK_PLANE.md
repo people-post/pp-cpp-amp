@@ -80,8 +80,8 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
      wire]) and keeps it until acked; the receiver releases frames in order, drops duplicates and
      answers every data frame with `LaneAck` (cumulative u32 + 64 selective bits). Resend on an
      adaptive RTO (RFC 6298 estimator, Karn, 200 ms – 3 s, doubling), or at once after three
-     selective acks pass a frame. Window 256 frames (mux transport credits; full → the send fails
-     like ADP `WindowFull`).
+     selective acks pass a frame. Window 256 frames (mux transport credits; when full, the mux queues
+     Reliable frames until acks free room, as for ADP).
    - A frame unacked after 10 transmissions (~20 s) means the end-to-end path is dead while the
      carrier may look fine (relay stopped splicing, far leg gone): Tick drops the nested link
      (`ConnectionDead`).

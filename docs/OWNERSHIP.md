@@ -9,7 +9,7 @@ It is the only mesh transport shared by pp-browser and pp-ledger. It is **not** 
 |---------|--------|
 | Association, session crypto, rekey | L1–L2 |
 | Channel OPEN / CLOSE, `protocol_id`, QoS classes | L3 |
-| FRAG + reassembly, Bulk credit / `WindowFull` | Large Reliable messages |
+| FRAG + reassembly, reliable send queue (waits for window credits) | Large Reliable messages |
 | Neutral policy factories | `ControlJsonChannelPolicy`, `CapabilityChannelPolicy`, `MakeBulkChannelPolicy` / `BulkChannelPolicy`, `CallMediaChannelPolicy`, `CircuitCarrierChannelPolicy` |
 | Amp-owned plumbing ids | e.g. `/amp/circuit-carrier/1.0.0` |
 | Link dial / warm / keepalive | `PeerLinkManager`, `AmpStack` |

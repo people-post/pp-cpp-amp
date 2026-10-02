@@ -279,38 +279,184 @@ TEST(ChannelSessionTest, ReadOnceClosesAfterFirstFrame) {
   EXPECT_TRUE(session.IsClosed());
 }
 
-TEST(ChannelMuxTest, FragPreflightRefusesWhenCreditsLow) {
+/**
+ * Simulated ADP reliable window: each reliable send takes a slot; Ack() frees
+ * them. Frames reach the responder as they are sent.
+ */
+struct WindowedTransport {
+  size_t window = 0;
+  size_t outstanding = 0;
+  size_t sends = 0;
+
+  void Attach(test::AmpTestLink& link) {
+    link.initiator.mux.SetTransportCredits([this] { return window > outstanding ? window - outstanding : 0; });
+    link.initiator.mux.SetTransport([this, &link](uint32_t ch, uint32_t seq, adp::QosClass qos,
+                                                  std::vector<uint8_t> sealed) {
+      if (qos == adp::QosClass::Reliable) {
+        if (outstanding >= window) {
+          return Roe<void>(Error("adp: window full"));
+        }
+        ++outstanding;
+      }
+      ++sends;
+      (void)link.responder.mux.OnSealedInbound(ch, seq, sealed);
+      return Roe<void>();
+    });
+  }
+  /** Peer acked everything in flight; the mux sends what waits on its next tick. */
+  void AckAndTick(test::AmpTestLink& link) {
+    outstanding = 0;
+    link.initiator.mux.Tick(0);
+  }
+};
+
+// Regression: a message needing more fragments than the window had room for
+// was refused ("transport window full"); ChannelSession then closed the
+// channel and the reply was lost. It now waits for room and arrives whole.
+TEST(ChannelMuxTest, FragWaitsForWindowThenDeliversWholeMessage) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
-
-  size_t credits = 1; // 2500 B needs 3 FRAG frames @ 900 B
-  size_t transport_calls = 0;
-  link.initiator.mux.SetTransportCredits([&] { return credits; });
-  link.initiator.mux.SetTransport([&](uint32_t ch, uint32_t seq, adp::QosClass, std::vector<uint8_t> sealed) {
-    ++transport_calls;
-    (void)link.responder.mux.OnSealedInbound(ch, seq, sealed);
-    return Roe<void>();
-  });
-
   auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
-  transport_calls = 0;
+  WindowedTransport transport;
+  transport.window = 1;  // 2500 B needs 3 FRAG frames @ 900 B
+  transport.Attach(link);
 
-  std::vector<uint8_t> large(2500, 0xAB);
-  auto sent = link.initiator.mux.SendData(*ch, large);
-  ASSERT_FALSE(static_cast<bool>(sent));
-  EXPECT_NE(sent.error().message.find("window full"), std::string::npos);
-  EXPECT_EQ(transport_calls, 0u);
-
-  credits = 8;
   std::vector<uint8_t> received;
   link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
     received = std::move(payload);
   });
+  const std::vector<uint8_t> large(2500, 0xAB);
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, large)));
+  EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 2u);
+  EXPECT_TRUE(received.empty());
+
+  transport.AckAndTick(link);
+  transport.AckAndTick(link);
+  EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 0u);
   EXPECT_EQ(received, large);
-  EXPECT_GE(transport_calls, 3u);
+}
+
+// A single message larger than the whole window could never be sent before.
+TEST(ChannelMuxTest, MessageLargerThanWholeWindowIsDelivered) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  WindowedTransport transport;
+  transport.window = 4;
+  transport.Attach(link);
+
+  std::vector<uint8_t> received;
+  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    received = std::move(payload);
+  });
+  std::vector<uint8_t> large(20 * 900 + 7);
+  for (size_t i = 0; i < large.size(); ++i) {
+    large[i] = static_cast<uint8_t>(i * 31);
+  }
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, large)));
+  for (int i = 0; i < 10 && received.empty(); ++i) {
+    transport.AckAndTick(link);
+  }
+  EXPECT_EQ(received, large);
+}
+
+// CLOSE must not overtake the channel's queued data.
+TEST(ChannelMuxTest, CloseWaitsBehindQueuedData) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  WindowedTransport transport;
+  transport.window = 1;
+  transport.Attach(link);
+
+  std::vector<std::string> events;
+  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
+    events.push_back("data:" + std::to_string(payload.size()));
+  });
+  link.responder.mux.SetTerminalHandler(*ch, [&](uint32_t, const char* reason) {
+    events.push_back(std::string("terminal:") + (reason ? reason : ""));
+  });
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(2500, 1))));
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*ch)));
+  EXPECT_TRUE(events.empty());
+  for (int i = 0; i < 5; ++i) {
+    transport.AckAndTick(link);
+  }
+  ASSERT_EQ(events.size(), 2u);
+  EXPECT_EQ(events[0], "data:2500");
+  EXPECT_EQ(events[1].rfind("terminal:", 0), 0u);
+}
+
+// Waiting channels share the window round-robin: a small reply is not stuck
+// behind another channel's large transfer.
+TEST(ChannelMuxTest, QueuedChannelsShareWindowRoundRobin) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto big = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  auto small = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(big) && static_cast<bool>(small));
+  WindowedTransport transport;
+  transport.window = 0;  // window full while both are queued
+  transport.Attach(link);
+
+  bool bigDone = false;
+  bool smallDone = false;
+  link.responder.mux.SetDataHandler(*big, [&](uint32_t, std::vector<uint8_t>) { bigDone = true; });
+  link.responder.mux.SetDataHandler(*small, [&](uint32_t, std::vector<uint8_t>) { smallDone = true; });
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*big, std::vector<uint8_t>(10 * 900, 2))));
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*small, {'h', 'i'})));
+
+  transport.window = 1;  // one frame per tick
+  transport.AckAndTick(link);
+  transport.AckAndTick(link);
+  EXPECT_TRUE(smallDone);
+  EXPECT_FALSE(bigDone);
+  for (int i = 0; i < 12; ++i) {
+    transport.AckAndTick(link);
+  }
+  EXPECT_TRUE(bigDone);
+}
+
+TEST(ChannelMuxTest, BestEffortFramesNeverQueue) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/call-media/1.0.0", TestRealtimePolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  WindowedTransport transport;
+  transport.window = 0;
+  transport.Attach(link);
+  transport.sends = 0;
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, {'o'})));
+  EXPECT_EQ(transport.sends, 1u);
+  EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 0u);
+}
+
+TEST(ChannelMuxTest, ResetDropsQueuedFrames) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  WindowedTransport transport;
+  transport.window = 0;
+  transport.Attach(link);
+  bool delivered = false;
+  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t>) { delivered = true; });
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(2500, 3))));
+  EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 3u);
+  transport.window = 8;
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch)));
+  EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 0u);
+  transport.AckAndTick(link);
+  EXPECT_FALSE(delivered);
 }
 
 // Regression: an Open whose channel id has the *same* parity as the receiver's own dynamic ids
