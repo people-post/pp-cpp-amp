@@ -17,7 +17,9 @@ namespace pp::adp {
 Connection::Connection(Endpoint& endpoint, OpenParams params)
     : endpoint_(&endpoint), id_(params.id), binder_(params.key), peer_(params.peer),
       params_(std::move(params)), rx_be_(params_.replay_window, /*slide_on_gap=*/true),
-      rx_rel_(params_.replay_window, /*slide_on_gap=*/false) {
+      // Must cover the whole send window: a seq the sender may legitimately
+      // have in flight cannot be "too far".
+      rx_rel_(std::max(params_.replay_window, params_.reliable_window), /*slide_on_gap=*/false) {
   authenticated_max_rtx_ = params_.max_rtx;
   if (params_.reduce_rtx_until_authenticated) {
     params_.max_rtx = std::min(params_.max_rtx, kPreAuthMaxRtx);
@@ -320,12 +322,32 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
   // association; a real rebind's packets are the newest ones.
   bool fresh_data = false;
   bool fresh = false;
+  bool ack_reliable = false;
   switch (pkt.type) {
   case PacketType::DataBestEffort:
     fresh = fresh_data = rx_be_.Accept(pkt.seq);
     break;
   case PacketType::DataReliable:
-    fresh = fresh_data = rx_rel_.Accept(pkt.seq);
+    // Record (and later ACK) only a packet we keep: one ACKed but dropped is
+    // never resent and stalls in-order delivery for good. Duplicates are ACKed
+    // so the sender stops resending; too far ahead, or no room in the hold,
+    // stays unACKed and is resent.
+    switch (rx_rel_.Classify(pkt.seq)) {
+    case ReplayWindow::Verdict::Duplicate:
+      ack_reliable = true;
+      break;
+    case ReplayWindow::Verdict::TooFar:
+      break;
+    case ReplayWindow::Verdict::Fresh: {
+      const bool room = !on_message_ || rx_rel_hold_.size() < params_.reliable_window ||
+                        pkt.seq == rx_rel_next_deliver_;
+      if (room) {
+        fresh = fresh_data = rx_rel_.Accept(pkt.seq);
+        ack_reliable = fresh_data;
+      }
+      break;
+    }
+    }
     break;
   default:
     // Serial arithmetic on the 32-bit wire timestamp (it wraps, as in AcceptSkew).
@@ -386,15 +408,15 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     break;
   }
   case PacketType::DataReliable: {
-    // Always ACK so sender can stop rtx even on dup.
-    (void)SendPacket(PacketType::Ack, pkt.seq, {}, now_ms);
+    if (ack_reliable) {
+      (void)SendPacket(PacketType::Ack, pkt.seq, {}, now_ms);
+    }
     if (!fresh_data) {
       break;
     }
-    // Nothing will ever drain the hold without a handler (DeliverReliableInOrder is a no-op),
-    // and a forged out-of-order seq per packet would otherwise grow it without bound; cap it to
-    // the reliable window either way.
-    if (on_message_ && (rx_rel_hold_.size() < params_.reliable_window || rx_rel_hold_.count(pkt.seq) != 0)) {
+    // The hold is capped to the reliable window (checked above): a forged
+    // out-of-order seq per packet cannot grow it without bound.
+    if (on_message_) {
       rx_rel_hold_[pkt.seq] = pkt.payload;
       DeliverReliableInOrder();
     }

@@ -18,6 +18,10 @@ public:
   explicit ReplayWindow(size_t window_size = 32, bool slide_on_gap = false);
 
   bool Accept(uint64_t seq);
+
+  enum class Verdict { Fresh, Duplicate, TooFar };
+  /** What Accept(seq) would do, without recording it. */
+  Verdict Classify(uint64_t seq) const;
   uint64_t LastContiguous() const { return last_contiguous_; }
 
 private:
