@@ -1,4 +1,5 @@
 #include "amp/L1/Clock.h"
+#include "amp/L1/Connection.h"
 #include "amp/L1/Endpoint.h"
 #include "amp/L1/MemoryDatagramIo.h"
 #include "amp/L1/Types.h"
@@ -569,4 +570,87 @@ TEST_F(AdpReliableTest, GarbageDatagramsCountAsRejected) {
   const auto b = p.ep_b->Stats();
   EXPECT_EQ(b.rx_datagrams, 1u);
   EXPECT_EQ(b.rx_rejected, 1u);
+}
+
+namespace {
+
+/** Open a connected pair with default windows; B collects Reliable payloads. */
+struct WindowPair {
+  Pair p = MakePair();
+  std::shared_ptr<pp::adp::Connection> a;
+  std::vector<uint32_t> got;
+
+  void Open() {
+    p.ep_b->SetAcceptKey(Key());
+    p.ep_b->SetAcceptEnabled(true);
+    pp::adp::OpenParams op;
+    op.key = Key();
+    op.id = Aid();
+    op.mint_id = false;
+    op.peer = p.addr_b;
+    auto ca = p.ep_a->Open(op);
+    ASSERT_TRUE(ca);
+    a = *ca;
+    pp::adp::OpenParams opb = op;
+    opb.peer = p.addr_a;
+    auto cb = p.ep_b->Open(opb);
+    ASSERT_TRUE(cb);
+    (*cb)->OnMessage([this](const pp::adp::Message& m) {
+      if (m.qos == pp::adp::QosClass::Reliable) {
+        uint32_t v = 0;
+        std::memcpy(&v, m.payload.data(), sizeof(v));
+        got.push_back(v);
+      }
+    });
+  }
+  bool Send(uint32_t v) {
+    return bool(a->Send(pp::adp::QosClass::Reliable,
+                        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&v), sizeof(v))));
+  }
+  void Step() {
+    PumpBoth(p);
+    p.clock->Advance(pp::adp::kDefaultRtxIntervalMs);
+  }
+};
+
+} // namespace
+
+// Regression: with the reliable window (128) larger than the reliable replay
+// window (64), one early loss made every packet more than 64 past the gap be
+// rejected as "too far" yet still ACKed, so the sender never resent it and the
+// stream stalled for good (large AMP replies over real UDP).
+TEST_F(AdpReliableTest, FullWindowDeliveredInOrderAfterEarlyLoss) {
+  WindowPair w;
+  w.Open();
+  w.p.io_a->DropNext(1);
+  for (uint32_t i = 1; i <= pp::adp::kDefaultReliableWindow; ++i) {
+    ASSERT_TRUE(w.Send(i)) << i;
+  }
+  for (int step = 0; step < 50 && w.got.size() < pp::adp::kDefaultReliableWindow; ++step) {
+    w.Step();
+  }
+  ASSERT_EQ(w.got.size(), pp::adp::kDefaultReliableWindow);
+  for (uint32_t i = 0; i < w.got.size(); ++i) {
+    ASSERT_EQ(w.got[i], i + 1);
+  }
+}
+
+// A packet the receiver cannot hold (its out-of-order hold is full) must not be
+// ACKed either, or the sender drops it and the stream stalls.
+TEST_F(AdpReliableTest, SustainedStreamDeliveredInOrderAfterEarlyLoss) {
+  WindowPair w;
+  w.Open();
+  w.p.io_a->DropNext(1);
+  constexpr uint32_t kTotal = 300;
+  uint32_t next = 1;
+  for (int step = 0; step < 400 && w.got.size() < kTotal; ++step) {
+    while (next <= kTotal && w.Send(next)) {
+      ++next;  // fill the window; Send fails with WindowFull when it is
+    }
+    w.Step();
+  }
+  ASSERT_EQ(w.got.size(), kTotal);
+  for (uint32_t i = 0; i < w.got.size(); ++i) {
+    ASSERT_EQ(w.got[i], i + 1);
+  }
 }
