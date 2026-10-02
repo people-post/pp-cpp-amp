@@ -1,10 +1,12 @@
 #pragma once
 
 #include "amp/L1/Types.h"
+#include "amp/L3/AmpChannelLimits.h"
 #include "amp/L3/Capability.h"
 #include "amp/L3/ChannelPolicy.h"
 #include "amp/L3/ChannelWire.h"
 #include "amp/L3/MessageReassembly.h"
+#include "amp/L3/Types.h"
 #include "amp/L2/Session.h"
 
 
@@ -19,6 +21,15 @@
 #include <vector>
 
 namespace pp::amp {
+
+/** Channel-mux policy a deployment may tune (see docs/TUNING.md). */
+struct MuxTuning {
+  size_t max_concurrent_channels = AmpChannelLimits::kMaxConcurrentChannels;
+  /** Reliable bytes waiting for transport window space; SendData beyond it fails. */
+  size_t max_queued_bytes = 32 * 1024 * 1024;
+  /** A fragmented message not completed this long after its first fragment is dropped. */
+  int64_t frag_assembly_timeout_ms = kDefaultFragAssemblyTimeoutMs;
+};
 
 /** Multiplexes L3 channels over one AMP Session. Io-thread affine. */
 class ChannelMux {
@@ -37,6 +48,7 @@ public:
   void SetTransport(TransportSend send);
   void SetTransportCredits(TransportCredits credits);
   void SetClock(std::function<int64_t()> now_ms);
+  void SetTuning(const MuxTuning& tuning) { tuning_ = tuning; }
 
   /** Allocate id and send OPEN (local initiator). Pass fixed_id for reserved channels (e.g. 0). */
   Roe<uint32_t> OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,
@@ -110,7 +122,7 @@ public:
   /** Reliable frames waiting for transport window space (all channels). */
   size_t QueuedFrameCount() const;
 
-  /** Upper bound on bytes waiting for window space; SendData beyond it fails. */
+  /** Default cap on bytes waiting for window space (MuxTuning::max_queued_bytes). */
   static constexpr size_t kMaxQueuedBytes = 32 * 1024 * 1024;
 
 private:
@@ -162,6 +174,7 @@ private:
   /** Channels with queued frames, in round-robin order. */
   std::deque<uint32_t> send_order_;
   size_t queued_bytes_ = 0;
+  MuxTuning tuning_{};
   std::function<int64_t()> now_ms_;
   std::unordered_map<uint32_t, ChannelRecord> channels_;
   std::unordered_map<uint32_t, DataHandler> pending_handlers_;

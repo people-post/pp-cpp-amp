@@ -1,6 +1,7 @@
 #pragma once
 
 #include "amp/L3/ChannelWire.h"
+#include "amp/L3/Types.h"
 
 
 #include <cstdint>
@@ -19,7 +20,7 @@ public:
   /** Returns complete message when assembly finishes. */
   Roe<std::optional<std::vector<uint8_t>>> Push(const ChannelFragBody& frag, int64_t now_ms);
 
-  void SweepExpired(int64_t now_ms);
+  void SweepExpired(int64_t now_ms, int64_t timeout_ms = kDefaultFragAssemblyTimeoutMs);
 
 private:
   struct Partial {

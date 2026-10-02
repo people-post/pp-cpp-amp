@@ -29,6 +29,7 @@ Roe<std::shared_ptr<Connection>> Endpoint::AcceptOrCreate(const AssocId& id, con
     return it->second;
   }
   OpenParams p;
+  p.ApplyTuning(tuning_);
   p.key = key;
   p.id = id;
   p.mint_id = false;
@@ -142,7 +143,7 @@ void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> d
   const uint32_t now_trunc = static_cast<uint32_t>(static_cast<uint64_t>(now) & 0xffffffffull);
   const int64_t delta =
       static_cast<int64_t>(static_cast<int32_t>(now_trunc - decoded->timestamp_ms));
-  if (delta > kDefaultSkewMs || delta < -kDefaultSkewMs) {
+  if (delta > tuning_.skew_ms || delta < -tuning_.skew_ms) {
     return;
   }
   auto accepted = AcceptOrCreate(id, *accept_key_, from);

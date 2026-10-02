@@ -20,6 +20,8 @@ Consumers include headers as `#include "amp/L1/Clock.h"` (include root is `inclu
 
 NAT / association keepalive: [docs/KEEPALIVE.md](docs/KEEPALIVE.md).
 
+Tunable transport policy (`PeerLinkConfig::adp` / `::mux`): [docs/TUNING.md](docs/TUNING.md).
+
 Layer map + product entry (`MeshRuntime`): [docs/STACK.md](docs/STACK.md).
 
 Ownership boundary (what Amp shares vs product L4): [docs/OWNERSHIP.md](docs/OWNERSHIP.md).

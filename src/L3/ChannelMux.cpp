@@ -93,7 +93,7 @@ Roe<void> ChannelMux::SendWire(const uint32_t channel_id, const uint32_t channel
     return SealAndTransport(channel_id, channel_seq, qos, wire);
   }
   // Window full (or this channel is already waiting): hold it, in order.
-  if (queued_bytes_ + wire.size() > kMaxQueuedBytes) {
+  if (queued_bytes_ + wire.size() > tuning_.max_queued_bytes) {
     return Error("amp mux: send queue full");
   }
   queued_bytes_ += wire.size();
@@ -304,7 +304,7 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
       return RefuseOpen(frame, kOpenAckBadIdParity);
     }
   }
-  if (channels_.size() >= AmpChannelLimits::kMaxConcurrentChannels) {
+  if (channels_.size() >= tuning_.max_concurrent_channels) {
     return RefuseOpen(frame, kOpenAckTooManyChannels);
   }
   const bool handled = frame.header.channel_id == kCapabilityChannelId ||
@@ -487,7 +487,7 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
   // larger than the window (or several at once) still goes out in full.
   const adp::QosClass qos = QosForClass(channel->policy.cls);
   // Refuse up front rather than strand a partial message at the queue cap.
-  if (qos == adp::QosClass::Reliable && queued_bytes_ + payload.size() > kMaxQueuedBytes) {
+  if (qos == adp::QosClass::Reliable && queued_bytes_ + payload.size() > tuning_.max_queued_bytes) {
     return Error("amp mux: send queue full");
   }
   for (uint16_t i = 0; i < frag_count; ++i) {
@@ -602,7 +602,7 @@ Roe<void> ChannelMux::InjectSealedForTest(const uint32_t channel_id, const uint3
 
 void ChannelMux::Tick(const int64_t now_ms) {
   for (auto& [_, channel] : channels_) {
-    channel.reassembly.SweepExpired(now_ms);
+    channel.reassembly.SweepExpired(now_ms, tuning_.frag_assembly_timeout_ms);
   }
   FlushQueued();
 }

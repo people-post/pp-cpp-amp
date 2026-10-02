@@ -10,6 +10,9 @@ Roe<std::unique_ptr<AmpStack>> AmpStack::Create(std::shared_ptr<adp::DatagramIo>
   if (config.local_peer_id.empty()) {
     return Error("amp stack: local_peer_id required");
   }
+  if (auto valid = ValidatePeerLinkConfig(config.link_config); !valid) {
+    return valid.error();
+  }
   auto stack = std::unique_ptr<AmpStack>(new AmpStack());
   stack->io_ = std::move(io);
   stack->clock_ = std::move(clock);

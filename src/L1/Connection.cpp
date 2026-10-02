@@ -86,7 +86,7 @@ bool Connection::LooksAlive(int64_t now_ms) const {
 
 int64_t Connection::LivenessWindowMs() const {
   const int64_t cadence = std::max(local_keepalive_interval_ms_, peer_keepalive_interval_ms_);
-  return std::max(kAliveTimeoutMs, cadence * kKeepaliveLivenessNumerator / kKeepaliveLivenessDenominator);
+  return std::max(params_.alive_timeout_ms, cadence * kKeepaliveLivenessNumerator / kKeepaliveLivenessDenominator);
 }
 
 Connection::Roe<void> Connection::SendKeepalive(const int64_t now_ms, const uint32_t interval_ms) {

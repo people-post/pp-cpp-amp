@@ -45,7 +45,8 @@ struct MeshLinkFixture {
   std::unique_ptr<MeshPump> pump_a;
   std::unique_ptr<MeshPump> pump_b;
 
-  static Roe<MeshLinkFixture> Create(const bool lossy = false) {
+  static Roe<MeshLinkFixture> Create(const bool lossy = false,
+                                     const std::function<void(PeerLinkConfig&)>& tune = {}) {
     MeshLinkFixture f;
     f.clock = std::make_shared<adp::VirtualClock>(1'000'000);
     f.hub = adp::MemoryDatagramIo::MakeHub();
@@ -86,6 +87,10 @@ struct MeshLinkFixture {
     config_b.peer_id_from_identity = [alice_pub = f.alice.ml_dsa_public_key](const ByteVector& pk) -> std::string {
       return pk == alice_pub ? "QmAlice" : IdentityPublicKeyFingerprint(pk);
     };
+    if (tune) {
+      tune(config_a);
+      tune(config_b);
+    }
     f.mgr_a = std::make_unique<PeerLinkManager>(*f.ep_a, f.alice, "QmAlice", config_a);
     f.mgr_b = std::make_unique<PeerLinkManager>(*f.ep_b, f.bob, "QmBob", config_b);
     f.pump_a = std::make_unique<MeshPump>(*f.ep_a, *f.mgr_a);
@@ -2090,4 +2095,92 @@ TEST(MeshRuntimeDriveTest, IsConnectedToPeerIdIgnoresCarrierOnly) {
 }
 
 } // namespace
+namespace {
+
+TEST(PeerLinkConfigTest, DefaultsAreValid) { EXPECT_TRUE(static_cast<bool>(ValidatePeerLinkConfig(PeerLinkConfig{}))); }
+
+TEST(PeerLinkConfigTest, RejectsCombinationsThatCannotWork) {
+  auto invalid = [](const std::function<void(PeerLinkConfig&)>& edit) {
+    PeerLinkConfig c;
+    edit(c);
+    return !ValidatePeerLinkConfig(c);
+  };
+  // The v2.13.2 stall: replay window smaller than the send window.
+  EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.adp.replay_window = c.adp.reliable_window - 1; }));
+  EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.adp.reliable_window = 0; }));
+  EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.adp.max_rtx = 0; }));
+  EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.adp.alive_timeout_ms = c.adp.rtx_interval_ms; }));
+  EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.mux.max_concurrent_channels = 0; }));
+  EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.mux.max_queued_bytes = 1024; }));
+  EXPECT_TRUE(invalid([](PeerLinkConfig& c) {
+    c.mux.frag_assembly_timeout_ms = c.adp.rtx_interval_ms * c.adp.max_rtx - 1;
+  }));
+  // A larger, consistent window is fine.
+  EXPECT_FALSE(invalid([](PeerLinkConfig& c) {
+    c.adp.reliable_window = 512;
+    c.adp.replay_window = 512;
+  }));
+}
+
+TEST(PeerLinkConfigTest, AmpStackRefusesInvalidConfig) {
+  auto hub = adp::MemoryDatagramIo::MakeHub();
+  auto io = std::make_shared<adp::MemoryDatagramIo>(hub, adp::IpEndpoint::V4(10, 9, 0, 1, 1000));
+  AmpStack::Config config;
+  config.local_peer_id = "QmTest";
+  config.link_config.adp.replay_window = 1;
+  auto stack = AmpStack::Create(io, std::make_shared<adp::VirtualClock>(1'000'000), std::move(config));
+  ASSERT_FALSE(static_cast<bool>(stack));
+  EXPECT_NE(stack.error().message.find("replay_window"), std::string::npos) << stack.error().message;
+}
+
+// PeerLinkConfig tuning reaches the endpoint and every link's mux.
+TEST(PeerLinkConfigTest, TuningReachesEndpointAndLinkMux) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false, [](PeerLinkConfig& c) {
+    c.adp.reliable_window = 32;
+    c.adp.replay_window = 32;
+    c.mux.max_concurrent_channels = 3;
+  });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  EXPECT_EQ(fixture->ep_a->Tuning().reliable_window, 32u);
+  EXPECT_EQ(fixture->ep_b->Tuning().reliable_window, 32u);
+
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  fixture->mgr_b->SetProtocolHandler("/x/1", [](LinkHandle, const std::string&, uint32_t) {});
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { associated = static_cast<bool>(r); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+
+  // Bob's mux allows 3 channels (capability channel included): some opens are refused.
+  size_t opened = 0;
+  size_t refused = 0;
+  for (int i = 0; i < 6; ++i) {
+    std::optional<uint32_t> ch;
+    bool done = false;
+    fixture->mgr_a->OpenChannel("bob", "/x/1", ControlJsonChannelPolicy(), [&](PeerLinkManager::ChannelRoe r) {
+      if (r) {
+        ch = r.value();
+      }
+      done = true;
+    });
+    fixture->PumpUntil([&] { return done; });
+    if (!ch) {
+      ++refused;
+      continue;
+    }
+    std::optional<bool> ok;
+    fixture->mgr_a->WhenChannelOpenIn("bob", *ch, std::chrono::milliseconds(2000), [&](bool v) { ok = v; });
+    fixture->PumpUntil([&] { return ok.has_value(); });
+    (ok && *ok) ? ++opened : ++refused;
+  }
+  EXPECT_GE(opened, 1u);
+  EXPECT_LE(opened, 3u);
+  EXPECT_GE(refused, 3u);
+}
+
+} // namespace
+
 } // namespace pp::amp

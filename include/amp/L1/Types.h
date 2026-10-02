@@ -23,8 +23,10 @@ inline constexpr size_t kKeyBytes = 32;
 inline constexpr size_t kHeaderBytes = 28; // before payload + hmac
 inline constexpr uint16_t kMaxPayload = 1200;
 inline constexpr int64_t kDefaultSkewMs = 60'000;
-inline constexpr size_t kDefaultReplayWindow = 64;
+
 inline constexpr size_t kDefaultReliableWindow = 128;
+/** Must cover the reliable send window (see ValidatePeerLinkConfig). */
+inline constexpr size_t kDefaultReplayWindow = kDefaultReliableWindow;
 inline constexpr int64_t kDefaultRtxIntervalMs = 50;
 inline constexpr int kDefaultMaxRtx = 20;
 /**
@@ -50,6 +52,23 @@ inline constexpr int64_t kKeepaliveLivenessDenominator = 2;
  * "alive" after going silent, well past any real keepalive config.
  */
 inline constexpr uint32_t kMaxPeerKeepaliveIntervalMs = 600'000; // 10 minutes
+
+/**
+ * ADP transport policy a deployment may tune (see docs/TUNING.md). Defaults are
+ * the k* constants above; wire-format sizes are not tunable.
+ */
+struct AdpTuning {
+  /** Unacked Reliable packets in flight per connection (send window). */
+  size_t reliable_window = kDefaultReliableWindow;
+  /** Reliable replay window; must be >= reliable_window. */
+  size_t replay_window = kDefaultReplayWindow;
+  int64_t rtx_interval_ms = kDefaultRtxIntervalMs;
+  int max_rtx = kDefaultMaxRtx;
+  /** Accepted |peer clock - local clock| for packet timestamps. */
+  int64_t skew_ms = kDefaultSkewMs;
+  /** A cold (no keepalive) connection silent this long is dead. */
+  int64_t alive_timeout_ms = kAliveTimeoutMs;
+};
 /** Endpoint::Pump's default per-call datagram budget — see its doc comment. */
 inline constexpr size_t kDefaultPumpBudget = 256;
 

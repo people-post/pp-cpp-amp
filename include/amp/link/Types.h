@@ -1,5 +1,7 @@
 #pragma once
 
+#include "amp/L3/ChannelMux.h"
+
 #include "amp/L1/Types.h"
 #include "amp/L2/Types.h"
 
@@ -84,7 +86,19 @@ struct PeerLinkConfig {
   std::chrono::milliseconds network_change_grace{2000};
   /** When set, derives remote PeerId string from authenticated MSH identity key. */
   std::function<std::string(const ByteVector& identity_public_key)> peer_id_from_identity;
+
+  /** ADP transport tuning for every link's connection (docs/TUNING.md). */
+  adp::AdpTuning adp;
+  /** Channel-mux tuning for every link (docs/TUNING.md). */
+  MuxTuning mux;
 };
+
+/**
+ * Check a config's tunables for values that cannot work together (e.g. a replay
+ * window smaller than the send window stalls delivery after a loss). AmpStack::Create
+ * refuses an invalid config; call it directly when building PeerLinkManager by hand.
+ */
+Roe<void> ValidatePeerLinkConfig(const PeerLinkConfig& config);
 
 /** Scheduled keepalive tier on a connected link (see docs/KEEPALIVE.md). */
 enum class KeepaliveTier {
