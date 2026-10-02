@@ -72,6 +72,8 @@ public:
 
   /** Terminal reason when the link (and this mux) is being destroyed. */
   static constexpr const char* kLinkDroppedReason = "link-dropped";
+  /** Terminal reason when a channel's ChannelPolicy::read_timeout expired (the mux reset it). */
+  static constexpr const char* kReadTimeoutReason = "read-timeout";
   /**
    * The mux is about to be destroyed with its link: close every channel record and hand back each
    * channel's terminal notice (reason kLinkDroppedReason) for the caller to run **after** the mux is
@@ -114,8 +116,9 @@ public:
   Roe<void> InjectSealedForTest(uint32_t channel_id, uint32_t channel_seq, std::vector<uint8_t> sealed);
 
   /**
-   * Sweep expired FRAG partial-assembly state on every channel and send
-   * reliable frames waiting for transport window space (drive periodically).
+   * Sweep expired FRAG partial-assembly state on every channel, reset channels
+   * whose read_timeout expired, and send reliable frames waiting for transport
+   * window space (drive periodically).
    */
   void Tick(int64_t now_ms);
 
@@ -136,6 +139,8 @@ private:
     DataHandler on_data;
     TerminalHandler on_terminal;
     MessageReassembly reassembly;
+    /** Tick time the read_timeout clock last (re)started; -1 = restart on the next Tick. */
+    int64_t read_clock_ms = -1;
   };
 
   ChannelRecord* ChannelById(uint32_t channel_id);
@@ -165,6 +170,8 @@ private:
   Roe<void> RefuseOpen(const ChannelFrame& frame, uint8_t result);
   Roe<void> HandleOpenAck(ChannelFrame frame);
   void NotifyTerminal(ChannelRecord& channel, const char* reason);
+  /** Tick: reset channels with nothing inbound for their policy's read_timeout. */
+  void ExpireIdleReaders(int64_t now_ms);
 
   Session& session_;
   Session* peer_session_ = nullptr;

@@ -477,6 +477,75 @@ TEST(ChannelMuxTest, ConcurrentChannelCapIsTunable) {
   EXPECT_LE(open, 3u);
 }
 
+namespace {
+
+ChannelPolicy ReplyChannelPolicy(std::chrono::milliseconds read_timeout) {
+  auto policy = ControlJsonChannelPolicy(read_timeout);
+  policy.read_once = false;  // server side: stays open until it replies
+  return policy;
+}
+
+} // namespace
+
+// A peer that opens a channel and never sends must not hold it (and a mux slot) forever.
+TEST(ChannelMuxTest, SilentChannelIsResetAfterReadTimeout) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/x/1", ReplyChannelPolicy(std::chrono::milliseconds{0}));
+  ASSERT_TRUE(static_cast<bool>(ch));
+
+  std::string reason;
+  ChannelSession session;
+  session.Bind(link.responder.mux, *ch, ReplyChannelPolicy(std::chrono::milliseconds{1000}),
+               [](Roe<std::vector<uint8_t>>) { return true; },
+               [&](const char* r) { reason = r ? r : ""; });
+
+  link.responder.mux.Tick(5000);  // arms the clock
+  link.responder.mux.Tick(5999);
+  EXPECT_FALSE(session.IsClosed());
+  link.responder.mux.Tick(6000);
+  EXPECT_TRUE(session.IsClosed());
+  EXPECT_EQ(reason, ChannelMux::kReadTimeoutReason);
+  EXPECT_EQ(link.responder.mux.State(*ch), ChannelState::Closed);
+  EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Closed);  // the peer got a RESET
+}
+
+TEST(ChannelMuxTest, InboundDataRestartsReadClock) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/x/1", ReplyChannelPolicy(std::chrono::milliseconds{0}));
+  ASSERT_TRUE(static_cast<bool>(ch));
+
+  ChannelSession session;
+  session.Bind(link.responder.mux, *ch, ReplyChannelPolicy(std::chrono::milliseconds{1000}),
+               [](Roe<std::vector<uint8_t>>) { return true; });
+
+  link.responder.mux.Tick(0);
+  link.responder.mux.Tick(800);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, {'a'})));
+  link.responder.mux.Tick(900);  // restarts here
+  link.responder.mux.Tick(1800);
+  EXPECT_FALSE(session.IsClosed());
+  link.responder.mux.Tick(1900);
+  EXPECT_TRUE(session.IsClosed());
+}
+
+TEST(ChannelMuxTest, ZeroReadTimeoutNeverExpires) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/x/media", CallMediaChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  EXPECT_EQ(CallMediaChannelPolicy().read_timeout.count(), 0);
+  EXPECT_EQ(CircuitCarrierChannelPolicy().read_timeout.count(), 0);
+
+  link.initiator.mux.Tick(0);
+  link.initiator.mux.Tick(24LL * 3600 * 1000);
+  EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Open);
+}
+
 TEST(MessageReassemblyTest, AssemblyTimeoutIsTunable) {
   MessageReassembly reassembly;
   ChannelFragBody frag;

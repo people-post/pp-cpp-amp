@@ -56,4 +56,7 @@ deployment, or one side may judge the other dead or out of time first.
 
 Wire-format facts peers must agree on: key / nonce / MAC sizes, ADP header and
 `kMaxPayload`, the FRAG chunk size, `kMshVersion`. Per-class message caps
-(`AmpChannelLimits`) are part of each channel policy, not deployment tuning.
+(`AmpChannelLimits`) are part of each channel policy, not deployment tuning;
+so is `ChannelPolicy::read_timeout` (enforced since v2.15.0: a channel with
+nothing inbound for that long is reset), which each protocol sets for its own
+request/response timing.
