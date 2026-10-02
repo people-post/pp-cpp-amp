@@ -654,3 +654,21 @@ TEST_F(AdpReliableTest, SustainedStreamDeliveredInOrderAfterEarlyLoss) {
     ASSERT_EQ(w.got[i], i + 1);
   }
 }
+
+// Regression: a reliable packet whose socket send failed transiently (e.g.
+// EAGAIN / ENOBUFS) had already consumed its sequence number but was not kept
+// for retransmission. The receiver waited for that seq forever and in-order
+// delivery stalled for every later packet on the link.
+TEST_F(AdpReliableTest, TransientSendFailureIsRetransmitted) {
+  WindowPair w;
+  w.Open();
+  w.p.io_a->FailNextSends(1);
+  EXPECT_TRUE(w.Send(1));  // queued for retransmission, not lost
+  EXPECT_TRUE(w.Send(2));
+  for (int step = 0; step < 10 && w.got.size() < 2; ++step) {
+    w.Step();
+  }
+  ASSERT_EQ(w.got.size(), 2u);
+  EXPECT_EQ(w.got[0], 1u);
+  EXPECT_EQ(w.got[1], 2u);
+}

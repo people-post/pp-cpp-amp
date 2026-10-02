@@ -39,6 +39,9 @@ public:
   /** Force next N sends to be dropped (after which drop_rate applies). */
   void DropNext(size_t n) { drop_next_ = n; }
 
+  /** Tests: next N sends fail with a transient local error (e.g. EAGAIN / ENOBUFS). */
+  void FailNextSends(size_t n) { fail_next_ = n; }
+
   /** Deliver any datagrams held for reorder (FIFO drain). */
   void FlushReorder();
 
@@ -60,6 +63,7 @@ private:
   double dup_rate_ = 0;
   size_t reorder_window_ = 0;
   size_t drop_next_ = 0;
+  size_t fail_next_ = 0;
   std::mt19937 rng_{1};
   std::deque<std::pair<IpEndpoint, std::vector<uint8_t>>> pending_reorder_;
   std::vector<IpEndpoint> unreachable_;

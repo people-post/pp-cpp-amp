@@ -254,13 +254,16 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   o.next_rtx_ms = now + params_.rtx_interval_ms;
   o.attempts = 0;
   o.first_sent_ms = now;
-  auto err = SendPacketAsFailure(PacketType::DataReliable, o.seq, payload, now);
-  if (!err) {
-    return err.error();
-  }
+  // The seq is taken: track the packet whatever this first send does. A
+  // failed send is then just a lost packet that the retransmit timer resends;
+  // dropping it would leave a seq gap the receiver waits on forever.
+  outstanding_.push_back(std::move(o));
   endpoint_->NoteReliableSent();
   ++stats_.reliable_sent;
-  outstanding_.push_back(std::move(o));
+  auto sent = SendPacket(PacketType::DataReliable, tx_seq_rel_, payload, now);
+  if (!sent && peer_unreachable_) {
+    return sent.error();  // no route: the link layer tears this path down
+  }
   return {};
 }
 

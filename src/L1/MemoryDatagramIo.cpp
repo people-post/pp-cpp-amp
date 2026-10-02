@@ -48,6 +48,10 @@ Roe<void> MemoryDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8
   if (std::find(unreachable_.begin(), unreachable_.end(), peer) != unreachable_.end()) {
     return Error(kDatagramSendUnreachable, "memory datagram io: peer unreachable");
   }
+  if (fail_next_ > 0) {
+    --fail_next_;
+    return Error(0, "memory datagram io: simulated transient send failure");
+  }
   if (drop_next_ > 0) {
     --drop_next_;
     return {};
