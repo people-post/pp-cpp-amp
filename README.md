@@ -28,6 +28,8 @@ Ownership boundary (what Amp shares vs product L4): [docs/OWNERSHIP.md](docs/OWN
 
 Link plane ADR: [docs/ADR_LINK_PLANE.md](docs/ADR_LINK_PLANE.md).
 
+Stream transport for UDP-blocked networks (TCP / TLS / WebSocket; proposed, not built): [docs/ADR_STREAM_TRANSPORT.md](docs/ADR_STREAM_TRANSPORT.md).
+
 Performance case matrix + scaffold: [docs/PERF_CASES.md](docs/PERF_CASES.md) (`pp_amp_perf`).
 
 Fault / bad-network correctness matrix: [docs/FAULT_CASES.md](docs/FAULT_CASES.md) (N1–N16).
