@@ -156,6 +156,11 @@ Roe<void> PeerLinkManager::RegisterEndpoints(const std::string& peer_key,
   return book_.RegisterEndpoints(peer_key, multiaddrs);
 }
 
+void PeerLinkManager::UnregisterEndpoint(const std::string& peer_key) {
+  std::lock_guard lock(strand_mu_);
+  book_.UnregisterEndpoint(peer_key);
+}
+
 PeerLink* PeerLinkManager::FindLink(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   if (auto* by_dial = table_.FindByDialKey(peer_key)) {

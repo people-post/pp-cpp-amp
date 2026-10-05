@@ -297,6 +297,8 @@ Roe<void> MeshRuntime::RegisterEndpoint(const DialKey& peer_key, const std::stri
   return links_.RegisterEndpoint(peer_key, multiaddr);
 }
 
+void MeshRuntime::UnregisterEndpoint(const DialKey& peer_key) { links_.UnregisterEndpoint(peer_key); }
+
 Roe<void> MeshRuntime::RegisterEndpoints(const DialKey& peer_key,
                                          const std::vector<std::string>& multiaddrs) {
   return links_.RegisterEndpoints(peer_key, multiaddrs);
@@ -390,6 +392,10 @@ void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chr
             continue;
           }
           AbortInflightDial(key);
+        }
+        // Burst keys are per job: without this the dial book kept one per punch target forever.
+        for (const std::string& key : *keys) {
+          UnregisterEndpoint(key);
         }
       }
       if (done) {

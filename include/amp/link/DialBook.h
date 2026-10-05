@@ -38,6 +38,8 @@ public:
   Roe<void> RegisterEndpoint(const DialKey& peer_key, const std::string& multiaddr);
   /** Replace candidate list (best-first). Preferred = first parseable entry. */
   Roe<void> RegisterEndpoints(const DialKey& peer_key, const std::vector<std::string>& multiaddrs);
+  /** Forget `peer_key`'s endpoints and backoff (see PeerLinkManager::UnregisterEndpoint). */
+  void UnregisterEndpoint(const DialKey& peer_key);
   std::optional<std::string> PreferredMultiaddr(const std::string& peer_id) const;
   const EndpointRecord* Find(const DialKey& peer_key) const;
   EndpointRecord* Find(const DialKey& peer_key);

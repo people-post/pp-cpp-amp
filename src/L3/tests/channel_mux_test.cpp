@@ -279,6 +279,48 @@ TEST(ChannelSessionTest, ReadOnceClosesAfterFirstFrame) {
   EXPECT_TRUE(session.IsClosed());
 }
 
+// A session's handlers often capture the session itself (a holder the handler reads). Once it
+// closes, by whatever route, it drops them — otherwise session -> handler -> session kept every
+// such session alive for the process's lifetime (pp-browser servers leaked one per request).
+TEST(ChannelSessionTest, ClosedSessionDropsHandlersThatOwnIt) {
+  enum class Route { LocalClose, CloseQuiet, LocalReset, PeerClose, PeerReset, ReadOnce };
+  for (const Route route : {Route::LocalClose, Route::CloseQuiet, Route::LocalReset, Route::PeerClose,
+                            Route::PeerReset, Route::ReadOnce}) {
+    auto link_result = test::AmpTestLink::Create();
+    ASSERT_TRUE(static_cast<bool>(link_result));
+    auto& link = **link_result;
+    auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+    ASSERT_TRUE(static_cast<bool>(ch));
+
+    std::weak_ptr<ChannelSession> watch;
+    std::string closed_reason;
+    {
+      auto holder = std::make_shared<std::shared_ptr<ChannelSession>>(std::make_shared<ChannelSession>());
+      watch = *holder;
+      ChannelPolicy policy = ControlJsonChannelPolicy();
+      policy.read_once = route == Route::ReadOnce;
+      (*holder)->Bind(
+          link.responder.mux, *ch, policy,
+          [holder](Roe<std::vector<uint8_t>>) { return holder != nullptr; },  // owns the session
+          [holder, &closed_reason](const char* reason) { closed_reason = reason ? reason : ""; });
+    }
+    ASSERT_FALSE(watch.expired()) << "the handlers own it while open";
+
+    switch (route) {
+      case Route::LocalClose: watch.lock()->Close(); break;
+      case Route::CloseQuiet: watch.lock()->CloseQuiet(); break;
+      case Route::LocalReset: watch.lock()->Reset(); break;
+      case Route::PeerClose: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*ch))); break;
+      case Route::PeerReset: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch))); break;
+      case Route::ReadOnce: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, {'a'}))); break;
+    }
+    EXPECT_TRUE(watch.expired()) << "route " << static_cast<int>(route) << " kept the session alive";
+    if (route != Route::CloseQuiet) {
+      EXPECT_FALSE(closed_reason.empty()) << "route " << static_cast<int>(route) << ": closed notice still delivered";
+    }
+  }
+}
+
 /**
  * Simulated ADP reliable window: each reliable send takes a slot; Ack() frees
  * them. Frames reach the responder as they are sent.
