@@ -321,6 +321,35 @@ TEST(ChannelSessionTest, ClosedSessionDropsHandlersThatOwnIt) {
   }
 }
 
+// A closed session forgets its mux: the mux notifies only open channels when its link drops, so a
+// pointer kept past close dangled, and destroying the session afterwards called into the freed
+// mux (pp-node crashed when a dial-back timer released a probe's session after the link dropped).
+TEST(ChannelSessionTest, ClosedSessionForgetsItsMuxAndOutlivesIt) {
+  enum class Route { LocalClose, CloseQuiet, LocalReset, PeerClose, PeerReset };
+  for (const Route route : {Route::LocalClose, Route::CloseQuiet, Route::LocalReset, Route::PeerClose,
+                            Route::PeerReset}) {
+    std::shared_ptr<ChannelSession> session = std::make_shared<ChannelSession>();
+    {
+      auto link_result = test::AmpTestLink::Create();
+      ASSERT_TRUE(static_cast<bool>(link_result));
+      auto& link = **link_result;
+      auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+      ASSERT_TRUE(static_cast<bool>(ch));
+      session->Bind(link.responder.mux, *ch, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; });
+      switch (route) {
+        case Route::LocalClose: session->Close(); break;
+        case Route::CloseQuiet: session->CloseQuiet(); break;
+        case Route::LocalReset: session->Reset(); break;
+        case Route::PeerClose: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*ch))); break;
+        case Route::PeerReset: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch))); break;
+      }
+      EXPECT_TRUE(session->IsClosed());
+      EXPECT_EQ(session->Mux(), nullptr) << "route " << static_cast<int>(route);
+    }  // the link and its muxes go first
+    session.reset();  // must not call into the freed mux
+  }
+}
+
 /**
  * Simulated ADP reliable window: each reliable send takes a slot; Ack() frees
  * them. Frames reach the responder as they are sent.
