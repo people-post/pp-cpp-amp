@@ -44,8 +44,9 @@ public:
   /**
    * Once a session is closed — Close, CloseQuiet, Reset, the peer's CLOSE / RESET, a read
    * timeout, the link dropping, a failed write — it drops its frame handler and closed callback
-   * (after delivering the closed notice). Handlers commonly capture the session itself; held past
-   * close, every such session stayed alive for the process's lifetime.
+   * (after delivering the closed notice) and forgets its mux (`Mux()` is null). Handlers commonly
+   * capture the session itself; held past close, every such session stayed alive for the
+   * process's lifetime. The mux may be gone by the time the session is destroyed.
    */
   void Close();
   /** Close the mux channel without invoking `on_closed` (provisional / abandoned roles). */

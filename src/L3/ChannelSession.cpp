@@ -142,6 +142,11 @@ void ChannelSession::NotifyRemoteTerminal(const char* reason) {
 }
 
 void ChannelSession::FinishClosed(const char* reason) {
+  // A closed session never touches its mux again: the mux notifies only open channels when its
+  // link drops, so a pointer kept past close dangled once the link went, and the destructor's
+  // ReleaseHandlers called into the freed mux. (Handlers the mux still holds for this channel
+  // capture a weak pointer and no-op.)
+  mux_ = nullptr;
   // Locals keep both callables alive while the closed callback runs; whatever they own (often
   // this session) goes when they do, so nothing may touch `this` after this call.
   FrameHandler frame = std::move(on_frame_);
