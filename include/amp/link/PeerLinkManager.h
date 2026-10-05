@@ -114,6 +114,12 @@ public:
   Roe<void> RegisterEndpoint(const std::string& peer_key, const std::string& multiaddr);
   /** Best-first candidate list (B15/B28). Preferred = first entry. */
   Roe<void> RegisterEndpoints(const std::string& peer_key, const std::vector<std::string>& multiaddrs);
+  /**
+   * Forget a dial key registered for one job (probe, punch, bridge target): its endpoints and
+   * backoff. The book otherwise keeps every key ever registered. A dial in flight under the key
+   * completes; a live link stays up but can no longer be redialed under this key.
+   */
+  void UnregisterEndpoint(const std::string& peer_key);
 
   void EnsureAssociation(const std::string& peer_key, LinkCb on_complete);
   void OpenChannel(const std::string& peer_key, const std::string& protocol_id, ChannelPolicy policy,

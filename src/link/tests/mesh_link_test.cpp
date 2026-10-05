@@ -2057,6 +2057,23 @@ TEST(MeshRuntimeDriveTest, BurstDialBlackholeExpiresOnAmpClock) {
   ASSERT_TRUE(done.has_value());
   EXPECT_FALSE(done->ok);
   EXPECT_FALSE(done->error.empty());
+  // Burst keys are per job: the dial book forgets them once the burst settles.
+  const std::string key = std::string(kBurstDialKeyPrefix) + "0:" + harness->peer_id_b.substr(0, 12);
+  EXPECT_FALSE(harness->mgr_a().GetLinkSnapshot(key).has_endpoint);
+}
+
+// A key registered for one job can be forgotten; the book otherwise kept every key ever
+// registered (dial-back probes, punch targets, bridge targets — one per distinct peer).
+TEST(MeshRuntimeDriveTest, UnregisterEndpointForgetsTheKey) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
+  auto harness = std::move(*created);
+  ASSERT_TRUE(static_cast<bool>(harness->runtime_a->RegisterEndpoint("probe:1", harness->ma_b)));
+  EXPECT_TRUE(harness->mgr_a().GetLinkSnapshot("probe:1").has_endpoint);
+  harness->runtime_a->UnregisterEndpoint("probe:1");
+  EXPECT_FALSE(harness->mgr_a().GetLinkSnapshot("probe:1").has_endpoint);
+  harness->runtime_a->UnregisterEndpoint("never-registered");  // no-op
 }
 
 TEST(MeshRuntimeDriveTest, BurstDialConnectsPeer) {
@@ -2076,6 +2093,9 @@ TEST(MeshRuntimeDriveTest, BurstDialConnectsPeer) {
   ASSERT_TRUE(done.has_value()) << "BurstDial did not settle";
   EXPECT_TRUE(done->ok) << done->error;
   EXPECT_TRUE(harness->runtime_a->IsConnectedToPeerId(harness->peer_id_b));
+  // The burst key is forgotten; the link it brought up stays.
+  const std::string key = std::string(kBurstDialKeyPrefix) + "0:" + harness->peer_id_b.substr(0, 12);
+  EXPECT_FALSE(harness->mgr_a().GetLinkSnapshot(key).has_endpoint);
   // k1 snapshot fields: a link that came up through the burst is labelled Punched.
   const auto snap = harness->runtime_a->SnapshotByPeerId(harness->peer_id_b);
   EXPECT_EQ(snap.path_kind, LinkPathKind::Punched);

@@ -35,6 +35,18 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
 - Nested carrier: `EstablishNestedOverCarrier`, `EnableNestedCarrierAccept`
 - Drive: `Start` / `Stop`, `Drive` / `Pump` / `Tick`, `PostToIo`, `WithIoLock`
 
+### Lifetimes product code can rely on
+
+- **A closed `ChannelSession` drops its handlers.** However it closes — `Close`, `CloseQuiet`,
+  `Reset`, the peer's CLOSE / RESET, a read timeout, the link dropping, a failed write — the
+  closed callback gets its notice (not for `CloseQuiet`), then both the frame handler and the
+  closed callback are released. A handler may therefore capture the session (or a holder of it)
+  without keeping it alive forever. The end of a channel is reported **only** to the closed
+  callback, never as a frame error: state tied to a channel must be released there.
+- **Dial keys live until unregistered.** `RegisterEndpoint(s)` keeps a key's endpoints and
+  backoff for the process's lifetime; keys made for one job (a probe, a punch target, a bridge
+  target) should be dropped with `UnregisterEndpoint` when the job ends. `BurstDial` drops its own.
+
 `PeerLinkManager::Links()` remains for Amp-internal tests and gradual migration. New product code should not add `FindLink` call sites.
 
 ## Ownership

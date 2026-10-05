@@ -73,6 +73,11 @@ Roe<void> DialBook::RegisterEndpoint(const DialKey& peer_key, const std::string&
   return {};
 }
 
+void DialBook::UnregisterEndpoint(const DialKey& peer_key) {
+  endpoints_.erase(peer_key);
+  dial_failed_until_.erase(peer_key);
+}
+
 Roe<void> DialBook::RegisterEndpoints(const DialKey& peer_key,
                                       const std::vector<std::string>& multiaddrs) {
   EndpointRecord rec;

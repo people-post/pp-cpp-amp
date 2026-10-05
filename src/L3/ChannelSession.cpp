@@ -130,9 +130,7 @@ void ChannelSession::PumpWrite() {
 void ChannelSession::FailOutbound(const Error& error) {
   (void)error;
   closed_ = true;
-  if (on_closed_) {
-    on_closed_("write_failed");
-  }
+  FinishClosed("write_failed");
 }
 
 void ChannelSession::NotifyRemoteTerminal(const char* reason) {
@@ -140,8 +138,18 @@ void ChannelSession::NotifyRemoteTerminal(const char* reason) {
     return;
   }
   closed_ = true;
-  if (on_closed_) {
-    on_closed_(reason);
+  FinishClosed(reason);
+}
+
+void ChannelSession::FinishClosed(const char* reason) {
+  // Locals keep both callables alive while the closed callback runs; whatever they own (often
+  // this session) goes when they do, so nothing may touch `this` after this call.
+  FrameHandler frame = std::move(on_frame_);
+  ClosedCallback closed = std::move(on_closed_);
+  on_frame_ = {};
+  on_closed_ = {};
+  if (reason && closed) {
+    closed(reason);
   }
 }
 
@@ -151,9 +159,7 @@ void ChannelSession::Close() {
   }
   closed_ = true;
   (void)mux_->CloseChannel(channel_id_);
-  if (on_closed_) {
-    on_closed_("close");
-  }
+  FinishClosed("close");
 }
 
 void ChannelSession::CloseQuiet() {
@@ -162,6 +168,7 @@ void ChannelSession::CloseQuiet() {
   }
   closed_ = true;
   (void)mux_->CloseChannel(channel_id_);
+  FinishClosed(nullptr);
 }
 
 void ChannelSession::ReleaseHandlers() {
@@ -193,9 +200,7 @@ void ChannelSession::Reset(const uint32_t code) {
   }
   closed_ = true;
   (void)mux_->ResetChannel(channel_id_, code);
-  if (on_closed_) {
-    on_closed_("reset");
-  }
+  FinishClosed("reset");
 }
 
 } // namespace pp::amp

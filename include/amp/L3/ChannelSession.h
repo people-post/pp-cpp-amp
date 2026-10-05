@@ -41,6 +41,12 @@ public:
   /** Queue an L4 payload. Returns false if session closed or queue full (drop policy applied). */
   bool EnqueueOutbound(std::vector<uint8_t> body);
 
+  /**
+   * Once a session is closed — Close, CloseQuiet, Reset, the peer's CLOSE / RESET, a read
+   * timeout, the link dropping, a failed write — it drops its frame handler and closed callback
+   * (after delivering the closed notice). Handlers commonly capture the session itself; held past
+   * close, every such session stayed alive for the process's lifetime.
+   */
   void Close();
   /** Close the mux channel without invoking `on_closed` (provisional / abandoned roles). */
   void CloseQuiet();
@@ -68,6 +74,12 @@ private:
   void PumpWrite();
   void FailOutbound(const Error& error);
   void NotifyRemoteTerminal(const char* reason);
+  /**
+   * The session has just closed: drop both handlers, then deliver `reason` to the closed callback
+   * (none when null). Must be the caller's last use of `this` — releasing a handler can release
+   * the last owner of the session.
+   */
+  void FinishClosed(const char* reason);
   void InstallMuxHandlers();
 
   ChannelMux* mux_ = nullptr;
