@@ -43,6 +43,11 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
   closed callback are released. A handler may therefore capture the session (or a holder of it)
   without keeping it alive forever. The end of a channel is reported **only** to the closed
   callback, never as a frame error: state tied to a channel must be released there.
+- **Stopping a stack is a goodbye.** `MeshRuntime::Stop` (and so `AmpStack::Stop`) first calls
+  `PeerLinkManager::CloseAllLinks`: every link is dropped (reason `local-shutdown`) and each ADP peer
+  gets a Close, so it evicts our link at once instead of after its alive timeout. Link events and
+  completions those drops post are discarded with the stopped runtime's queues. A link whose peer
+  already closed holds no `max_links` slot even before Tick evicts it.
 - **Dial keys live until unregistered.** `RegisterEndpoint(s)` keeps a key's endpoints and
   backoff for the process's lifetime; keys made for one job (a probe, a punch target, a bridge
   target) should be dropped with `UnregisterEndpoint` when the job ends. `BurstDial` drops its own.

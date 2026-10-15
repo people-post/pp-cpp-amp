@@ -221,6 +221,15 @@ public:
    * @return number of links scheduled.
    */
   size_t RequestDropLink(const std::string& peer_key);
+  /**
+   * Shutdown: drop every link now (reason `LocalShutdown`), sending each ADP peer a Close so it
+   * frees our slot at once — otherwise it holds a dead link until its alive timeout, and a peer
+   * whose table fills with those (`max_links`) silently refuses new peers. Nested links go first,
+   * while their carriers' muxes still exist. Inline, unlike RequestDropLink: call from the owner
+   * (MeshRuntime::Stop does), never from a link or channel callback.
+   * @return number of links dropped.
+   */
+  size_t CloseAllLinks();
 
   /**
    * Amp-internal / tests — prefer WithLiveLink / snapshots for product.
@@ -307,6 +316,8 @@ private:
   PeerLink* ResolveLinkLocked(const std::string& peer_key);
   PeerLink* FindAnyConnectedLinkForRemotePeerId(const std::string& remote_peer_id);
   PeerLink* ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const;
+  /** `max_links` reached, not counting links whose peer already closed (Tick evicts those). */
+  bool AtLinkCapacityLocked() const;
   void DropLink(const std::string& peer_key, LinkDropReason reason);
   /** Drop exactly `link` if it is still live — also when another link now holds its dial key. */
   void DropLinkByHandle(LinkHandle link, LinkDropReason reason);

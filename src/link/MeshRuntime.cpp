@@ -22,6 +22,10 @@ void MeshRuntime::Start() {
 
 void MeshRuntime::Stop() {
   std::lock_guard lock(io_mu_);
+  // Tell every peer before going quiet: a silent stop left each one holding our link until its
+  // alive timeout — enough short-lived clients filled a server's max_links and it refused new peers.
+  // Completions / events the drops post are discarded below with the rest of the queue.
+  links_.CloseAllLinks();
   started_ = false;
   io_queue_.clear();
   deferred_queue_.clear();
