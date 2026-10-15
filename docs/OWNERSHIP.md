@@ -44,5 +44,5 @@ Same rule as pp-browser composition vocabulary (lower peers must not embed highe
 ## Related
 
 - pp-browser: `docs/contracts/L4_PROTOCOL_KINDS.md`, `docs/contracts/AMP-CHANNEL.md`
-- pp-ledger: `docs/amp-transport.md`, `docs/platform-integration.md`
+- pp-ledger: `docs/contracts/AMP_TRANSPORT.md`, `docs/architecture/PLATFORM_INTEGRATION.md`
 - Link plane: [ADR_LINK_PLANE.md](ADR_LINK_PLANE.md)
