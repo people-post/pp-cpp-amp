@@ -1070,6 +1070,84 @@ TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
   EXPECT_EQ(fixture->mgr_a->RequestDropLink("nobody"), 0u);
 }
 
+// Shutdown tells every peer: the far side evicts on our Close at once — no clock advance, so not its
+// alive timeout — instead of holding a dead link that counts against its max_links.
+TEST(MeshLinkTest, CloseAllLinksEvictsThePeerAtOnce) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+
+  std::vector<LinkEvent> dropped;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) {
+    if (event.kind == LinkEvent::Kind::Dropped) {
+      dropped.push_back(event);
+    }
+  });
+  EXPECT_EQ(fixture->mgr_a->CloseAllLinks(), 1u);
+  EXPECT_FALSE(fixture->mgr_a->IsConnected("bob")) << "inline, not at the next Tick";
+  const int64_t before = fixture->clock->NowMs();
+  for (int i = 0; i < 20 && fixture->mgr_b->FindConnectedInboundLink() != nullptr; ++i) {
+    fixture->pump_b->Pump();
+    fixture->pump_b->Tick();
+  }
+  EXPECT_EQ(fixture->clock->NowMs(), before);
+  EXPECT_EQ(fixture->mgr_b->FindConnectedInboundLink(), nullptr) << "peer evicts on our Close";
+  fixture->pump_a->Pump();  // deliver the posted drop event
+  ASSERT_EQ(dropped.size(), 1u);
+  EXPECT_EQ(dropped[0].reason, LinkDropReason::LocalShutdown);
+  EXPECT_EQ(fixture->mgr_a->CloseAllLinks(), 0u);
+}
+
+// A server at max_links refuses new peers; a client that stops must free its slot so the next one
+// gets in (pp-ledger: back-to-back pp-client runs filled the relay's 48 links and new dials timed
+// out until the dead links aged out).
+TEST(MeshLinkTest, ServerAtMaxLinksAdmitsANewPeerOnceTheLastOneClosed) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false, [](PeerLinkConfig& config) { config.max_links = 1; });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool first = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { first = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return first && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(first);
+  fixture->mgr_a->CloseAllLinks();  // the first client exits; its Close reaches bob in the same
+                                    // Pump as carol's handshake below
+
+  // A second client from another address and identity.
+  auto io_c = std::make_shared<adp::MemoryDatagramIo>(fixture->hub, adp::IpEndpoint::V4(10, 0, 0, 3, 3000));
+  adp::Endpoint ep_c(io_c, fixture->clock);
+  auto carol_keys = pp::MlDsa::GenerateKeyPair();
+  ASSERT_TRUE(static_cast<bool>(carol_keys));
+  MshIdentity carol;
+  carol.ml_dsa_secret_key = std::move(carol_keys->secret_key);
+  carol.ml_dsa_public_key = std::move(carol_keys->public_key);
+  PeerLinkConfig config_c;
+  config_c.peer_id_from_identity = [bob_pub = fixture->bob.ml_dsa_public_key](const ByteVector& pk) -> std::string {
+    return pk == bob_pub ? "QmBob" : IdentityPublicKeyFingerprint(pk);
+  };
+  PeerLinkManager mgr_c(ep_c, carol, "QmCarol", config_c);
+  MeshPump pump_c(ep_c, mgr_c);
+  ASSERT_TRUE(static_cast<bool>(mgr_c.RegisterEndpoint("bob", *bob_addr)));
+  bool second = false;
+  mgr_c.EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { second = static_cast<bool>(result); });
+  for (int i = 0; i < 200 && !second; ++i) {
+    pump_c.Pump();
+    fixture->pump_b->Pump();
+    pump_c.Tick();
+    fixture->pump_b->Tick();
+  }
+  EXPECT_TRUE(second) << "the stopped client's slot must be free without waiting out its alive timeout";
+}
+
 // A dropped link destroys its mux: channel sessions bound to it must hear "link-dropped" and forget
 // the mux — they used to keep a dangling pointer and write / unbind through it (UAF, SIGSEGV).
 TEST(MeshLinkTest, DroppedLinkClosesItsChannelSessions) {
@@ -1338,6 +1416,27 @@ TEST(MeshRuntimeTest, PumpDrivesAssociationRoundTrip) {
   ASSERT_NE(inbound_on_b, nullptr);
   EXPECT_EQ(inbound_on_b->RemotePeerId(), harness->peer_id_a);
   EXPECT_EQ(inbound_on_b->PeerKey(), "a");
+}
+
+// Stopping a runtime is a goodbye, not a silence: the peer drops our link without waiting it out.
+TEST(MeshRuntimeTest, StopClosesEveryLinkAndThePeerEvicts) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto harness = std::move(*created);
+  ASSERT_TRUE(static_cast<bool>(harness->mgr_a().RegisterEndpoint("b", harness->ma_b)));
+  bool associated = false;
+  harness->mgr_a().EnsureAssociation("b", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  harness->PumpUntil([&] { return associated && harness->mgr_b().FindLinkByPeerId(harness->peer_id_a); });
+  ASSERT_NE(harness->mgr_b().FindLinkByPeerId(harness->peer_id_a), nullptr);
+
+  harness->runtime_a->Stop();
+  EXPECT_FALSE(harness->mgr_a().IsConnected("b"));
+  for (int i = 0; i < 20 && harness->mgr_b().FindLinkByPeerId(harness->peer_id_a); ++i) {
+    harness->runtime_b->Pump();
+    harness->runtime_b->Tick();
+  }
+  EXPECT_EQ(harness->mgr_b().FindLinkByPeerId(harness->peer_id_a), nullptr);
 }
 
 TEST(MeshLinkTest, InboundLinkRekeysToRegisteredAlias) {
