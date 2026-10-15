@@ -656,7 +656,7 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
     return;
   }
 
-  if (table_.size() >= book_.Config().max_links) {
+  if (AtLinkCapacityLocked()) {
     if (on_complete) {
       on_complete(LinkRoe::error(Failure::Of(Err::MaxLinksReached, "amp link: max links reached")));
     }
@@ -714,7 +714,7 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
     return;
   }
 
-  if (table_.size() >= book_.Config().max_links) {
+  if (AtLinkCapacityLocked()) {
     auto waiters = std::move(inflight_associations_[peer_key]);
     inflight_associations_.erase(peer_key);
     PostCompletion([waiters = std::move(waiters)]() mutable {
@@ -944,6 +944,38 @@ size_t PeerLinkManager::RequestDropLink(const std::string& peer_key) {
   return keys.size();
 }
 
+bool PeerLinkManager::AtLinkCapacityLocked() const {
+  // A link whose peer already closed is gone in all but bookkeeping — Tick evicts it — so it holds
+  // no slot: a Close and a new peer's handshake landing in one Pump must not refuse the newcomer.
+  size_t closed = 0;
+  table_.ForEach([&](const PeerLink& link) {
+    const auto* conn = link.ConnectionOrNull();
+    if (conn && !link.IsCarrierBacked() && conn->IsClosed()) {
+      ++closed;
+    }
+  });
+  return table_.size() - closed >= book_.Config().max_links;
+}
+
+size_t PeerLinkManager::CloseAllLinks() {
+  std::lock_guard lock(strand_mu_);
+  std::vector<LinkHandle> nested;
+  std::vector<LinkHandle> adp;
+  table_.ForEach([&](PeerLink& link) { (link.IsCarrierBacked() ? nested : adp).push_back(link.Handle()); });
+  pending_drops_.clear();  // superseded: everything goes now
+  size_t dropped = 0;
+  for (const auto* handles : {&nested, &adp}) {
+    for (const LinkHandle handle : *handles) {
+      // A drop can take others with it (orphaned nested links); skip handles no longer live.
+      if (auto* link = table_.FindLive(handle)) {
+        DropLinkNow(*link, LinkDropReason::LocalShutdown);
+        ++dropped;
+      }
+    }
+  }
+  return dropped;
+}
+
 void PeerLinkManager::ClearDialBackoff(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   book_.ClearBackoff(peer_key);
@@ -1009,7 +1041,7 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
 
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
   std::lock_guard lock(strand_mu_);
-  if (table_.size() >= book_.Config().max_links) {
+  if (AtLinkCapacityLocked()) {
     connection->Close();
     return;
   }
@@ -1435,7 +1467,7 @@ void PeerLinkManager::EstablishNestedOverCarrier(const std::string& peer_key,
     return;
   }
 
-  if (table_.size() >= book_.Config().max_links) {
+  if (AtLinkCapacityLocked()) {
     if (on_complete) {
       on_complete(LinkRoe::error(Failure::Of(Err::MaxLinksReached, "amp link: max links reached")));
     }

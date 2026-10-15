@@ -30,6 +30,8 @@ enum class LinkDropReason : uint8_t {
   Requested,
   /** Local network changed and the link did not answer a probe within the grace (OnNetworkChanged). */
   NetworkChanged,
+  /** This side is shutting down (CloseAllLinks / MeshRuntime::Stop); each peer was told. */
+  LocalShutdown,
 };
 
 inline const char* LinkDropReasonName(const LinkDropReason reason) {
@@ -58,6 +60,8 @@ inline const char* LinkDropReasonName(const LinkDropReason reason) {
     return "requested";
   case LinkDropReason::NetworkChanged:
     return "network-changed";
+  case LinkDropReason::LocalShutdown:
+    return "local-shutdown";
   }
   return "unknown";
 }
