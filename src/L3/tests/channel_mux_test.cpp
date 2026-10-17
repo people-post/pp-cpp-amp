@@ -530,6 +530,32 @@ TEST(ChannelMuxTest, ResetDropsQueuedFrames) {
   EXPECT_FALSE(delivered);
 }
 
+// A peer that answers before reading the whole message (a refusal) and closes or resets the channel
+// must not be sent the rest: the frames waiting for window space are dropped.
+TEST(ChannelMuxTest, PeerCloseOrResetDropsQueuedFrames) {
+  for (const bool reset : {false, true}) {
+    auto link_result = test::AmpTestLink::Create();
+    ASSERT_TRUE(static_cast<bool>(link_result));
+    auto& link = **link_result;
+    auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+    ASSERT_TRUE(static_cast<bool>(ch));
+    WindowedTransport transport;
+    transport.window = 0;
+    transport.Attach(link);
+    ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(2500, 3))));
+    EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 3u);
+    if (reset) {
+      ASSERT_TRUE(static_cast<bool>(link.responder.mux.ResetChannel(*ch)));
+    } else {
+      ASSERT_TRUE(static_cast<bool>(link.responder.mux.CloseChannel(*ch)));
+    }
+    EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 0u) << (reset ? "reset" : "close");
+    transport.window = 8;
+    transport.AckAndTick(link);
+    EXPECT_EQ(transport.sends, 0u) << (reset ? "reset" : "close");
+  }
+}
+
 TEST(ChannelMuxTest, ConcurrentChannelCapIsTunable) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));
