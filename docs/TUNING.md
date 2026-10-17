@@ -43,6 +43,16 @@ pre-authentication `Close` as a refusal. An accepted association still caps its 
 two and ignores a pre-auth `Close` (reflection, forgery): only the dialer, which chose its peer, trusts
 it — and only someone who sees the association id on the path could forge it.
 
+**Socket buffers** (`UdpSocketOptions`, passed to `OsUdpDatagramIo::Bind`; 0 = the OS default).
+A node's one UDP socket carries every peer: when its receive buffer overflows, the kernel drops
+datagrams of all peers alike — handshakes, keepalives, other peers' requests — which a few peers
+sending large messages at once can cause (pp-ledger load-resilience M12: over a million datagrams
+dropped in 8 s on Linux's default 208 KiB). A product sizing its socket asks for more; Linux grants
+at most `net.core.rmem_max` / `wmem_max` unless the process may force it (CAP_NET_ADMIN), so hosts
+raise those (`sysctl -w net.core.rmem_max=16777216 net.core.wmem_max=16777216`). `Stats()` reports
+what was granted and, on Linux, the kernel's count of datagrams dropped for want of buffer
+(`SO_RXQ_OVFL`; it rides on each received datagram, so it moves as datagrams arrive).
+
 `host_resolution_ttl` (default 60 s) is how long a hostname multiaddr's resolved
 address is reused before the name is looked up again (a failed dial drops it at
 once).
