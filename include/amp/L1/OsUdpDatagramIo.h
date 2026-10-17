@@ -12,8 +12,8 @@ namespace pp::adp {
  * Socket buffers to ask the kernel for (0: the OS default). A node's one UDP socket carries every
  * peer: when its receive buffer overflows, the kernel drops datagrams of all peers alike —
  * handshakes, keepalives, other peers' requests. Linux grants at most net.core.rmem_max /
- * wmem_max (often 208 KiB) unless the process may force more (CAP_NET_ADMIN); Stats() tells what
- * was granted.
+ * wmem_max (often 208 KiB) unless the process may force more (CAP_NET_ADMIN, effective or only
+ * permitted — `setcap cap_net_admin+p`: raised for the call alone); Stats() tells what was granted.
  */
 struct UdpSocketOptions {
   size_t receive_buffer_bytes = 0;

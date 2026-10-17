@@ -22,6 +22,10 @@ using socklen_t = int;
 #include <sys/uio.h>
 #include <unistd.h>
 #endif
+#if defined(__linux__)
+#include <linux/capability.h>
+#include <sys/syscall.h>
+#endif
 
 namespace pp::adp {
 namespace {
@@ -113,6 +117,47 @@ OsUdpDatagramIo::~OsUdpDatagramIo() {
   }
 }
 
+#if defined(__linux__)
+/**
+ * CAP_NET_ADMIN made effective on this thread while in scope, when it is permitted but not
+ * effective — a binary marked `setcap cap_net_admin+p`, e.g. for a container's non-root user that
+ * cannot raise the host's sysctl cap. (`+ep` would make it effective throughout, and stop the
+ * binary from starting at all where the capability is not granted.) The previous effective set
+ * comes back when the scope ends.
+ */
+class ScopedNetAdmin {
+public:
+  ScopedNetAdmin() {
+    header_.version = _LINUX_CAPABILITY_VERSION_3;
+    header_.pid = 0;
+    if (syscall(SYS_capget, &header_, saved_) != 0) {
+      return;
+    }
+    const auto index = CAP_TO_INDEX(CAP_NET_ADMIN);
+    const auto mask = CAP_TO_MASK(CAP_NET_ADMIN);
+    if ((saved_[index].permitted & mask) == 0 || (saved_[index].effective & mask) != 0) {
+      return;
+    }
+    __user_cap_data_struct raised[_LINUX_CAPABILITY_U32S_3];
+    std::memcpy(raised, saved_, sizeof(raised));
+    raised[index].effective |= mask;
+    raised_ = syscall(SYS_capset, &header_, raised) == 0;
+  }
+  ~ScopedNetAdmin() {
+    if (raised_) {
+      syscall(SYS_capset, &header_, saved_);
+    }
+  }
+  ScopedNetAdmin(const ScopedNetAdmin&) = delete;
+  ScopedNetAdmin& operator=(const ScopedNetAdmin&) = delete;
+
+private:
+  __user_cap_header_struct header_{};
+  __user_cap_data_struct saved_[_LINUX_CAPABILITY_U32S_3]{};
+  bool raised_ = false;
+};
+#endif
+
 /** Ask for `bytes` of `option` (SO_RCVBUF / SO_SNDBUF); on Linux, force it past the sysctl cap when allowed. */
 static void SetBuffer(int fd, int option, [[maybe_unused]] int force_option, size_t bytes) {
   if (bytes == 0) {
@@ -120,8 +165,11 @@ static void SetBuffer(int fd, int option, [[maybe_unused]] int force_option, siz
   }
   const int value = static_cast<int>(std::min<size_t>(bytes, static_cast<size_t>(INT32_MAX / 2)));
 #if defined(__linux__)
-  if (setsockopt(fd, SOL_SOCKET, force_option, &value, sizeof(value)) == 0) {
-    return; // CAP_NET_ADMIN: past net.core.rmem_max / wmem_max
+  {
+    const ScopedNetAdmin net_admin;
+    if (setsockopt(fd, SOL_SOCKET, force_option, &value, sizeof(value)) == 0) {
+      return; // CAP_NET_ADMIN: past net.core.rmem_max / wmem_max
+    }
   }
 #endif
 #if defined(_WIN32)
