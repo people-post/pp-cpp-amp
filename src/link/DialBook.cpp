@@ -1,5 +1,7 @@
 #include "amp/link/DialBook.h"
 
+#include <random>
+
 #include <algorithm>
 #include <iterator>
 
@@ -123,6 +125,7 @@ Roe<void> DialBook::RegisterEndpoint(const DialKey& peer_key, const std::string&
 void DialBook::UnregisterEndpoint(const DialKey& peer_key) {
   endpoints_.erase(peer_key);
   dial_failed_until_.erase(peer_key);
+  dial_failures_.erase(peer_key);
 }
 
 Roe<void> DialBook::RegisterEndpoints(const DialKey& peer_key,
@@ -219,7 +222,17 @@ void DialBook::PromoteDialWinner(const DialKey& peer_key, const std::string& mul
 }
 
 void DialBook::ArmBackoff(const DialKey& peer_key) {
-  dial_failed_until_[peer_key] = std::chrono::steady_clock::now() + config_.dial_failure_backoff;
+  const uint32_t failures = ++dial_failures_[peer_key];
+  const auto cap = config_.dial_failure_backoff;
+  auto backoff = std::min(config_.dial_failure_backoff_initial, cap);
+  for (uint32_t i = 1; i < failures && backoff < cap; ++i) {
+    backoff = std::min(backoff * 2, cap);
+  }
+  thread_local std::mt19937 rng{std::random_device{}()};
+  const double jitter = std::uniform_real_distribution<double>(0.8, 1.2)(rng);
+  dial_failed_until_[peer_key] =
+      std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(static_cast<int64_t>(static_cast<double>(backoff.count()) * jitter));
 }
 
 bool DialBook::InBackoff(const DialKey& peer_key, std::chrono::steady_clock::time_point now) const {

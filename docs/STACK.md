@@ -51,6 +51,10 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
 - **Dial keys live until unregistered.** `RegisterEndpoint(s)` keeps a key's endpoints and
   backoff for the process's lifetime; keys made for one job (a probe, a punch target, a bridge
   target) should be dropped with `UnregisterEndpoint` when the job ends. `BurstDial` drops its own.
+- **A full node answers like a TCP server.** A full link table evicts its longest-idle inbound
+  link, else refuses the newcomer at once (`Err::TransportFailed`, "refused by the peer"); a full
+  handshake backlog drops the hello silently and the dialer resends it on a doubling interval; a
+  failed dial backs off from 1 s, doubling to 30 s, jittered ([TUNING.md](TUNING.md)).
 - **Multiaddrs may name a host.** Besides `/ip4|ip6/<ip>/udp/<port>/adp/1.0.0/p2p/<id>`, a
   dial candidate may be `/dns4|dns6|dns/<host>/udp/<port>/adp/1.0.0/p2p/<id>` (`dns4` asks for an
   IPv4 address, `dns6` IPv6, `dns` either; `/dnsaddr` is not supported). The name is resolved when

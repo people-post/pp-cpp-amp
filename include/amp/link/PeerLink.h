@@ -152,6 +152,8 @@ public:
 
   int64_t HandshakeStartedMs() const { return handshake_started_ms_; }
   void FailHandshakeTimeout();
+  /** The peer closed the association during our handshake: it refused us (table full). */
+  void FailRefused();
   void DemoteForScheduledDrop();
 
   /** Index / table ops — public so LinkTable needs no friendship into PeerLink. */

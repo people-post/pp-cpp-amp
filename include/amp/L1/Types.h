@@ -37,6 +37,14 @@ inline constexpr int kDefaultMaxRtx = 20;
  * handshake.
  */
 inline constexpr int kPreAuthMaxRtx = 2;
+/**
+ * A dialer's own handshake before it authenticates (OpenParams::dialer_backoff): resent this many
+ * times, the interval doubling from rtx_interval_ms (50 ms up to 3.2 s, ~6.3 s in all), like TCP's SYN
+ * retries. A node whose handshake backlog is full drops a hello silently; the dialer's later resend
+ * gets in once there is room. Not a reflection vector: it is the dialer's own packet, to the address
+ * it chose to dial.
+ */
+inline constexpr int kPreAuthDialMaxRtx = 6;
 /** Liveness window for a connection with no keepalive cadence on either side (cold). */
 inline constexpr int64_t kAliveTimeoutMs = 5'000;
 /** Keepalive payload: u32 BE sender keepalive interval ms (0 = stopped) + u8 flags. */

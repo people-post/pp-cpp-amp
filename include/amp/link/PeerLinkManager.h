@@ -33,6 +33,9 @@ namespace pp::amp {
  */
 class PeerLinkManager {
 public:
+  /** An inbound link silent this long, with no open channel and not warm, may be evicted for a newcomer. */
+  static constexpr int64_t kMinIdleForEvictionMs = 1000;
+
   enum class Err : int32_t {
     Ok = 0,
     EndpointNotRegistered,
@@ -293,6 +296,11 @@ private:
    * Drop, at the next Tick, the link that occupies `peer_key` now. Deferred drops are held by
    * handle: a replacement inserted under the same key before Tick is never hit.
    */
+  /**
+   * The link table is full: close the inbound link idle longest (connected, not warm, no open
+   * channel, nothing received for kMinIdleForEvictionMs) to make room. False when none is.
+   */
+  bool EvictIdleInboundLocked();
   void ScheduleDropLink(std::string peer_key, LinkDropReason reason);
   void ScheduleDropLink(LinkHandle link, LinkDropReason reason);
   void ApplyProtocolHandlers(PeerLink& link);

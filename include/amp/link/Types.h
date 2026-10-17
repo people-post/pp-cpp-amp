@@ -74,7 +74,13 @@ struct PeerLinkConfig {
   std::chrono::milliseconds dial_timeout{8000};
   /** Per-candidate handshake budget when DialBook has further fallbacks (B15/B28). */
   std::chrono::milliseconds dial_attempt_timeout{800};
+  /**
+   * A key's dial failed: no new dial before the backoff. It starts at dial_failure_backoff_initial
+   * and doubles with each failure in a row up to dial_failure_backoff, with ±20 % jitter so a herd
+   * refused together does not come back together; cleared by a fresh address or a success.
+   */
   std::chrono::milliseconds dial_failure_backoff{30000};
+  std::chrono::milliseconds dial_failure_backoff_initial{1000};
   /** How long a hostname candidate's resolved address is dialed before it is resolved again. */
   std::chrono::milliseconds host_resolution_ttl{60000};
   /** Outbound keepalive interval for MarkHot links (NAT refresh). */

@@ -21,6 +21,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -46,8 +47,10 @@ struct MeshLinkFixture {
   std::unique_ptr<MeshPump> pump_a;
   std::unique_ptr<MeshPump> pump_b;
 
+  /** `tune` applies to both sides, then `tune_b` to bob's only (a server under test). */
   static Roe<MeshLinkFixture> Create(const bool lossy = false,
-                                     const std::function<void(PeerLinkConfig&)>& tune = {}) {
+                                     const std::function<void(PeerLinkConfig&)>& tune = {},
+                                     const std::function<void(PeerLinkConfig&)>& tune_b = {}) {
     MeshLinkFixture f;
     f.clock = std::make_shared<adp::VirtualClock>(1'000'000);
     f.hub = adp::MemoryDatagramIo::MakeHub();
@@ -92,6 +95,9 @@ struct MeshLinkFixture {
       tune(config_a);
       tune(config_b);
     }
+    if (tune_b) {
+      tune_b(config_b);
+    }
     f.mgr_a = std::make_unique<PeerLinkManager>(*f.ep_a, f.alice, "QmAlice", config_a);
     f.mgr_b = std::make_unique<PeerLinkManager>(*f.ep_b, f.bob, "QmBob", config_b);
     f.pump_a = std::make_unique<MeshPump>(*f.ep_a, *f.mgr_a);
@@ -110,6 +116,17 @@ struct MeshLinkFixture {
     for (size_t i = 0; i < max_rounds && !done(); ++i) {
       PumpBoth();
     }
+  }
+
+  /** Pump with the clock moving `step_ms` a round, until `done` or `budget_ms` has passed; the time it took. */
+  int64_t PumpTimed(const std::function<bool()>& done, const int64_t budget_ms, const int64_t step_ms = 10) {
+    int64_t elapsed = 0;
+    while (elapsed < budget_ms && !done()) {
+      PumpBoth();
+      clock->Advance(step_ms);
+      elapsed += step_ms;
+    }
+    return elapsed;
   }
 };
 
@@ -253,6 +270,132 @@ TEST(MeshLinkTest, AFailedDialResolvesTheHostnameAgain) {
   fixture->PumpUntil([&] { return second.has_value(); });
   ASSERT_TRUE(second.has_value());
   EXPECT_TRUE(second->isOk()) << second->error().message;
+}
+
+// LR005: a key's dial backoff starts small and doubles with each failure in a row, up to the cap,
+// jittered so a herd refused together does not come back together; a success starts it over.
+TEST(DialBookTest, TheBackoffGrowsWithFailuresInARowAndJitters) {
+  PeerLinkConfig config;
+  config.dial_failure_backoff_initial = std::chrono::milliseconds(1000);
+  config.dial_failure_backoff = std::chrono::milliseconds(8000);
+  DialBook book(config);
+  auto remaining = [&]() {
+    return book.BackoffRemaining("k", std::chrono::steady_clock::now()).value_or(std::chrono::milliseconds(0)).count();
+  };
+  const std::pair<int64_t, int64_t> expected[] = {{1000, 1}, {2000, 2}, {4000, 3}, {8000, 4}, {8000, 5}};
+  for (const auto& [base, failures] : expected) {
+    book.ArmBackoff("k");
+    const int64_t left = remaining();
+    EXPECT_GE(left, base * 8 / 10 - 50) << failures << " failure(s)";
+    EXPECT_LE(left, base * 12 / 10) << failures << " failure(s)";
+  }
+  book.ClearBackoff("k");
+  book.ArmBackoff("k");
+  EXPECT_LE(remaining(), 1200) << "starts small again";
+
+  std::set<int64_t> spread;
+  for (int i = 0; i < 20; ++i) {
+    DialBook fresh(config);
+    fresh.ArmBackoff("k");
+    spread.insert(fresh.BackoffRemaining("k", std::chrono::steady_clock::now()).value().count() / 10);
+  }
+  EXPECT_GT(spread.size(), 3u) << "jittered";
+}
+
+// LR005: a node whose link table is full (nothing idle to evict) refuses at once, and the dialer
+// takes the refusal like a TCP reset — not at its 8 s dial timeout.
+TEST(MeshLinkTest, AFullTableRefusesADialerAtOnce) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false, {}, [](PeerLinkConfig& c) { c.max_links = 0; });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  ASSERT_TRUE(static_cast<bool>(
+      fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
+  std::optional<PeerLinkManager::LinkRoe> result;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { result = std::move(r); });
+  const int64_t took = fixture->PumpTimed([&] { return result.has_value(); }, 9000);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_FALSE(result->isOk());
+  EXPECT_NE(result->error().message.find("refused"), std::string::npos) << result->error().message;
+  EXPECT_LT(took, 1000) << "refused at once, not at the dial timeout";
+}
+
+// LR005: a hello lost (or dropped by a full backlog) is resent on a doubling interval, like a SYN.
+TEST(MeshLinkTest, TheDialerResendsItsHelloOnADoublingInterval) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  ASSERT_TRUE(static_cast<bool>(
+      fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
+  fixture->lossy_a->DropNext(8); // the dial's first sends: the old cap (two resends, 50 ms apart) gave up
+  std::optional<PeerLinkManager::LinkRoe> result;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { result = std::move(r); });
+  const int64_t took = fixture->PumpTimed([&] { return result.has_value(); }, 8000);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->isOk()) << result->error().message;
+  EXPECT_GE(took, 50 + 100 + 200 + 400) << "the resends wait longer each time";
+}
+
+// LR005: a full handshake backlog drops the hello silently — no refusal; the dialer keeps resending.
+TEST(MeshLinkTest, AFullBacklogDropsTheHelloSilently) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false, {}, [](PeerLinkConfig& c) { c.max_pending_inbound = 0; });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  ASSERT_TRUE(static_cast<bool>(
+      fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
+  std::optional<PeerLinkManager::LinkRoe> result;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { result = std::move(r); });
+  fixture->PumpTimed([&] { return result.has_value(); }, 2000);
+  EXPECT_FALSE(result.has_value()) << "not refused: " << (result ? result->error().message : "");
+  fixture->PumpTimed([&] { return result.has_value(); }, 9000);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_NE(result->error().message.find("dial timeout"), std::string::npos) << result->error().message;
+}
+
+// LR005: a full table makes room by closing its longest-idle inbound link (its peer is told).
+TEST(MeshLinkTest, AFullTableEvictsItsLongestIdleInboundLink) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false, {}, [](PeerLinkConfig& c) { c.max_links = 1; });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  const std::string bob = *FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  // Carol: a second client, with her own identity and address, on the same network.
+  auto carol_keys = pp::MlDsa::GenerateKeyPair();
+  ASSERT_TRUE(carol_keys);
+  MshIdentity carol;
+  carol.ml_dsa_secret_key = std::move(carol_keys->secret_key);
+  carol.ml_dsa_public_key = std::move(carol_keys->public_key);
+  auto io_c = std::make_shared<adp::MemoryDatagramIo>(fixture->hub, adp::IpEndpoint::V4(10, 0, 0, 3, 3000));
+  adp::Endpoint ep_c(io_c, fixture->clock);
+  PeerLinkConfig config_c;
+  config_c.peer_id_from_identity = [bob_pub = fixture->bob.ml_dsa_public_key](const ByteVector& pk) -> std::string {
+    return pk == bob_pub ? "QmBob" : IdentityPublicKeyFingerprint(pk);
+  };
+  PeerLinkManager mgr_c(ep_c, carol, "QmCarol", config_c);
+  MeshPump pump_c(ep_c, mgr_c);
+  auto pumpAll = [&](const std::function<bool()>& done, int64_t budget_ms) {
+    for (int64_t t = 0; t < budget_ms && !done(); t += 10) {
+      fixture->PumpBoth();
+      pump_c.Pump();
+      pump_c.Tick();
+      fixture->clock->Advance(10);
+    }
+  };
+
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", bob)));
+  std::optional<PeerLinkManager::LinkRoe> alice;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { alice = std::move(r); });
+  pumpAll([&] { return alice.has_value(); }, 2000);
+  ASSERT_TRUE(alice.has_value() && alice->isOk());
+  pumpAll([] { return false; }, PeerLinkManager::kMinIdleForEvictionMs + 200); // alice falls idle
+
+  ASSERT_TRUE(static_cast<bool>(mgr_c.RegisterEndpoint("bob", bob)));
+  std::optional<PeerLinkManager::LinkRoe> carolDial;
+  mgr_c.EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { carolDial = std::move(r); });
+  pumpAll([&] { return carolDial.has_value(); }, 3000);
+  ASSERT_TRUE(carolDial.has_value());
+  EXPECT_TRUE(carolDial->isOk()) << carolDial->error().message;
+  pumpAll([&] { return !fixture->mgr_a->IsConnected("bob"); }, 2000);
+  EXPECT_FALSE(fixture->mgr_a->IsConnected("bob")) << "alice's idle link was closed to make room, and she was told";
+  EXPECT_EQ(fixture->mgr_b->CountLinks(), 1u);
 }
 
 TEST(MeshLinkTest, OpenChannelDataRoundTrip) {

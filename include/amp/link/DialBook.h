@@ -58,8 +58,14 @@ public:
   /** Promote the winning multiaddr to front after a successful dial. */
   void PromoteDialWinner(const DialKey& peer_key, const std::string& multiaddr);
 
-  void ClearBackoff(const DialKey& peer_key) { dial_failed_until_.erase(peer_key); }
-  void ClearAllBackoff() { dial_failed_until_.clear(); }
+  void ClearBackoff(const DialKey& peer_key) {
+    dial_failed_until_.erase(peer_key);
+    dial_failures_.erase(peer_key);
+  }
+  void ClearAllBackoff() {
+    dial_failed_until_.clear();
+    dial_failures_.clear();
+  }
   void ArmBackoff(const DialKey& peer_key);
   bool InBackoff(const DialKey& peer_key, std::chrono::steady_clock::time_point now) const;
   std::optional<std::chrono::milliseconds> BackoffRemaining(const DialKey& peer_key,
@@ -100,6 +106,8 @@ private:
   PeerLinkConfig config_;
   std::unordered_map<DialKey, EndpointRecord> endpoints_;
   std::unordered_map<DialKey, std::chrono::steady_clock::time_point> dial_failed_until_;
+  /** Failures in a row per key: the backoff doubles with each (ArmBackoff). */
+  std::unordered_map<DialKey, uint32_t> dial_failures_;
   size_t concurrent_dials_ = 0;
 };
 
