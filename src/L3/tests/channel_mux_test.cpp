@@ -582,6 +582,33 @@ TEST(ChannelMuxTest, SilentChannelIsResetAfterReadTimeout) {
   EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Closed);  // the peer got a RESET
 }
 
+TEST(ChannelMuxTest, MessageOverTheReadersLimitResetsTheChannel) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/x/1", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+
+  auto small = TestBulkPolicy();
+  small.max_message_bytes = 64 * 1024;
+  std::string reason;
+  bool delivered = false;
+  ChannelSession session;
+  session.Bind(link.responder.mux, *ch, small, [&](Roe<std::vector<uint8_t>>) { return delivered = true; },
+               [&](const char* r) { reason = r ? r : ""; });
+  std::string sender_reason;
+  link.initiator.mux.SetTerminalHandler(*ch, [&](uint32_t, const char* r) { sender_reason = r ? r : ""; });
+
+  // The first fragment declares the size: refused there, and the sender is told (RESET).
+  EXPECT_FALSE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(256 * 1024, 0x5A))));
+  EXPECT_FALSE(delivered);
+  EXPECT_TRUE(session.IsClosed());
+  EXPECT_EQ(reason, ChannelMux::kBadMessageReason);
+  EXPECT_EQ(link.responder.mux.State(*ch), ChannelState::Closed);
+  EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Closed);
+  EXPECT_EQ(sender_reason, "peer_reset");
+}
+
 TEST(ChannelMuxTest, InboundDataRestartsReadClock) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));

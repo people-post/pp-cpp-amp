@@ -1,6 +1,8 @@
 #include "amp/L1/OsUdpDatagramIo.h"
 
+#include <algorithm>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -17,6 +19,7 @@ using socklen_t = int;
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #endif
 
@@ -110,7 +113,43 @@ OsUdpDatagramIo::~OsUdpDatagramIo() {
   }
 }
 
-Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& local) {
+/** Ask for `bytes` of `option` (SO_RCVBUF / SO_SNDBUF); on Linux, force it past the sysctl cap when allowed. */
+static void SetBuffer(int fd, int option, [[maybe_unused]] int force_option, size_t bytes) {
+  if (bytes == 0) {
+    return;
+  }
+  const int value = static_cast<int>(std::min<size_t>(bytes, static_cast<size_t>(INT32_MAX / 2)));
+#if defined(__linux__)
+  if (setsockopt(fd, SOL_SOCKET, force_option, &value, sizeof(value)) == 0) {
+    return; // CAP_NET_ADMIN: past net.core.rmem_max / wmem_max
+  }
+#endif
+#if defined(_WIN32)
+  setsockopt(fd, SOL_SOCKET, option, reinterpret_cast<const char*>(&value), sizeof(value));
+#else
+  setsockopt(fd, SOL_SOCKET, option, &value, sizeof(value));
+#endif
+}
+
+static size_t GetBuffer(int fd, int option) {
+  int value = 0;
+  socklen_t len = sizeof(value);
+#if defined(_WIN32)
+  if (getsockopt(fd, SOL_SOCKET, option, reinterpret_cast<char*>(&value), &len) != 0) {
+    return 0;
+  }
+#else
+  if (getsockopt(fd, SOL_SOCKET, option, &value, &len) != 0) {
+    return 0;
+  }
+#endif
+#if defined(__linux__)
+  value /= 2; // Linux reports twice what it grants (bookkeeping overhead)
+#endif
+  return value > 0 ? static_cast<size_t>(value) : 0;
+}
+
+Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& local, const UdpSocketOptions& options) {
   EnsureWinsock();
   const int family = local.family == IpEndpoint::Family::V4 ? AF_INET : AF_INET6;
   const int fd = static_cast<int>(::socket(family, SOCK_DGRAM, IPPROTO_UDP));
@@ -123,6 +162,15 @@ Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& lo
 #else
   const int flags = fcntl(fd, F_GETFL, 0);
   fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#endif
+#if defined(__linux__)
+  SetBuffer(fd, SO_RCVBUF, SO_RCVBUFFORCE, options.receive_buffer_bytes);
+  SetBuffer(fd, SO_SNDBUF, SO_SNDBUFFORCE, options.send_buffer_bytes);
+  const int overflow = 1; // the kernel's drop count rides each received datagram (SO_RXQ_OVFL)
+  setsockopt(fd, SOL_SOCKET, SO_RXQ_OVFL, &overflow, sizeof(overflow));
+#else
+  SetBuffer(fd, SO_RCVBUF, 0, options.receive_buffer_bytes);
+  SetBuffer(fd, SO_SNDBUF, 0, options.send_buffer_bytes);
 #endif
   // Dual-stack: AF_INET6 wildcard (::) should also accept IPv4-mapped when OS allows.
   if (local.family == IpEndpoint::Family::V6) {
@@ -193,15 +241,50 @@ Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_
   return {};
 }
 
+std::optional<DatagramIoStats> OsUdpDatagramIo::Stats() const {
+  DatagramIoStats stats;
+  stats.receive_buffer_bytes = GetBuffer(fd_, SO_RCVBUF);
+  stats.send_buffer_bytes = GetBuffer(fd_, SO_SNDBUF);
+  if (const int64_t drops = receive_drops_.load(std::memory_order_relaxed); drops >= 0) {
+    stats.receive_drops = static_cast<uint64_t>(drops);
+  }
+  return stats;
+}
+
 Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo::RecvFrom() {
   if (recv_scratch_.size() < 2048) {
     recv_scratch_.resize(2048);
   }
   sockaddr_storage ss{};
   socklen_t len = sizeof(ss);
+#if defined(__linux__)
+  iovec iov{recv_scratch_.data(), recv_scratch_.size()};
+  alignas(cmsghdr) char control[CMSG_SPACE(sizeof(uint32_t))];
+  msghdr msg{};
+  msg.msg_name = &ss;
+  msg.msg_namelen = sizeof(ss);
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_control = control;
+  msg.msg_controllen = sizeof(control);
+  const auto n = ::recvmsg(fd_, &msg, 0);
+  if (n >= 0) {
+    for (cmsghdr* c = CMSG_FIRSTHDR(&msg); c != nullptr; c = CMSG_NXTHDR(&msg, c)) {
+      if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SO_RXQ_OVFL) {
+        uint32_t drops = 0;
+        std::memcpy(&drops, CMSG_DATA(c), sizeof(drops));
+        receive_drops_.store(drops, std::memory_order_relaxed);
+      }
+    }
+    if (receive_drops_.load(std::memory_order_relaxed) < 0) {
+      receive_drops_.store(0, std::memory_order_relaxed); // told nothing: none dropped yet
+    }
+  }
+#else
   const auto n =
       ::recvfrom(fd_, reinterpret_cast<char*>(recv_scratch_.data()), static_cast<int>(recv_scratch_.size()), 0,
                  reinterpret_cast<sockaddr*>(&ss), &len);
+#endif
   if (n < 0) {
 #if defined(_WIN32)
     const int err = WSAGetLastError();

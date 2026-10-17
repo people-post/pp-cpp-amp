@@ -75,6 +75,12 @@ public:
   /** Terminal reason when a channel's ChannelPolicy::read_timeout expired (the mux reset it). */
   static constexpr const char* kReadTimeoutReason = "read-timeout";
   /**
+   * Terminal reason when an inbound message could not be reassembled — larger than the channel's
+   * max_message_bytes, malformed fragments, too many partial messages — and the mux reset the
+   * channel: the sender learns at the first fragment instead of sending the rest to be dropped.
+   */
+  static constexpr const char* kBadMessageReason = "bad-message";
+  /**
    * The mux is about to be destroyed with its link: close every channel record and hand back each
    * channel's terminal notice (reason kLinkDroppedReason) for the caller to run **after** the mux is
    * gone. Sessions bound to it forget the mux in that notice and report the channel closed — without

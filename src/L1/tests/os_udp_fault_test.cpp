@@ -201,3 +201,50 @@ TEST_F(AdpOsUdpFaultTest, ReliableSurvivesReorderOnOsUdp) {
 }
 
 } // namespace
+
+// pp-ledger load-resilience: a node asks for its socket buffers and can tell what it got, and on
+// Linux how many datagrams the kernel dropped for want of receive buffer.
+TEST(OsUdpBuffersTest, BuffersAreAskedForAndReported) {
+  pp::adp::UdpSocketOptions small;
+  small.receive_buffer_bytes = 4096;
+  small.send_buffer_bytes = 4096;
+  pp::adp::UdpSocketOptions large;
+  large.receive_buffer_bytes = 4 * 1024 * 1024;
+  auto a = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0), small);
+  auto b = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0), large);
+  ASSERT_TRUE(a && b);
+  const auto sa = a.value()->Stats();
+  const auto sb = b.value()->Stats();
+  ASSERT_TRUE(sa && sb);
+  EXPECT_GT(sa->receive_buffer_bytes, 0u);
+  EXPECT_GE(sb->receive_buffer_bytes, sa->receive_buffer_bytes) << "more asked for, at least as much granted";
+}
+
+#if defined(__linux__)
+TEST(OsUdpBuffersTest, TheKernelsDropsAreCounted) {
+  pp::adp::UdpSocketOptions tiny;
+  tiny.receive_buffer_bytes = 4096; // the kernel's minimum: a few datagrams
+  auto receiver = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0), tiny);
+  auto sender = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  ASSERT_TRUE(receiver && sender);
+  const std::vector<uint8_t> datagram(1200, 0x42);
+  for (int i = 0; i < 2000; ++i) { // far more than the buffer holds, none read
+    (void)sender.value()->SendTo(receiver.value()->LocalEndpoint(), datagram);
+  }
+  // The count rides on each datagram as of when it was queued: drain what was kept, then read one
+  // sent after the drops.
+  while (true) {
+    auto drained = receiver.value()->RecvFrom();
+    ASSERT_TRUE(drained);
+    if (!drained.value().has_value()) {
+      break;
+    }
+  }
+  (void)sender.value()->SendTo(receiver.value()->LocalEndpoint(), datagram);
+  auto got = receiver.value()->RecvFrom();
+  ASSERT_TRUE(got && got.value().has_value());
+  const auto stats = receiver.value()->Stats();
+  ASSERT_TRUE(stats && stats->receive_drops);
+  EXPECT_GT(*stats->receive_drops, 0u);
+}
+#endif
