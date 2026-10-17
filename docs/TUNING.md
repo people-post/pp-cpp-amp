@@ -49,7 +49,12 @@ datagrams of all peers alike â€” handshakes, keepalives, other peers' requests â
 sending large messages at once can cause (pp-ledger load-resilience M12: over a million datagrams
 dropped in 8 s on Linux's default 208 KiB). A product sizing its socket asks for more; Linux grants
 at most `net.core.rmem_max` / `wmem_max` unless the process may force it (CAP_NET_ADMIN), so hosts
-raise those (`sysctl -w net.core.rmem_max=16777216 net.core.wmem_max=16777216`). `Stats()` reports
+raise those (`sysctl -w net.core.rmem_max=16777216 net.core.wmem_max=16777216`). A container
+cannot: those sysctls exist only in the host's network namespace. There, give the binary
+`CAP_NET_ADMIN` as permitted only (`setcap cap_net_admin+p`, and the container the capability,
+e.g. compose `cap_add: [NET_ADMIN]`): `Bind` makes it effective for the buffer call alone and puts
+the effective set back. (`+ep` keeps it effective throughout, and the binary will not start where
+the capability is not granted.) Not with rootless containers, nor under `no-new-privileges`. `Stats()` reports
 what was granted and, on Linux, the kernel's count of datagrams dropped for want of buffer
 (`SO_RXQ_OVFL`; it rides on each received datagram, so it moves as datagrams arrive).
 

@@ -394,6 +394,9 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
     return HandleOpenAck(std::move(frame));
   case ChannelFrameType::Reset:
     if (channel) {
+      // The peer reads no more of this channel: what waits for window space would be sent for nothing
+      // (a request it refused early can be megabytes).
+      DropQueued(frame.header.channel_id);
       channel->state = ChannelState::Closed;
       NotifyTerminal(*channel, "peer_reset");
       channels_.erase(frame.header.channel_id);
@@ -401,6 +404,7 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
     return Roe<void>();
   case ChannelFrameType::Close:
     if (channel) {
+      DropQueued(frame.header.channel_id);  // as for Reset: the channel is gone on both sides
       channel->state = ChannelState::Closed;
       NotifyTerminal(*channel, "peer_close");
       channels_.erase(frame.header.channel_id);
