@@ -93,6 +93,25 @@ Roe<adp::IpEndpoint> ParseIp6HostPort(std::string_view host, std::string_view po
   return ep;
 }
 
+/** A DNS name: dot-separated labels of 1..63 letters, digits and hyphens, not edged by a hyphen. */
+bool IsDnsName(std::string_view host) {
+  if (host.empty() || host.size() > 253) {
+    return false;
+  }
+  for (const auto label : Split(host, '.')) {
+    if (label.empty() || label.size() > 63 || label.front() == '-' || label.back() == '-') {
+      return false;
+    }
+    for (const char c : label) {
+      const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-';
+      if (!ok) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 Roe<std::string> FormatIp6Host(const adp::IpEndpoint& endpoint) {
   char buf[INET6_ADDRSTRLEN] = {};
   if (!::inet_ntop(AF_INET6, endpoint.addr.data(), buf, sizeof(buf))) {
@@ -111,19 +130,34 @@ Roe<ParsedAdpMultiaddr> ParseAdpMultiaddr(const std::string_view multiaddr) {
   if (parts.size() != 8) {
     return Error("amp addr: expected 8 components");
   }
-  if ((parts[0] != "ip4" && parts[0] != "ip6") || parts[2] != "udp" || parts[4] != kAdpMultiaddrProtocol ||
+  const bool dns = parts[0] == "dns" || parts[0] == "dns4" || parts[0] == "dns6";
+  if ((parts[0] != "ip4" && parts[0] != "ip6" && !dns) || parts[2] != "udp" || parts[4] != kAdpMultiaddrProtocol ||
       parts[5] != kAdpMultiaddrVersion || parts[6] != "p2p") {
     return Error("amp addr: unsupported multiaddr layout");
+  }
+  if (parts[7].empty()) {
+    return Error("amp addr: missing peer id");
+  }
+  ParsedAdpMultiaddr out;
+  if (dns) {
+    if (!IsDnsName(parts[1])) {
+      return Error("amp addr: bad hostname");
+    }
+    auto port = ParsePort(parts[3]);
+    if (!port) {
+      return port.error();
+    }
+    out.hostname.assign(parts[1].begin(), parts[1].end());
+    out.host_family = parts[0] == "dns4" ? HostFamily::V4 : parts[0] == "dns6" ? HostFamily::V6 : HostFamily::Any;
+    out.endpoint.port = *port;
+    out.peer_id.assign(parts[7].begin(), parts[7].end());
+    return out;
   }
   Roe<adp::IpEndpoint> endpoint =
       parts[0] == "ip4" ? ParseIp4HostPort(parts[1], parts[3]) : ParseIp6HostPort(parts[1], parts[3]);
   if (!endpoint) {
     return endpoint.error();
   }
-  if (parts[7].empty()) {
-    return Error("amp addr: missing peer id");
-  }
-  ParsedAdpMultiaddr out;
   out.endpoint = *endpoint;
   out.peer_id.assign(parts[7].begin(), parts[7].end());
   return out;

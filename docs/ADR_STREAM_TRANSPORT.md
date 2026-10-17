@@ -23,7 +23,7 @@ Today's layering already separates what is UDP-specific:
 | L2 MSH session, L3 channel mux | No — they send and receive sealed frames |
 | `PeerLink` | Two transports already: `TransportClass::Adp` and `::Carrier` (A024: MSH and sealed frames over a channel, no ADP) |
 | `PeerLinkManager` | One ADP `Endpoint` for dial / accept / clock / liveness |
-| Multiaddr | Only `/ip4\|ip6/…/udp/<port>/adp/1.0.0/p2p/<id>` |
+| Multiaddr | Only `/ip4\|ip6\|dns4\|dns6\|dns/…/udp/<port>/adp/1.0.0/p2p/<id>` (names resolved at dial time) |
 | `MeshRuntime` (product API) | No — dial keys and multiaddr strings |
 
 ## Decision (proposed)

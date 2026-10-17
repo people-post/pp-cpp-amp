@@ -51,6 +51,14 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
 - **Dial keys live until unregistered.** `RegisterEndpoint(s)` keeps a key's endpoints and
   backoff for the process's lifetime; keys made for one job (a probe, a punch target, a bridge
   target) should be dropped with `UnregisterEndpoint` when the job ends. `BurstDial` drops its own.
+- **Multiaddrs may name a host.** Besides `/ip4|ip6/<ip>/udp/<port>/adp/1.0.0/p2p/<id>`, a
+  dial candidate may be `/dns4|dns6|dns/<host>/udp/<port>/adp/1.0.0/p2p/<id>` (`dns4` asks for an
+  IPv4 address, `dns6` IPv6, `dns` either; `/dnsaddr` is not supported). The name is resolved when
+  the candidate is dialed, on a thread of its own (`HostResolver`) so the strand never blocks; dials
+  under the key wait on that one lookup. A name that does not resolve fails the candidate like a
+  failed dial (next candidate, then backoff). The address is kept for `host_resolution_ttl` and
+  dropped when a dial to it fails, so a host that moved is looked up again. A bare
+  `PeerLinkManager` has no resolver (`SetHostResolver`): there, a hostname candidate fails.
 
 `PeerLinkManager::Links()` remains for Amp-internal tests and gradual migration. New product code should not add `FindLink` call sites.
 

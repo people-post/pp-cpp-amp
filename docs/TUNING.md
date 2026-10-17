@@ -29,6 +29,9 @@ dialed or accepted):
 
 The existing `PeerLinkConfig` fields (dial timeouts, keepalive intervals, link
 caps, `network_change_grace`) are tunable as before.
+`host_resolution_ttl` (default 60 s) is how long a hostname multiaddr's resolved
+address is reused before the name is looked up again (a failed dial drops it at
+once).
 
 ## Rules (`ValidatePeerLinkConfig`)
 

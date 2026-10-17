@@ -11,8 +11,12 @@ MeshRuntime::MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, st
                          PeerLinkConfig config)
     : endpoint_(endpoint),
       links_(endpoint, std::move(local_identity), std::move(local_peer_id), std::move(config), io_mu_),
-      pump_(endpoint, links_) {
+      pump_(endpoint, links_), resolver_([this](std::function<void()> fn) { PostToIo(std::move(fn)); }) {
   links_.SetCompletionPoster([this](std::function<void()> fn) { PostToIo(std::move(fn)); });
+  links_.SetHostResolver([this](const std::string& host, HostFamily family, uint16_t port,
+                                std::function<void(Roe<adp::IpEndpoint>)> done) {
+    resolver_.Resolve(host, family, port, std::move(done));
+  });
 }
 
 void MeshRuntime::Start() {

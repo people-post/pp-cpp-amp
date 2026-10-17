@@ -3,6 +3,7 @@
   AmpAdpCarrier.cpp
   CarrierLane.cpp
   DialBook.cpp
+  HostResolver.cpp
   DualDialElector.cpp
   LinkTable.cpp
   MeshPump.cpp
