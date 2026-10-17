@@ -467,6 +467,10 @@ void PeerLink::FailHandshakeTimeout() {
   FailAssociation(Failure::Of(Err::DialTimeout, "amp link: dial timeout"));
 }
 
+void PeerLink::FailRefused() {
+  FailAssociation(Failure::Of(Err::TransportFailed, "amp link: refused by the peer (its link table is full)"));
+}
+
 void PeerLink::DemoteForScheduledDrop() {
   if (phase_ == PeerLinkPhase::Connected || phase_ == PeerLinkPhase::Handshaking ||
       phase_ == PeerLinkPhase::Dialing) {

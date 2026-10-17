@@ -50,6 +50,14 @@ struct OpenParams {
    * direct L1 use) are unaffected.
    */
   bool reduce_rtx_until_authenticated = false;
+  /**
+   * A dialer's own association (PeerLinkManager's outbound dials; with
+   * reduce_rtx_until_authenticated): before it authenticates, its handshake is resent on a doubling
+   * interval up to kPreAuthDialMaxRtx times, and a Close from the peer is taken as a refusal — like
+   * a TCP reset, forgeable only by one who sees the association id on the path, who could as well
+   * drop the packets. Accepted associations still ignore a pre-auth Close.
+   */
+  bool dialer_backoff = false;
 };
 
 /** One association's Reliable traffic figures (the per-link slice of `EndpointStats`). */
@@ -84,7 +92,11 @@ public:
   static Roe<std::shared_ptr<Connection>> Open(Endpoint& endpoint, OpenParams params);
 
   void Close();
+  /** Forget the association without a word to the peer (a full handshake backlog drops a hello silently). */
+  void Abandon();
   bool IsClosed() const { return closed_; }
+  /** The peer closed it (a Close received; before authentication, only on a dialer: a refusal). */
+  bool PeerClosed() const { return peer_closed_; }
   /** A send reported no route to the peer (IsUnreachableSendError): the association is unusable. */
   bool PeerUnreachable() const { return peer_unreachable_; }
 
@@ -170,6 +182,8 @@ private:
   bool peer_unreachable_ = false;
   /** params_.max_rtx to restore once UpgradeBinder proves the association is real (post-MSH). */
   int authenticated_max_rtx_ = 0;
+  /** Interval before the next resend after `attempts` (doubling for a dialer's handshake). */
+  int64_t RetransmitIntervalMs(int attempts) const;
   /**
    * Set by UpgradeBinder. Before it, the binder key is the well-known pre-session key (anyone
    * can forge a valid HMAC), so Close / Keepalive — which can tear down or degrade the

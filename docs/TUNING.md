@@ -29,6 +29,20 @@ dialed or accepted):
 
 The existing `PeerLinkConfig` fields (dial timeouts, keepalive intervals, link
 caps, `network_change_grace`) are tunable as before.
+Links behave like TCP connections (pp-ledger load-resilience LR005):
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `max_links` | 48 | Links held at once (TCP: connections). Full: the longest-idle inbound link is closed to make room (connected, not warm, no channel open but the capability channel, nothing received for 1 s; its peer is told); failing that, the newcomer is refused at once — a `Close` its dialer takes as a refusal, like a reset |
+| `max_pending_inbound` | 16 | Inbound handshakes in progress (TCP: the listen backlog). Full: the hello is dropped silently; the dialer resends it |
+| `dial_failure_backoff_initial`, `dial_failure_backoff` | 1 s, 30 s | A key's failed dial backs off from the first, doubling with each failure in a row up to the second, ±20 % jitter; a success or a fresh address starts it over |
+
+A dialer resends its handshake before it authenticates up to 6 times, the interval doubling from
+`rtx_interval_ms` (50 ms … 3.2 s, ~6.3 s in all, like SYN retries), and takes the peer's
+pre-authentication `Close` as a refusal. An accepted association still caps its pre-auth resends at
+two and ignores a pre-auth `Close` (reflection, forgery): only the dialer, which chose its peer, trusts
+it — and only someone who sees the association id on the path could forge it.
+
 `host_resolution_ttl` (default 60 s) is how long a hostname multiaddr's resolved
 address is reused before the name is looked up again (a failed dial drops it at
 once).

@@ -32,10 +32,14 @@ enum class LinkDropReason : uint8_t {
   NetworkChanged,
   /** This side is shutting down (CloseAllLinks / MeshRuntime::Stop); each peer was told. */
   LocalShutdown,
+  /** The link table was full: this idle inbound link made room for a new peer (its peer was told). */
+  IdleEvicted,
 };
 
 inline const char* LinkDropReasonName(const LinkDropReason reason) {
   switch (reason) {
+  case LinkDropReason::IdleEvicted:
+    return "idle-evicted";
   case LinkDropReason::Unknown:
     return "unknown";
   case LinkDropReason::ConnectionClosed:

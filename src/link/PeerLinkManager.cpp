@@ -744,6 +744,7 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
   params.mint_id = true;
   params.peer = ep_it->second.endpoint;
   params.reduce_rtx_until_authenticated = true;
+  params.dialer_backoff = true; // our own hello: resent like SYNs; the peer's Close is a refusal
   auto opened = endpoint_.Open(params);
   // Same-ms mint collision (pre-seq fix) or rare id clash — remint once.
   if (!opened && opened.error().message.find("assoc already open") != std::string::npos) {
@@ -979,6 +980,7 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, const LinkHandle h
       }
     } else {
       last_error_.erase(peer_key);
+      book_.ClearBackoff(peer_key); // the failures in a row end: the next backoff starts small again
       if (auto* rec = book_.Find(peer_key)) {
         book_.PromoteDialWinner(peer_key, rec->multiaddr);
       } else {
@@ -1031,6 +1033,43 @@ bool PeerLinkManager::AtLinkCapacityLocked() const {
     }
   });
   return table_.size() - closed >= book_.Config().max_links;
+}
+
+bool PeerLinkManager::EvictIdleInboundLocked() {
+  const int64_t now = endpoint_.GetClock().NowMs();
+  PeerLink* oldest = nullptr;
+  int64_t oldest_rx = 0;
+  table_.ForEach([&](PeerLink& link) {
+    auto* conn = link.ConnectionOrNull();
+    if (link.IsOutbound() || link.IsCarrierBacked() || link.Phase() != PeerLinkPhase::Connected || !conn ||
+        conn->IsClosed() || link.IsWarm()) {
+      return; // our own dials, warm (kept-alive) links and links still forming are never idle
+    }
+    if (const auto* mux = link.Mux()) {
+      std::unordered_map<std::string, size_t> open;
+      mux->CountOpenChannels(open);
+      for (const auto& [protocol, count] : open) {
+        if (count > 0 && protocol != kCapabilityProtocolId) {
+          return; // a channel in use (the capability channel stays open on every link)
+        }
+      }
+    }
+    const int64_t rx = conn->LastAuthRxMs();
+    if (now - rx < kMinIdleForEvictionMs) {
+      return;
+    }
+    if (!oldest || rx < oldest_rx) {
+      oldest = &link;
+      oldest_rx = rx;
+    }
+  });
+  if (!oldest) {
+    return false;
+  }
+  // Closed now (its peer is told), so it holds no slot; Tick removes it.
+  oldest->ConnectionOrNull()->Close();
+  ScheduleDropLink(oldest->Handle(), LinkDropReason::IdleEvicted);
+  return true;
 }
 
 size_t PeerLinkManager::CloseAllLinks() {
@@ -1117,7 +1156,9 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
 
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
   std::lock_guard lock(strand_mu_);
-  if (AtLinkCapacityLocked()) {
+  // A full table first makes room by evicting its longest-idle inbound link; failing that, the
+  // newcomer is refused at once (a Close its dialer takes as a refusal), like a TCP reset.
+  if (AtLinkCapacityLocked() && !EvictIdleInboundLocked()) {
     connection->Close();
     return;
   }
@@ -1131,7 +1172,9 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
     }
   });
   if (pending_inbound >= book_.Config().max_pending_inbound) {
-    connection->Close();
+    // The handshake backlog is full: drop the hello silently, like a full listen backlog drops a SYN.
+    // The dialer resends it on a doubling interval and gets in once handshakes finish.
+    connection->Abandon();
     return;
   }
   static constexpr char kHex[] = "0123456789abcdef";
@@ -1387,6 +1430,21 @@ void PeerLinkManager::Tick() {
       timed_out.push_back(link.Handle());
     }
   });
+  // A dialer the peer refused (its table full) fails now, not at the dial timeout — like a TCP reset.
+  std::vector<LinkHandle> refused;
+  table_.ForEach([&](PeerLink& link) {
+    const auto phase = link.Phase();
+    const auto* conn = link.ConnectionOrNull();
+    if (link.IsOutbound() && conn && conn->PeerClosed() &&
+        (phase == PeerLinkPhase::Handshaking || phase == PeerLinkPhase::Dialing)) {
+      refused.push_back(link.Handle());
+    }
+  });
+  for (const auto& handle : refused) {
+    if (auto* link = table_.FindLive(handle)) {
+      link->FailRefused(); // → establish_cb → FinishDial
+    }
+  }
   for (const auto& handle : timed_out) {
     if (auto* link = table_.FindLive(handle)) {
       // FailHandshakeTimeout → establish_cb → FinishDial for outbound; do not FinishDial twice.

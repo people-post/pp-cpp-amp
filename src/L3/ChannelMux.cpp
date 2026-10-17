@@ -573,7 +573,7 @@ Roe<void> ChannelMux::SendCapabilityOffer(ChannelMux& mux, const CapabilityPaylo
     return encoded.error();
   }
   if (!mux.ChannelById(kCapabilityChannelId)) {
-    auto id = mux.OpenOutbound("/pp-browser/amp-capability/1.0.0", CapabilityChannelPolicy(), kCapabilityChannelId);
+    auto id = mux.OpenOutbound(kCapabilityProtocolId, CapabilityChannelPolicy(), kCapabilityChannelId);
     if (!id) {
       return id.error();
     }

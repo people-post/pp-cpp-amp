@@ -22,7 +22,7 @@ Connection::Connection(Endpoint& endpoint, OpenParams params)
       rx_rel_(std::max(params_.replay_window, params_.reliable_window), /*slide_on_gap=*/false) {
   authenticated_max_rtx_ = params_.max_rtx;
   if (params_.reduce_rtx_until_authenticated) {
-    params_.max_rtx = std::min(params_.max_rtx, kPreAuthMaxRtx);
+    params_.max_rtx = std::min(params_.max_rtx, params_.dialer_backoff ? kPreAuthDialMaxRtx : kPreAuthMaxRtx);
   } else {
     // Opted out of pre-auth hardening (explicit Open() outside PeerLinkManager, e.g. tests):
     // keep the old behavior of trusting Close / Keepalive from the first packet.
@@ -58,6 +58,21 @@ void Connection::Close() {
   (void)SendPacket(PacketType::Close, 0, {}, now);
   closed_ = true;
   endpoint_->Unregister(id_);
+}
+
+void Connection::Abandon() {
+  if (closed_) {
+    return;
+  }
+  closed_ = true;
+  endpoint_->Unregister(id_);
+}
+
+int64_t Connection::RetransmitIntervalMs(int attempts) const {
+  if (authenticated_ || !params_.dialer_backoff) {
+    return params_.rtx_interval_ms;
+  }
+  return params_.rtx_interval_ms << std::min(attempts, 16); // a dialer's handshake: doubling, like SYN retries
 }
 
 void Connection::SetPeerEndpoint(IpEndpoint peer) {
@@ -287,7 +302,7 @@ void Connection::Tick(int64_t now_ms) {
       continue;
     }
     ++o.attempts;
-    o.next_rtx_ms = now_ms + params_.rtx_interval_ms;
+    o.next_rtx_ms = now_ms + RetransmitIntervalMs(o.attempts);
     endpoint_->NoteRetransmit();
     ++stats_.retransmits;
     (void)SendPacket(PacketType::DataReliable, o.seq, o.payload, now_ms);
@@ -380,8 +395,10 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     break;
   }
   case PacketType::Close: {
-    // Pre-auth, the binder key is the well-known pre-session key: anyone can forge this HMAC.
-    if (!authenticated_) {
+    // Pre-auth, the binder key is the well-known pre-session key: anyone who sees the association id
+    // can forge this. A dialer still takes it as a refusal (dialer_backoff): like a TCP reset, only an
+    // on-path observer could forge it, and it could drop the handshake as well.
+    if (!authenticated_ && !params_.dialer_backoff) {
       break;
     }
     peer_closed_ = true;
