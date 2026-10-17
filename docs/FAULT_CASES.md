@@ -40,6 +40,7 @@ Injection knobs:
 | **N10** | Garbage mid-HS | Handshake | Raw + MSH-shaped | Recover or dial fail clean | Integ | **landed** (Adv03) |
 | **N11** | Sealed garbage flood | Post-assoc | Invalid AEAD | Stay up; good data works | Integ | **landed** (Adv06) |
 | **N12** | Partial FRAG bomb | Post-open | Incomplete frags | Bound memory; sweep | Integ | **landed** (Adv08) |
+| **N12b** | Oversized message | Post-open | FRAG declaring more than the reader's `max_message_bytes` | Channel RESET at the first fragment (`bad-message`); sender stops | L3 unit | **landed** (`MessageOverTheReadersLimitResetsTheChannel`) |
 | **N13** | Loss + reorder | Steady | Reliable + Bulk FRAG | Survive | Integ | **landed** (`ReliableAndBulkSurviveLossPlusReorder`) |
 | **N14** | Loss during rekey | Grace window | Mixed epochs | Survive; post-rekey data OK | Integ | **landed** (`RekeySurvivesLoss`) |
 | **N15** | Path migrate + loss | Mid-session | Reliable | Survive on new/primary path | Integ | **landed** (`PathMigrateSurvivesLoss`) |

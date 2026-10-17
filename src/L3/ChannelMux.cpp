@@ -431,6 +431,12 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
     channel->read_clock_ms = -1;
     auto assembled = channel->reassembly.Push(frame.frag, now_ms_ ? now_ms_() : 0);
     if (!assembled) {
+      const uint32_t id = channel->id;
+      TerminalHandler handler = channel->on_terminal;  // ResetChannel erases the record
+      (void)ResetChannel(id);
+      if (handler) {
+        handler(id, kBadMessageReason);
+      }
       return assembled.error();
     }
     if (!assembled->has_value()) {
@@ -508,6 +514,11 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     auto sent = SendWire(channel_id, channel->tx_seq, qos, std::move(*wire));
     if (!sent) {
       return sent.error();
+    }
+    // A transport that delivers at once (tests, loopback) may bring back the peer's RESET.
+    channel = ChannelById(channel_id);
+    if (!channel || channel->state != ChannelState::Open) {
+      return Error("amp mux: channel closed while sending");
     }
     ++channel->tx_seq;
   }
