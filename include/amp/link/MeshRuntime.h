@@ -2,6 +2,7 @@
 
 #include "amp/L1/Endpoint.h"
 #include "amp/link/MeshPump.h"
+#include "amp/link/HostResolver.h"
 #include "amp/link/PeerLinkManager.h"
 #include "amp/L2/Types.h"
 #include "amp/L3/ChannelPolicy.h"
@@ -208,6 +209,9 @@ private:
   TimerId next_timer_id_ = 1;
   bool started_ = false;
   bool driving_ = false;
+  /** Resolves `/dns*` candidates off the strand. Last: destroyed first, so no lookup posts into a
+   *  runtime that is going. */
+  HostResolver resolver_;
 };
 
 } // namespace pp::amp

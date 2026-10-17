@@ -82,6 +82,14 @@ public:
 
   /** Wire MeshRuntime::PostToIo so FinishDial waiters never run under association mutation. */
   void SetCompletionPoster(CompletionPoster poster);
+
+  /**
+   * Resolves a `/dns*` candidate's hostname off the strand; `done` must run on the io lane
+   * (MeshRuntime wires a HostResolver). Without one, a hostname candidate fails like a dial.
+   */
+  using HostResolveFn = std::function<void(const std::string& host, HostFamily family, uint16_t port,
+                                           std::function<void(Roe<adp::IpEndpoint>)> done)>;
+  void SetHostResolver(HostResolveFn resolve);
   PeerConnectedListenerId AddPeerConnectedListener(PeerConnectedListener listener);
   void RemovePeerConnectedListener(PeerConnectedListenerId id);
   void SetPeerConnectedListener(PeerConnectedListener listener);
@@ -295,6 +303,12 @@ private:
   void FinishDial(const std::string& peer_key, LinkHandle handle, LinkRoe result);
   /** Start outbound dial for `peer_key`; waiters must already be queued. Strand-locked. */
   void BeginOutboundDialLocked(const std::string& peer_key);
+  /** The active candidate is a hostname without a fresh address: resolve it, then dial. Locked. */
+  void StartResolutionLocked(const std::string& peer_key);
+  /** io lane: `multiaddr` of `peer_key` resolved (or not); dial it, or try the next candidate. */
+  void OnHostResolved(const std::string& peer_key, const std::string& multiaddr, Roe<adp::IpEndpoint> result);
+  /** A candidate failed before any link (its hostname did not resolve): next one, or fail waiters. Locked. */
+  void FailCandidateLocked(const std::string& peer_key, const std::string& message);
   /** Runs inside the nested link's establish_cb_ — `provisional_key` by value (caller's capture dies with the link). */
   void FinishNestedCarrier(std::string provisional_key, LinkHandle handle, LinkRoe result);
   void HandleInboundCarrierChannel(PeerLink& via_link, uint32_t channel_id);
@@ -376,6 +390,9 @@ private:
   std::vector<std::pair<LinkHandle, LinkDropReason>> pending_drops_;
   /** After a failed dial, try next DialBook candidate once the link is dropped (Tick). */
   std::vector<std::string> pending_candidate_retry_;
+  HostResolveFn host_resolver_;
+  /** Dial keys whose active candidate's hostname is being resolved (waiters queue meanwhile). */
+  std::unordered_set<std::string> resolving_;
   std::vector<std::pair<std::string, std::string>> pending_alias_adopt_;
   struct ChannelOpenWaiter {
     /** Resolved like ResolveConnectedLink (else the key's dial) — unless `link` is set. */

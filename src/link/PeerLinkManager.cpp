@@ -621,6 +621,12 @@ void PeerLinkManager::EnsureAssociation(const std::string& peer_key, LinkCb on_c
     }
   }
 
+  // A hostname being resolved for this key: its dial follows (OnHostResolved).
+  if (resolving_.contains(peer_key)) {
+    inflight_associations_[peer_key].push_back(std::move(on_complete));
+    return;
+  }
+
   // Join an ADP dial in flight; a nested handshake under the same key is a different link (A024).
   if (auto* existing = FindAdpLinkForKey(peer_key)) {
     if (existing->Phase() == PeerLinkPhase::Handshaking || existing->Phase() == PeerLinkPhase::Dialing) {
@@ -727,6 +733,11 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
     return;
   }
 
+  if (book_.NeedsResolution(peer_key)) {
+    StartResolutionLocked(peer_key);
+    return;
+  }
+
   adp::OpenParams params;
   params.ApplyTuning(book_.Config().adp);
   params.key = PreSessionPeerKey();
@@ -766,6 +777,70 @@ void PeerLinkManager::BeginOutboundDialLocked(const std::string& peer_key) {
   table_.Insert(std::move(link));
   raw->StartOutboundHandshake([this, peer_key, handle](PeerLink::LinkRoe result) {
     FinishDial(peer_key, handle, WrapPeerLinkResult(result));
+  });
+}
+
+void PeerLinkManager::SetHostResolver(HostResolveFn resolve) {
+  std::lock_guard lock(strand_mu_);
+  host_resolver_ = std::move(resolve);
+}
+
+void PeerLinkManager::StartResolutionLocked(const std::string& peer_key) {
+  const auto* rec = book_.Find(peer_key);
+  if (!rec) {
+    FailCandidateLocked(peer_key, "amp link: peer endpoint not registered");
+    return;
+  }
+  if (!host_resolver_) {
+    FailCandidateLocked(peer_key, "amp link: no host resolver for " + rec->hostname);
+    return;
+  }
+  resolving_.insert(peer_key);
+  host_resolver_(rec->hostname, rec->host_family, rec->endpoint.port,
+                 [this, peer_key, multiaddr = rec->multiaddr](Roe<adp::IpEndpoint> result) {
+                   OnHostResolved(peer_key, multiaddr, std::move(result));
+                 });
+}
+
+void PeerLinkManager::OnHostResolved(const std::string& peer_key, const std::string& multiaddr,
+                                     Roe<adp::IpEndpoint> result) {
+  std::lock_guard lock(strand_mu_);
+  resolving_.erase(peer_key);
+  if (result) {
+    book_.SetResolution(multiaddr, *result); // other keys dialing the same name take it too
+  }
+  const auto* rec = book_.Find(peer_key);
+  const auto waiting = inflight_associations_.find(peer_key);
+  if (!rec || waiting == inflight_associations_.end() || waiting->second.empty()) {
+    return; // the dial was aborted or the endpoint dropped: only the address is kept
+  }
+  if (rec->multiaddr != multiaddr) {
+    BeginOutboundDialLocked(peer_key); // the candidates changed meanwhile: dial the active one
+    return;
+  }
+  if (!result) {
+    FailCandidateLocked(peer_key, result.error().message);
+    return;
+  }
+  BeginOutboundDialLocked(peer_key);
+}
+
+void PeerLinkManager::FailCandidateLocked(const std::string& peer_key, const std::string& message) {
+  last_error_[peer_key] = Failure::Of(Err::TransportFailed, message);
+  if (book_.AdvanceDialCandidate(peer_key)) {
+    BeginOutboundDialLocked(peer_key);
+    return;
+  }
+  book_.ResetDialIndex(peer_key);
+  book_.ArmBackoff(peer_key);
+  auto waiters = std::move(inflight_associations_[peer_key]);
+  inflight_associations_.erase(peer_key);
+  PostCompletion([waiters = std::move(waiters), message]() mutable {
+    for (auto& waiter : waiters) {
+      if (waiter) {
+        waiter(LinkRoe::error(Failure::Of(Err::TransportFailed, message)));
+      }
+    }
   });
 }
 
@@ -885,6 +960,7 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, const LinkHandle h
     const bool suppress_backoff = suppress_dial_backoff_.erase(peer_key) > 0;
     if (!result) {
       last_error_[peer_key] = result.error();
+      book_.ForgetResolution(peer_key); // a hostname's address may be stale: resolve it again
       const LinkDropReason reason =
           suppress_backoff ? LinkDropReason::DialAborted : DropReasonFor(result.error());
       // B15/B28: try the next DialBook candidate before arming long backoff / failing waiters.

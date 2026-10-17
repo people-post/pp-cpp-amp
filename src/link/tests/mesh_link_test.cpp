@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace pp::amp {
 namespace {
@@ -137,6 +138,121 @@ TEST(MeshLinkTest, EnsureAssociationOverMemoryIo) {
   EXPECT_TRUE(associated) << assoc_error;
   EXPECT_TRUE(fixture->mgr_a->IsConnected("bob"));
   ASSERT_NE(fixture->mgr_b->FindConnectedInboundLink(), nullptr);
+}
+
+/** A host resolver the test answers by hand (as MeshRuntime's would, later, on the io lane). */
+struct ManualResolver {
+  struct Request {
+    std::string host;
+    HostFamily family;
+    uint16_t port;
+    std::function<void(Roe<adp::IpEndpoint>)> done;
+  };
+  std::vector<Request> requests;
+
+  PeerLinkManager::HostResolveFn fn() {
+    return [this](const std::string& host, HostFamily family, uint16_t port,
+                  std::function<void(Roe<adp::IpEndpoint>)> done) {
+      requests.push_back({host, family, port, std::move(done)});
+    };
+  }
+  /** Answer the oldest request. */
+  void answer(Roe<adp::IpEndpoint> result) {
+    ASSERT_FALSE(requests.empty());
+    auto done = std::move(requests.front().done);
+    requests.erase(requests.begin());
+    done(std::move(result));
+  }
+};
+
+// A /dns4 candidate is resolved before it is dialed, off the strand; a dial joins one waiting on
+// the resolution; the resolved address is then dialed.
+TEST(MeshLinkTest, AHostnameCandidateIsResolvedThenDialed) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  ManualResolver resolver;
+  fixture->mgr_a->SetHostResolver(resolver.fn());
+  ASSERT_TRUE(static_cast<bool>(
+      fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+
+  int answered = 0;
+  bool associated = false;
+  std::string error;
+  auto cb = [&](PeerLinkManager::LinkRoe result) {
+    ++answered;
+    associated = result.isOk();
+    error = associated ? "" : result.error().message;
+  };
+  fixture->mgr_a->EnsureAssociation("bob", cb);
+  fixture->mgr_a->EnsureAssociation("bob", cb); // joins the same resolution
+  ASSERT_EQ(resolver.requests.size(), 1u);
+  EXPECT_EQ(resolver.requests[0].host, "bob.test");
+  EXPECT_EQ(resolver.requests[0].family, HostFamily::V4);
+  EXPECT_EQ(resolver.requests[0].port, 2000u);
+  fixture->PumpUntil([&] { return answered > 0; }, 20);
+  EXPECT_EQ(answered, 0) << "no dial before the name resolves";
+
+  resolver.answer(fixture->addr_b);
+  fixture->PumpUntil([&] { return answered == 2; });
+  EXPECT_EQ(answered, 2);
+  EXPECT_TRUE(associated) << error;
+  EXPECT_TRUE(fixture->mgr_a->IsConnected("bob"));
+  EXPECT_TRUE(resolver.requests.empty());
+}
+
+// A name that does not resolve fails the candidate like a failed dial: the next candidate, or the
+// waiters fail and the key backs off.
+TEST(MeshLinkTest, AHostnameThatDoesNotResolveFailsLikeADial) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  ManualResolver resolver;
+  fixture->mgr_a->SetHostResolver(resolver.fn());
+  ASSERT_TRUE(static_cast<bool>(
+      fixture->mgr_a->RegisterEndpoint("bob", "/dns4/gone.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+  std::optional<PeerLinkManager::LinkRoe> outcome;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { outcome = std::move(r); });
+  resolver.answer(Error("amp addr: cannot resolve gone.test"));
+  fixture->PumpUntil([&] { return outcome.has_value(); });
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_FALSE(outcome->isOk());
+  EXPECT_NE(outcome->error().message.find("cannot resolve gone.test"), std::string::npos) << outcome->error().message;
+
+  std::optional<PeerLinkManager::LinkRoe> again;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { again = std::move(r); });
+  ASSERT_TRUE(again.has_value());
+  EXPECT_NE(again->error().message.find("backoff"), std::string::npos) << again->error().message;
+  EXPECT_TRUE(resolver.requests.empty()) << "a backed-off key does not resolve again";
+}
+
+// A dial to a resolved name that fails drops the address: the host may have moved, so the next
+// dial asks the resolver again rather than reusing it until the TTL ends.
+TEST(MeshLinkTest, AFailedDialResolvesTheHostnameAgain) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false, [](PeerLinkConfig& c) { c.dial_failure_backoff = std::chrono::milliseconds(0); });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  ManualResolver resolver;
+  fixture->mgr_a->SetHostResolver(resolver.fn());
+  ASSERT_TRUE(static_cast<bool>(
+      fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+  std::optional<PeerLinkManager::LinkRoe> first;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { first = std::move(r); });
+  resolver.answer(adp::IpEndpoint::V4(10, 0, 0, 9, 2000)); // where bob was: nobody answers
+  for (int i = 0; i < 200 && !first.has_value(); ++i) {
+    fixture->clock->Advance(100);
+    fixture->PumpBoth();
+  }
+  ASSERT_TRUE(first.has_value());
+  EXPECT_FALSE(first->isOk());
+
+  std::optional<PeerLinkManager::LinkRoe> second;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { second = std::move(r); });
+  ASSERT_EQ(resolver.requests.size(), 1u) << "resolved again after the failed dial";
+  resolver.answer(fixture->addr_b); // bob moved
+  fixture->PumpUntil([&] { return second.has_value(); });
+  ASSERT_TRUE(second.has_value());
+  EXPECT_TRUE(second->isOk()) << second->error().message;
 }
 
 TEST(MeshLinkTest, OpenChannelDataRoundTrip) {

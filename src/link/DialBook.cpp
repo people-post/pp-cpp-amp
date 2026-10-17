@@ -1,6 +1,7 @@
 #include "amp/link/DialBook.h"
 
 #include <algorithm>
+#include <iterator>
 
 namespace pp::amp {
 namespace {
@@ -15,13 +16,60 @@ void InsertCandidateFront(std::vector<std::string>& candidates, const std::strin
 
 } // namespace
 
+void DialBook::ApplyAddress(EndpointRecord& rec, const std::string& multiaddr, const ParsedAdpMultiaddr& parsed) {
+  rec.multiaddr = multiaddr;
+  rec.hostname = parsed.hostname;
+  rec.host_family = parsed.host_family;
+  rec.endpoint = parsed.endpoint;
+  rec.resolved = !parsed.IsHostname();
+  if (parsed.IsHostname()) {
+    if (const auto it = resolutions_.find(multiaddr);
+        it != resolutions_.end() && std::chrono::steady_clock::now() - it->second.at < config_.host_resolution_ttl) {
+      rec.endpoint = it->second.endpoint;
+      rec.resolved = true;
+    }
+  }
+}
+
+bool DialBook::NeedsResolution(const DialKey& peer_key) const {
+  const auto* rec = Find(peer_key);
+  if (!rec || rec->hostname.empty()) {
+    return false;
+  }
+  const auto it = resolutions_.find(rec->multiaddr);
+  return !rec->resolved || it == resolutions_.end() ||
+         std::chrono::steady_clock::now() - it->second.at >= config_.host_resolution_ttl;
+}
+
+void DialBook::SetResolution(const std::string& multiaddr, const adp::IpEndpoint& endpoint) {
+  const auto now = std::chrono::steady_clock::now();
+  for (auto it = resolutions_.begin(); it != resolutions_.end();) { // expired ones are resolved again anyway
+    it = now - it->second.at >= config_.host_resolution_ttl ? resolutions_.erase(it) : std::next(it);
+  }
+  resolutions_[multiaddr] = Resolution{endpoint, now};
+  for (auto& [key, rec] : endpoints_) {
+    if (rec.multiaddr == multiaddr) {
+      rec.endpoint = endpoint;
+      rec.resolved = true;
+    }
+  }
+}
+
+void DialBook::ForgetResolution(const DialKey& peer_key) {
+  auto* rec = Find(peer_key);
+  if (!rec || rec->hostname.empty()) {
+    return;
+  }
+  resolutions_.erase(rec->multiaddr);
+  rec->resolved = false;
+}
+
 bool DialBook::ApplyParsed(EndpointRecord& rec, const std::string& multiaddr, const DialKey& peer_key) {
   auto parsed = ParseAdpMultiaddr(multiaddr);
   if (!parsed) {
     return false;
   }
-  rec.multiaddr = multiaddr;
-  rec.endpoint = parsed->endpoint;
+  ApplyAddress(rec, multiaddr, *parsed);
   rec.peer_id = parsed->peer_id.empty() ? peer_key : parsed->peer_id;
   return true;
 }
@@ -37,8 +85,7 @@ void DialBook::SyncActiveFromIndex(EndpointRecord& rec) {
   if (!parsed) {
     return;
   }
-  rec.multiaddr = rec.candidates[rec.dial_index];
-  rec.endpoint = parsed->endpoint;
+  ApplyAddress(rec, rec.candidates[rec.dial_index], *parsed);
   if (!parsed->peer_id.empty()) {
     rec.peer_id = parsed->peer_id;
   }
