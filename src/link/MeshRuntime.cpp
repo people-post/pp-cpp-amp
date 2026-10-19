@@ -2,10 +2,78 @@
 
 #include "amp/link/AdpMultiaddr.h"
 
+#include <algorithm>
 #include <atomic>
 #include <utility>
+#include <vector>
 
 namespace pp::amp {
+namespace {
+
+/** The runtimes whose io lock this thread holds through IoExecutor::RunAndWait, innermost last. */
+std::vector<const MeshRuntime*>& RunningAndWaiting() {
+  thread_local std::vector<const MeshRuntime*> runtimes;
+  return runtimes;
+}
+
+/** A MeshRuntime's io lane as a SerialExecutor (MeshRuntime::IoExecutor). */
+class IoLaneExecutor final : public SerialExecutor {
+public:
+  /** `with_runtime`: runs its argument on the runtime, or not at all once the runtime is gone. */
+  using WithRuntime = std::function<void(const std::function<void(MeshRuntime&)>&)>;
+
+  explicit IoLaneExecutor(WithRuntime with_runtime) : with_runtime_(std::move(with_runtime)) {}
+
+  void Post(Task task) override {
+    with_runtime_([&task](MeshRuntime& runtime) { runtime.PostToIo(std::move(task)); });
+  }
+
+  bool RunsTasksOnCurrentThread() const override {
+    bool on = false;
+    with_runtime_([&on](MeshRuntime& runtime) {
+      const auto& running = RunningAndWaiting();
+      on = runtime.OnDriverThread() || std::find(running.begin(), running.end(), &runtime) != running.end();
+    });
+    return on;
+  }
+
+  TimerId PostAfter(std::chrono::milliseconds delay, Task task) override {
+    TimerId id = 0;
+    with_runtime_([&](MeshRuntime& runtime) { id = runtime.PostAfter(delay, std::move(task)); });
+    return id;
+  }
+
+  void CancelTimer(TimerId id) override {
+    with_runtime_([id](MeshRuntime& runtime) { runtime.CancelTimer(id); });
+  }
+
+  void RunAndWait(const Task& task) override {
+    if (!task) {
+      return;
+    }
+    bool ran = false;
+    with_runtime_([&](MeshRuntime& runtime) {
+      runtime.WithIoLock([&]() {
+        auto& running = RunningAndWaiting();
+        running.push_back(&runtime);
+        struct Leave {
+          std::vector<const MeshRuntime*>& running;
+          ~Leave() { running.pop_back(); }
+        } leave{running};
+        ran = true;
+        task();
+      });
+    });
+    if (!ran) {
+      task();  // the runtime is gone: nothing runs on its lane any more
+    }
+  }
+
+private:
+  WithRuntime with_runtime_;
+};
+
+} // namespace
 
 MeshRuntime::MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
                          PeerLinkConfig config)
@@ -17,6 +85,12 @@ MeshRuntime::MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, st
                                 std::function<void(Roe<adp::IpEndpoint>)> done) {
     resolver_.Resolve(host, family, port, std::move(done));
   });
+  io_executor_ = std::make_shared<IoLaneExecutor>(
+      io_lifetime_.Bind([this](const std::function<void(MeshRuntime&)>& fn) { fn(*this); }));
+}
+
+MeshRuntime::~MeshRuntime() {
+  io_lifetime_.InvalidateAndWait();
 }
 
 void MeshRuntime::Start() {
