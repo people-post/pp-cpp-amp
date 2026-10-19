@@ -9,6 +9,7 @@
 #include "amp/L3/ChannelSession.h"
 #include "amp/link/LinkIdentity.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -17,6 +18,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pp::amp {
@@ -34,7 +36,9 @@ struct BurstDialResult {
  *
  * Drive model (exclusive):
  * - Exactly one driver calls Pump/Tick/Drive (MeshPump thread, or the test harness
- *   acting as Amp). Nested Pump/Tick/Drive is refused (assert in debug).
+ *   acting as Amp). Nested Pump/Tick/Drive is refused. A driver thread that claims the
+ *   runtime (ClaimDriver) is its only driver: a drive from any other thread is refused
+ *   too (counted: RefusedDrives) — a second driver is a bug, not a race to serialize.
  * - PostToIo — work lane (SM steps, dial start, enqueue). Drained during Drive.
  * - PostDeferred — teardown lane (Abort, Close, DropLink, on_done). Runs after Tick
  *   and work drain so mux/session frames are off the stack.
@@ -64,8 +68,25 @@ public:
   void Stop();
   bool IsStarted() const { return started_; }
 
-  /** True while Pump/Tick/Drive is on the stack (exclusive-driver guard). */
-  bool IsDriving() const { return driving_; }
+  /** True while Pump/Tick/Drive is on the stack (exclusive-driver guard). Any thread. */
+  bool IsDriving() const { return driving_.load(std::memory_order_acquire); }
+
+  /**
+   * The calling thread becomes this runtime's only driver until ReleaseDriver or Stop: Pump,
+   * Tick and Drive from any other thread return at once, doing nothing. The thread that owns
+   * the drive loop calls it as the loop starts (a MeshPump thread, a pump of one's own).
+   * Unclaimed, any thread may drive, one at a time (test harnesses driving by hand).
+   */
+  void ClaimDriver();
+  void ReleaseDriver();
+  /**
+   * True on the claimed driver thread, or — unclaimed — on the thread inside Pump/Tick/Drive:
+   * where io work and handlers run. Code that would wait for posted io work must not run there
+   * (it would wait on itself). Any thread.
+   */
+  bool OnDriverThread() const;
+  /** Drives refused because another thread claimed the runtime (a second driver). Any thread. */
+  uint64_t RefusedDrives() const { return refused_drives_.load(std::memory_order_relaxed); }
 
   void Pump();
   void Tick();
@@ -208,7 +229,12 @@ private:
   IoTickId next_io_tick_id_ = 1;
   TimerId next_timer_id_ = 1;
   bool started_ = false;
-  bool driving_ = false;
+  std::atomic<bool> driving_{false};
+  /** The thread inside Pump/Tick/Drive now (none outside a drive). */
+  std::atomic<std::thread::id> driving_thread_{};
+  /** ClaimDriver's thread (none: unclaimed). */
+  std::atomic<std::thread::id> claimed_driver_{};
+  std::atomic<uint64_t> refused_drives_{0};
   /** Resolves `/dns*` candidates off the strand. Last: destroyed first, so no lookup posts into a
    *  runtime that is going. */
   HostResolver resolver_;
