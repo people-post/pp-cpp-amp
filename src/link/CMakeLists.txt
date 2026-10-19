@@ -10,6 +10,7 @@
   MeshRuntime.cpp
   AmpStack.cpp
   MshAdpHandshake.cpp
+  PeerId.cpp
   PeerLink.cpp
   PeerLinkConfig.cpp
   PeerLinkManager.cpp

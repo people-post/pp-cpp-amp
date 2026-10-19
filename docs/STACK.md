@@ -40,6 +40,10 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
   work and handlers run, so nothing there may wait for posted io work. `Stop()` releases the claim.
   Unclaimed runtimes are driven by any thread, one at a time (harnesses driving by hand).
   `IsDriving()` may be read from any thread.
+- PeerId: `amp/link/PeerId.h` — links name peers by the mesh PeerId of their ML-DSA-65 identity key
+  (pp-cpp-crypto's `PeerIdFromMlDsaPublicKey`, the one derivation every embedder uses): set
+  `PeerLinkConfig::peer_id_from_identity = PeerIdFromIdentityKey`. `PeerIdFromMultiaddr` reads the
+  last `/p2p/` component.
 - Io executor: `IoExecutor()` is the io lane as a `pp::SerialExecutor` (pp-cpp-common), for code that
   runs on the lane without driving it — a library's control logic (pp-cpp-mesh), a guest's servers
   (pp-ledger) — and that tests may swap for a `pp::ManualExecutor`. `Post` is `PostToIo`; `PostAfter`
