@@ -13,7 +13,7 @@ set(PP_CPP_COMMON_GIT_TAG "v1.1.0"
   CACHE STRING "Release tag on pp-cpp-common")
 set(PP_CPP_CRYPTO_GIT_REPOSITORY "https://github.com/people-post/pp-cpp-crypto.git"
   CACHE STRING "Git remote for pp-cpp-crypto")
-set(PP_CPP_CRYPTO_GIT_TAG "v0.2.0"
+set(PP_CPP_CRYPTO_GIT_TAG "v1.0.0"
   CACHE STRING "Release tag on pp-cpp-crypto")
 
 set(PP_COMMON_BUILD_TESTS OFF CACHE BOOL "Build pp-cpp-common tests" FORCE)
