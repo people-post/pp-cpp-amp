@@ -40,6 +40,15 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
   work and handlers run, so nothing there may wait for posted io work. `Stop()` releases the claim.
   Unclaimed runtimes are driven by any thread, one at a time (harnesses driving by hand).
   `IsDriving()` may be read from any thread.
+- Io executor: `IoExecutor()` is the io lane as a `pp::SerialExecutor` (pp-cpp-common), for code that
+  runs on the lane without driving it — a library's control logic (pp-cpp-mesh), a guest's servers
+  (pp-ledger) — and that tests may swap for a `pp::ManualExecutor`. `Post` is `PostToIo`; `PostAfter`
+  / `CancelTimer` are Amp-clock timers; `RunsTasksOnCurrentThread` is `OnDriverThread()` or inside
+  `RunAndWait`. `RunAndWait` runs the task on the caller under the io lock (`WithIoLock`): serialized
+  with everything on the lane, with no wait for a drive turn, so a thread that drives by hand cannot
+  wait on itself; the task must not destroy the runtime. The executor may outlive its runtime: posts
+  and timers are then dropped and `RunAndWait` runs on the caller (the destructor waits for a call
+  in progress on another thread). Like every post, work queued when the runtime stops is dropped.
 
 ### Lifetimes product code can rely on
 

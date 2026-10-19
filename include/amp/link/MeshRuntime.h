@@ -8,6 +8,8 @@
 #include "amp/L3/ChannelPolicy.h"
 #include "amp/L3/ChannelSession.h"
 #include "amp/link/LinkIdentity.h"
+#include "common/Lifetime.h"
+#include "common/SerialExecutor.h"
 
 #include <atomic>
 #include <chrono>
@@ -53,6 +55,10 @@ public:
 
   MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
               PeerLinkConfig config = {});
+  /** Its IoExecutor's calls stop here: they are no-ops from now on (one running elsewhere is waited for). */
+  ~MeshRuntime();
+  MeshRuntime(const MeshRuntime&) = delete;
+  MeshRuntime& operator=(const MeshRuntime&) = delete;
 
   adp::Endpoint& GetEndpoint() { return endpoint_; }
   const std::string& LocalPeerId() const { return links_.LocalPeerId(); }
@@ -94,6 +100,19 @@ public:
 
   /** Work lane — drained during Drive (after io ticks / before or with pump). */
   void PostToIo(IoTask task);
+
+  /**
+   * This runtime's io lane as a SerialExecutor, for code that runs on it without driving it (a
+   * library's control logic, a guest's servers) and for tests to swap for a manual one:
+   * - Post = PostToIo; PostAfter / CancelTimer = Amp-clock timers (PostAfter / CancelTimer).
+   * - RunsTasksOnCurrentThread: on the driver thread (OnDriverThread), or inside RunAndWait.
+   * - RunAndWait runs the task on the caller under the io lock (WithIoLock): serialized with
+   *   everything on the lane like a posted task, with no wait for a drive turn — so a thread that
+   *   drives by hand cannot wait on itself. The task must not destroy this runtime.
+   * Any thread. It may outlive the runtime: then posts and timers are dropped and RunAndWait runs
+   * the task on the caller.
+   */
+  std::shared_ptr<SerialExecutor> IoExecutor() const { return io_executor_; }
 
   /**
    * Teardown lane — AbortInflightDial, ChannelSession::Close, DropLink, completion
@@ -238,6 +257,9 @@ private:
   /** Resolves `/dns*` candidates off the strand. Last: destroyed first, so no lookup posts into a
    *  runtime that is going. */
   HostResolver resolver_;
+  /** Gates IoExecutor's calls into this runtime (invalidated first thing in the destructor). */
+  Lifetime io_lifetime_;
+  std::shared_ptr<SerialExecutor> io_executor_;
 };
 
 } // namespace pp::amp
