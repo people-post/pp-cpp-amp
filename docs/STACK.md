@@ -33,7 +33,13 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
   A channel opened with `OpenChannelOnLink` is awaited with `WhenChannelOpenOnLink` (polls that
   link's mux, not whatever the key resolves to; fails at once when the link is gone).
 - Nested carrier: `EstablishNestedOverCarrier`, `EnableNestedCarrierAccept`
-- Drive: `Start` / `Stop`, `Drive` / `Pump` / `Tick`, `PostToIo`, `WithIoLock`
+- Drive: `Start` / `Stop`, `Drive` / `Pump` / `Tick`, `PostToIo`, `WithIoLock`. **One driver:** the
+  thread that runs the drive loop calls `ClaimDriver()` as it starts; from then on a drive from any
+  other thread returns at once, doing nothing (`RefusedDrives()` counts them — a second driver is a
+  bug). `OnDriverThread()` is true on that thread (unclaimed: on the thread inside a drive): where io
+  work and handlers run, so nothing there may wait for posted io work. `Stop()` releases the claim.
+  Unclaimed runtimes are driven by any thread, one at a time (harnesses driving by hand).
+  `IsDriving()` may be read from any thread.
 
 ### Lifetimes product code can rely on
 

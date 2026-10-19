@@ -31,6 +31,7 @@ void MeshRuntime::Stop() {
   // Completions / events the drops post are discarded below with the rest of the queue.
   links_.CloseAllLinks();
   started_ = false;
+  claimed_driver_.store(std::thread::id{}, std::memory_order_release); // a restart claims afresh
   io_queue_.clear();
   deferred_queue_.clear();
   timers_.clear();
@@ -38,15 +39,37 @@ void MeshRuntime::Stop() {
 }
 
 bool MeshRuntime::BeginDriveLocked() {
-  if (driving_) {
+  if (driving_.load(std::memory_order_relaxed)) {
     // Nested Pump/Tick/Drive is forbidden — callers must Post/PostDeferred instead.
     return false;
   }
-  driving_ = true;
+  const std::thread::id claimed = claimed_driver_.load(std::memory_order_acquire);
+  if (claimed != std::thread::id{} && claimed != std::this_thread::get_id()) {
+    refused_drives_.fetch_add(1, std::memory_order_relaxed);  // a second driver
+    return false;
+  }
+  driving_.store(true, std::memory_order_release);
+  driving_thread_.store(std::this_thread::get_id(), std::memory_order_release);
   return true;
 }
 
-void MeshRuntime::EndDriveLocked() { driving_ = false; }
+void MeshRuntime::EndDriveLocked() {
+  driving_thread_.store(std::thread::id{}, std::memory_order_release);
+  driving_.store(false, std::memory_order_release);
+}
+
+void MeshRuntime::ClaimDriver() { claimed_driver_.store(std::this_thread::get_id(), std::memory_order_release); }
+
+void MeshRuntime::ReleaseDriver() { claimed_driver_.store(std::thread::id{}, std::memory_order_release); }
+
+bool MeshRuntime::OnDriverThread() const {
+  const std::thread::id self = std::this_thread::get_id();
+  const std::thread::id claimed = claimed_driver_.load(std::memory_order_acquire);
+  if (claimed != std::thread::id{}) {
+    return claimed == self;
+  }
+  return driving_thread_.load(std::memory_order_acquire) == self;
+}
 
 void MeshRuntime::PumpLocked() {
   std::vector<IoTickId> ids;
@@ -431,7 +454,7 @@ void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chr
   auto state = std::make_shared<State>();
   state->on_done = std::move(on_done);
 
-  auto finish = [this, state, settle](BurstDialResult result) {
+  auto finish = [state, settle](BurstDialResult result) {
     if (state->settled.exchange(true, std::memory_order_acq_rel)) {
       return;
     }
