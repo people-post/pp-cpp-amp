@@ -1133,6 +1133,46 @@ TEST(MeshLinkTest, NestedLinkIsDroppedWhenItsReliableLaneGivesUp) {
   EXPECT_TRUE(dead);
 }
 
+// A ConnectionDead drop says whether silence meant anything: a cold link (no keepalives) times out
+// when idle — its peer may be fine — while a kept-alive link went silent with its echoes unanswered.
+TEST(MeshLinkTest, ADroppedLinkReportsTheKeepaliveCadenceItRanAt) {
+  ASSERT_GE(sodium_init(), 0);
+  for (const bool hot : {false, true}) {
+    auto fixture = MeshLinkFixture::Create();
+    ASSERT_TRUE(static_cast<bool>(fixture));
+    auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+    ASSERT_TRUE(static_cast<bool>(bob_addr));
+    ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+    bool associated = false;
+    fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+    fixture->PumpUntil([&] { return associated; });
+    ASSERT_TRUE(associated);
+    if (hot) {
+      fixture->mgr_a->MarkHot("bob");
+      PumpAdvancing(*fixture, [] { return false; }, 20);  // the cadence is announced and echoed
+    }
+    std::vector<LinkEvent> dropped;
+    fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) {
+      if (event.kind == LinkEvent::Kind::Dropped && event.reason == LinkDropReason::ConnectionDead) {
+        dropped.push_back(event);
+      }
+    });
+    // Bob goes silent: only A runs from here.
+    for (int i = 0; i < 6000 && dropped.empty(); ++i) {
+      fixture->clock->Advance(10);
+      fixture->pump_a->Pump();
+      fixture->pump_a->Tick();
+    }
+    ASSERT_EQ(dropped.size(), 1u) << (hot ? "hot" : "cold");
+    EXPECT_TRUE(dropped[0].was_connected);
+    if (hot) {
+      EXPECT_GT(dropped[0].keepalive_interval_ms, 0u) << "its echo requests went unanswered";
+    } else {
+      EXPECT_EQ(dropped[0].keepalive_interval_ms, 0u) << "an idle link timing out";
+    }
+  }
+}
+
 // A024: an ADP and a nested link to one peer coexist; asking for a transport class gets that one.
 TEST(MeshLinkTest, ConnectedLinkByPeerIdHonoursTheTransportClass) {
   ASSERT_GE(sodium_init(), 0);
@@ -2560,5 +2600,63 @@ TEST(PeerLinkConfigTest, TuningReachesEndpointAndLinkMux) {
 }
 
 } // namespace
+
+// What a peer's reachability can be judged by: one DialFailed when every candidate missed, none for
+// each candidate on the way (those are Dropped attempts) and none for a dial this side aborted.
+TEST(MeshLinkTest, ADialThatMissesEveryCandidateReportsDialFailedOnce) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_a->Book().Config().dial_attempt_timeout = std::chrono::milliseconds(30);
+  fixture->mgr_a->Book().Config().dial_timeout = std::chrono::milliseconds(5000);
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
+
+  const std::string key = "QmGone";
+  auto dead1 = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 1, 901), key);
+  auto dead2 = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 2, 902), key);
+  ASSERT_TRUE(dead1 && dead2);
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoints(key, {*dead1, *dead2})));
+  std::optional<bool> dial_ok;
+  fixture->mgr_a->EnsureAssociation(key, [&](PeerLinkManager::LinkRoe result) { dial_ok = result.isOk(); });
+  for (int i = 0; i < 1000 && !dial_ok; ++i) {
+    fixture->clock->Advance(10);
+    fixture->PumpBoth();
+  }
+  ASSERT_TRUE(dial_ok.has_value());
+  EXPECT_FALSE(*dial_ok);
+  fixture->PumpBoth();
+
+  int failed = 0;
+  int attempts = 0;
+  for (const LinkEvent& event : events) {
+    if (event.kind == LinkEvent::Kind::DialFailed) {
+      ++failed;
+      EXPECT_EQ(event.dial_key, key);
+      EXPECT_EQ(event.peer_id, key) << "the dial book knows the peer";
+      EXPECT_EQ(event.reason, LinkDropReason::HandshakeTimeout);
+      EXPECT_TRUE(event.outbound);
+    } else if (event.kind == LinkEvent::Kind::Dropped && !event.was_connected) {
+      ++attempts;
+    }
+  }
+  EXPECT_EQ(failed, 1) << "once, after the last candidate";
+  EXPECT_GE(attempts, 1) << "each missed candidate is an attempt";
+  EXPECT_STREQ(LinkEventKindName(LinkEvent::Kind::DialFailed), "dial-failed");
+
+  // A dial this side aborts says nothing about the peer.
+  events.clear();
+  dial_ok.reset();
+  fixture->mgr_a->ClearDialBackoff(key);
+  fixture->mgr_a->EnsureAssociation(key, [&](PeerLinkManager::LinkRoe result) { dial_ok = result.isOk(); });
+  fixture->mgr_a->AbortInflightDial(key);
+  for (int i = 0; i < 50; ++i) {
+    fixture->clock->Advance(10);
+    fixture->PumpBoth();
+  }
+  for (const LinkEvent& event : events) {
+    EXPECT_NE(event.kind, LinkEvent::Kind::DialFailed);
+  }
+}
 
 } // namespace pp::amp

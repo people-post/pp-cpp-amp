@@ -132,6 +132,8 @@ public:
   int64_t LivenessWindowMs() const;
   /** Interval the peer announced in its last keepalive (0 = none / stopped). */
   uint32_t PeerKeepaliveIntervalMs() const { return peer_keepalive_interval_ms_; }
+  /** The cadence this side keeps alive at (0: cold — no keepalives, silence means idle). */
+  uint32_t LocalKeepaliveIntervalMs() const { return local_keepalive_interval_ms_; }
 
   /**
    * Scheduled keepalive: announces our cadence (widens both sides' liveness window) and asks the

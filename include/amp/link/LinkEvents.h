@@ -82,6 +82,12 @@ struct LinkEvent {
     Dropped,
     /** ADP remote endpoint migrated (authenticated packet from a new address). */
     PathChanged,
+    /**
+     * A dial ended without a link after every dial-book candidate was tried (not a dial this side
+     * aborted). `dial_key`, `peer_id` (the dial book's, when known) and `reason` are set — what the
+     * peer's reachability can be judged by; a per-candidate miss is only a `Dropped` attempt.
+     */
+    DialFailed,
   };
 
   Kind kind = Kind::Connected;
@@ -96,12 +102,18 @@ struct LinkEvent {
   std::optional<adp::IpEndpoint> remote;
   /** PathChanged only: endpoint before the migration. */
   std::optional<adp::IpEndpoint> previous_remote;
-  /** Dropped only. */
+  /** Dropped and DialFailed. */
   LinkDropReason reason = LinkDropReason::Unknown;
   /** Dropped only: link had reached Connected before (false = failed / aborted attempt). */
   bool was_connected = false;
   /** Dropped only, ADP: ms since last authenticated RX; -1 if none / carrier. */
   int64_t last_rx_age_ms = -1;
+  /**
+   * Dropped only, ADP: the keepalive cadence the link ran at (the larger of ours and the peer's),
+   * 0 if neither side kept it alive. A `ConnectionDead` drop at 0 is an idle link timing out — not
+   * evidence the peer is gone; above 0 its echo requests went unanswered.
+   */
+  uint32_t keepalive_interval_ms = 0;
 };
 
 inline const char* LinkEventKindName(const LinkEvent::Kind kind) {
@@ -112,6 +124,8 @@ inline const char* LinkEventKindName(const LinkEvent::Kind kind) {
     return "dropped";
   case LinkEvent::Kind::PathChanged:
     return "path-changed";
+  case LinkEvent::Kind::DialFailed:
+    return "dial-failed";
   }
   return "unknown";
 }
