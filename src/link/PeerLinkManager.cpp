@@ -317,7 +317,6 @@ void PeerLinkManager::DropLinkNow(PeerLink& live, const LinkDropReason reason) {
   LinkEvent dropped = MakeLinkEvent(LinkEvent::Kind::Dropped, *link);
   dropped.reason = reason;
   dropped.was_connected = connected_link_ids_.erase(link->Id()) > 0;
-  AnswerVerifyWaiters(link->Id(), false);
   if (auto* conn = link->ConnectionOrNull(); conn && !link->IsCarrierBacked()) {
     if (conn->LastAuthRxMs() > 0) {
       dropped.last_rx_age_ms = endpoint_.GetClock().NowMs() - conn->LastAuthRxMs();
@@ -378,7 +377,10 @@ void PeerLinkManager::DropLinkNow(PeerLink& live, const LinkDropReason reason) {
       }
     });
   }
+  // After the Dropped event (both are posted in order): a VerifyLink caller hearing `false` finds
+  // the drop already seen by link-event listeners (e.g. a reach record marking the peer down).
   EmitLinkEvent(std::move(dropped));
+  AnswerVerifyWaiters(id, false);
 }
 
 void PeerLinkManager::ScheduleDropLink(std::string peer_key, const LinkDropReason reason) {
