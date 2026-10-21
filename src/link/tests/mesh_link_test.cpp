@@ -2561,4 +2561,62 @@ TEST(PeerLinkConfigTest, TuningReachesEndpointAndLinkMux) {
 
 } // namespace
 
+// What a peer's reachability can be judged by: one DialFailed when every candidate missed, none for
+// each candidate on the way (those are Dropped attempts) and none for a dial this side aborted.
+TEST(MeshLinkTest, ADialThatMissesEveryCandidateReportsDialFailedOnce) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_a->Book().Config().dial_attempt_timeout = std::chrono::milliseconds(30);
+  fixture->mgr_a->Book().Config().dial_timeout = std::chrono::milliseconds(5000);
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
+
+  const std::string key = "QmGone";
+  auto dead1 = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 1, 901), key);
+  auto dead2 = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 2, 902), key);
+  ASSERT_TRUE(dead1 && dead2);
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoints(key, {*dead1, *dead2})));
+  std::optional<bool> dial_ok;
+  fixture->mgr_a->EnsureAssociation(key, [&](PeerLinkManager::LinkRoe result) { dial_ok = result.isOk(); });
+  for (int i = 0; i < 1000 && !dial_ok; ++i) {
+    fixture->clock->Advance(10);
+    fixture->PumpBoth();
+  }
+  ASSERT_TRUE(dial_ok.has_value());
+  EXPECT_FALSE(*dial_ok);
+  fixture->PumpBoth();
+
+  int failed = 0;
+  int attempts = 0;
+  for (const LinkEvent& event : events) {
+    if (event.kind == LinkEvent::Kind::DialFailed) {
+      ++failed;
+      EXPECT_EQ(event.dial_key, key);
+      EXPECT_EQ(event.peer_id, key) << "the dial book knows the peer";
+      EXPECT_EQ(event.reason, LinkDropReason::HandshakeTimeout);
+      EXPECT_TRUE(event.outbound);
+    } else if (event.kind == LinkEvent::Kind::Dropped && !event.was_connected) {
+      ++attempts;
+    }
+  }
+  EXPECT_EQ(failed, 1) << "once, after the last candidate";
+  EXPECT_GE(attempts, 1) << "each missed candidate is an attempt";
+  EXPECT_STREQ(LinkEventKindName(LinkEvent::Kind::DialFailed), "dial-failed");
+
+  // A dial this side aborts says nothing about the peer.
+  events.clear();
+  dial_ok.reset();
+  fixture->mgr_a->ClearDialBackoff(key);
+  fixture->mgr_a->EnsureAssociation(key, [&](PeerLinkManager::LinkRoe result) { dial_ok = result.isOk(); });
+  fixture->mgr_a->AbortInflightDial(key);
+  for (int i = 0; i < 50; ++i) {
+    fixture->clock->Advance(10);
+    fixture->PumpBoth();
+  }
+  for (const LinkEvent& event : events) {
+    EXPECT_NE(event.kind, LinkEvent::Kind::DialFailed);
+  }
+}
+
 } // namespace pp::amp

@@ -955,6 +955,7 @@ void PeerLinkManager::ApplyProtocolHandlers(PeerLink& link) {
 
 void PeerLinkManager::FinishDial(const std::string& peer_key, const LinkHandle handle, LinkRoe result) {
   std::vector<LinkCb> waiters;
+  std::optional<LinkEvent> dial_failed;
   {
     std::lock_guard lock(strand_mu_);
     book_.DecConcurrentDials();
@@ -973,6 +974,16 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, const LinkHandle h
         book_.ResetDialIndex(peer_key);
         if (!suppress_backoff) {
           book_.ArmBackoff(peer_key);
+          LinkEvent event;
+          event.kind = LinkEvent::Kind::DialFailed;
+          event.handle = handle;
+          event.dial_key = peer_key;
+          if (const auto* rec = book_.Find(peer_key)) {
+            event.peer_id = rec->peer_id;
+          }
+          event.outbound = true;
+          event.reason = reason;
+          dial_failed = std::move(event);
         }
         ScheduleDropLink(handle, reason);
         waiters = std::move(inflight_associations_[peer_key]);
@@ -992,6 +1003,9 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, const LinkHandle h
       waiters = std::move(inflight_associations_[peer_key]);
       inflight_associations_.erase(peer_key);
     }
+  }
+  if (dial_failed) {
+    EmitLinkEvent(std::move(*dial_failed));
   }
   if (!waiters.empty()) {
     PostCompletion([waiters = std::move(waiters), result]() mutable {

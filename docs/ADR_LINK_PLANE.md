@@ -42,8 +42,11 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    “called only from MeshRuntime Drive/PostToIo/PostDeferred.”
 9. **Link events** (`amp/link/LinkEvents.h`, `MeshRuntime::AddLinkEventListener`):
    `Connected` (after dual-dial adoption), `Dropped` (every `DropLink`, with a
-   `LinkDropReason`, `was_connected`, last-RX age) and `PathChanged` (ADP remote
-   endpoint migration, from `Connection::OnPathChange`). Posted via the completion
+   `LinkDropReason`, `was_connected`, last-RX age), `PathChanged` (ADP remote
+   endpoint migration, from `Connection::OnPathChange`) and `DialFailed` (a dial that
+   missed every dial-book candidate — not one this side aborted — with its dial key, the
+   book's PeerId when known and the reason: what a peer's reachability is judged by, where
+   a per-candidate miss is only a `Dropped` attempt). Posted via the completion
    poster — never on the link's own callback stack — and carry `LinkHandle` + ids,
    not `PeerLink&`. Amp stays logging-free; products log / react to events instead of
    polling `FindLink`. Every drop site must pass a reason (`ScheduleDropLink(key, reason)`).
