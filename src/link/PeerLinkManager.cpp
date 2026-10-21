@@ -377,7 +377,10 @@ void PeerLinkManager::DropLinkNow(PeerLink& live, const LinkDropReason reason) {
       }
     });
   }
+  // After the Dropped event (both are posted in order): a VerifyLink caller hearing `false` finds
+  // the drop already seen by link-event listeners (e.g. a reach record marking the peer down).
   EmitLinkEvent(std::move(dropped));
+  AnswerVerifyWaiters(id, false);
 }
 
 void PeerLinkManager::ScheduleDropLink(std::string peer_key, const LinkDropReason reason) {
@@ -1127,6 +1130,48 @@ size_t PeerLinkManager::OnNetworkChanged() {
   return probed;
 }
 
+void PeerLinkManager::VerifyLink(const std::string& peer_key, const std::chrono::milliseconds heard_within,
+                                 std::function<void(bool alive)> done) {
+  if (!done) {
+    return;
+  }
+  std::lock_guard lock(strand_mu_);
+  PeerLink* link = ResolveConnectedLink(peer_key);
+  if (!link) {
+    PostCompletion([done = std::move(done)]() { done(false); });
+    return;
+  }
+  auto* conn = link->ConnectionOrNull();
+  if (link->IsCarrierBacked() || !conn) {
+    PostCompletion([done = std::move(done)]() { done(true); });
+    return;
+  }
+  const int64_t now = endpoint_.GetClock().NowMs();
+  if (conn->LastAuthRxMs() > 0 && now - conn->LastAuthRxMs() <= heard_within.count()) {
+    PostCompletion([done = std::move(done)]() { done(true); });
+    return;
+  }
+  verify_waiters_[link->Id()].push_back(std::move(done));
+  if (link->SuspectSinceMs() == 0) {
+    link->MarkVerifying(now);
+    (void)link->SendProbe(now);
+  }
+}
+
+void PeerLinkManager::AnswerVerifyWaiters(const LinkId id, const bool alive) {
+  auto it = verify_waiters_.find(id);
+  if (it == verify_waiters_.end()) {
+    return;
+  }
+  std::vector<std::function<void(bool)>> waiters = std::move(it->second);
+  verify_waiters_.erase(it);
+  PostCompletion([waiters = std::move(waiters), alive]() {
+    for (const auto& waiter : waiters) {
+      waiter(alive);
+    }
+  });
+}
+
 void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
   std::lock_guard lock(strand_mu_);
   book_.ClearBackoff(peer_key);
@@ -1502,9 +1547,11 @@ void PeerLinkManager::Tick() {
     if (conn && link.Phase() == PeerLinkPhase::Connected && link.SuspectSinceMs() != 0 && !conn->IsClosed()) {
       const int64_t grace = book_.Config().network_change_grace.count();
       if (conn->LastAuthRxMs() > link.SuspectSinceMs()) {
-        link.ClearSuspect();  // answered since the network changed
+        link.ClearSuspect();  // answered since the network changed (or since asked to verify)
+        AnswerVerifyWaiters(link.Id(), true);
       } else if (now - link.SuspectSinceMs() >= grace) {
-        evict.emplace_back(link.Handle(), LinkDropReason::NetworkChanged);
+        evict.emplace_back(link.Handle(), link.SuspectFromVerify() ? LinkDropReason::Unresponsive
+                                                                   : LinkDropReason::NetworkChanged);
         return;
       } else if (now - link.LastProbeMs() >= std::max<int64_t>(grace / 4, 1)) {
         (void)link.SendProbe(now);

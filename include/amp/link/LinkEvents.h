@@ -34,12 +34,16 @@ enum class LinkDropReason : uint8_t {
   LocalShutdown,
   /** The link table was full: this idle inbound link made room for a new peer (its peer was told). */
   IdleEvicted,
+  /** Asked to prove it is alive (VerifyLink), the link did not answer a probe within the grace. */
+  Unresponsive,
 };
 
 inline const char* LinkDropReasonName(const LinkDropReason reason) {
   switch (reason) {
   case LinkDropReason::IdleEvicted:
     return "idle-evicted";
+  case LinkDropReason::Unresponsive:
+    return "unresponsive";
   case LinkDropReason::Unknown:
     return "unknown";
   case LinkDropReason::ConnectionClosed:

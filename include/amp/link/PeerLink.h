@@ -132,8 +132,22 @@ public:
   void MarkSuspect(int64_t now_ms) {
     suspect_since_ms_ = now_ms;
     last_probe_ms_ = 0;
+    suspect_from_verify_ = false;
   }
-  void ClearSuspect() { suspect_since_ms_ = 0; }
+  /** Asked to prove it is alive (PeerLinkManager::VerifyLink): the same probing, its own drop reason. */
+  void MarkVerifying(int64_t now_ms) {
+    if (suspect_since_ms_ != 0) {
+      return;  // already probing (a network change): that verdict answers this too
+    }
+    suspect_since_ms_ = now_ms;
+    last_probe_ms_ = 0;
+    suspect_from_verify_ = true;
+  }
+  bool SuspectFromVerify() const { return suspect_from_verify_; }
+  void ClearSuspect() {
+    suspect_since_ms_ = 0;
+    suspect_from_verify_ = false;
+  }
   /** 0 when not suspect. */
   int64_t SuspectSinceMs() const { return suspect_since_ms_; }
   int64_t LastProbeMs() const { return last_probe_ms_; }
@@ -214,6 +228,7 @@ private:
   KeepaliveTier keepalive_tier_ = KeepaliveTier::None;
   int64_t last_keepalive_tx_ms_ = 0;
   int64_t suspect_since_ms_ = 0;
+  bool suspect_from_verify_ = false;
   int64_t last_probe_ms_ = 0;
   bool capability_exchange_started_ = false;
   bool capability_offer_sent_ = false;

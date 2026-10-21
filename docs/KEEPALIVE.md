@@ -58,6 +58,18 @@ A link's liveness window can be long (5/2 × a 20 s hot cadence = 50 s), and a l
 
 Tests: `MeshLinkTest.NetworkChangeEvictsASilentLinkWithinTheGrace`, `NetworkChangeKeepsALinkThatAnswers`, `NetworkChangeResendsALostProbe`.
 
+## Verifying one link
+
+A product that is about to rely on one link — a relay it will bridge through, a seed it parks on —
+can ask `PeerLinkManager::VerifyLink(peer, heard_within, done)` instead of trusting a link that
+may have been silent for most of its liveness window. Heard from within `heard_within`: `done(true)`
+at once. Otherwise the link is probed exactly as after a network change; an authenticated packet
+answers `done(true)`, silence for `network_change_grace` evicts it with reason **`unresponsive`**
+and answers `done(false)` (as does any other drop meanwhile, or no Connected link to begin with).
+Carrier-backed links answer `true` — their carrier lane judges them.
+
+Tests: `MeshLinkTest.VerifyLinkEvictsASilentLinkAndSaysSo`, `VerifyLinkKeepsALinkThatAnswers`.
+
 ## Integration
 
 Drive via `MeshRuntime::Tick()` / `MeshPump::Tick()`. Tests: `AdpConnTest.KeepaliveAnnouncesCadenceAndEchoes`, `AmpIntegrationTest.HotDialerKeepsColdInboundAlive`, `AmpIntegrationTest.HotLinkEvictedWhenPeerGoesSilent`.

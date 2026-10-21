@@ -1694,6 +1694,70 @@ TEST(MeshLinkTest, NetworkChangeResendsALostProbe) {
   EXPECT_EQ(link->SuspectSinceMs(), 0);
 }
 
+// VerifyLink: a link whose peer is gone is evicted as Unresponsive within the grace, and the
+// caller hears `false` — instead of trusting it until its liveness window ends.
+TEST(MeshLinkTest, VerifyLinkEvictsASilentLinkAndSaysSo) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  const LinkHandle handle = ConnectHotLink(*fixture);
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
+
+  fixture->lossy_b->SetDropRate(1.0);  // B is gone
+  for (int i = 0; i < 10; ++i) {        // 5 s of silence: still Connected (hot window)
+    fixture->clock->Advance(500);
+    fixture->PumpBoth();
+  }
+  std::optional<bool> alive;
+  fixture->mgr_a->VerifyLink("bob", std::chrono::milliseconds(3000), [&](bool ok) { alive = ok; });
+  int elapsed_ms = 0;
+  for (; elapsed_ms <= 3000 && !alive; elapsed_ms += 100) {
+    fixture->clock->Advance(100);
+    fixture->PumpBoth();
+  }
+  ASSERT_TRUE(alive.has_value()) << "answered within the grace";
+  EXPECT_FALSE(*alive);
+  EXPECT_LE(elapsed_ms, 2200);
+  ASSERT_FALSE(events.empty());
+  EXPECT_EQ(events.back().handle, handle);
+  EXPECT_EQ(events.back().reason, LinkDropReason::Unresponsive);
+  EXPECT_STREQ(LinkDropReasonName(events.back().reason), "unresponsive");
+}
+
+// A link heard from lately answers at once; a quiet one that echoes the probe answers true and stays.
+TEST(MeshLinkTest, VerifyLinkKeepsALinkThatAnswers) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  const LinkHandle handle = ConnectHotLink(*fixture);
+
+  std::optional<bool> recent;
+  fixture->mgr_a->VerifyLink("bob", std::chrono::seconds(60), [&](bool ok) { recent = ok; });
+  fixture->PumpBoth();
+  ASSERT_TRUE(recent.has_value()) << "heard from within the window: no probe needed";
+  EXPECT_TRUE(*recent);
+
+  std::optional<bool> probed;
+  fixture->mgr_a->VerifyLink("bob", std::chrono::milliseconds(0), [&](bool ok) { probed = ok; });
+  for (int i = 0; i < 20 && !probed; ++i) {
+    fixture->clock->Advance(100);
+    fixture->PumpBoth();
+  }
+  ASSERT_TRUE(probed.has_value());
+  EXPECT_TRUE(*probed);
+  auto* link = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(link, nullptr);
+  EXPECT_EQ(link->Handle(), handle);
+  EXPECT_EQ(link->SuspectSinceMs(), 0);
+
+  std::optional<bool> none;
+  fixture->mgr_a->VerifyLink("nobody", std::chrono::milliseconds(0), [&](bool ok) { none = ok; });
+  fixture->PumpBoth();
+  ASSERT_TRUE(none.has_value());
+  EXPECT_FALSE(*none) << "no Connected link";
+}
+
 TEST(MeshRuntimeTest, PumpDrivesAssociationRoundTrip) {
   ASSERT_GE(sodium_init(), 0);
   auto created = pbr::test::AmpMeshHarness::Create();

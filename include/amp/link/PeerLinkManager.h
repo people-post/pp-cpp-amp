@@ -224,6 +224,16 @@ public:
    * Nested links follow their carrier. @return number of links probed.
    */
   size_t OnNetworkChanged();
+  /**
+   * Whether the Connected ADP link to `peer_key` (dial key or PeerId) is alive. Answers true at
+   * once when it was heard from within `heard_within`; else probes it as after a network change
+   * and answers true when an authenticated packet arrives, false when it is evicted for silence
+   * (`LinkDropReason::Unresponsive`, within `network_change_grace`) or goes for any other reason.
+   * No Connected link: false. A carrier-backed link: true (its carrier lane judges it). `done` runs
+   * off this call's stack, on the IO strand.
+   */
+  void VerifyLink(const std::string& peer_key, std::chrono::milliseconds heard_within,
+                  std::function<void(bool alive)> done);
   void AbortInflightDial(const std::string& peer_key);
   /**
    * Drop the ADP link(s) behind `peer_key` (dial key and/or PeerId) on the next Tick, closing the
@@ -393,6 +403,10 @@ private:
   std::unordered_map<std::string, std::vector<LinkCb>> inflight_associations_;
   /** EstablishNestedOverCarrier waiters, per nested link: completed by that link's handshake. */
   std::unordered_map<LinkId, std::vector<LinkCb>> nested_waiters_;
+  /** VerifyLink callers waiting on a link's probe verdict. */
+  std::unordered_map<LinkId, std::vector<std::function<void(bool)>>> verify_waiters_;
+  /** Answer and forget the verify waiters of `id` (strand held). */
+  void AnswerVerifyWaiters(LinkId id, bool alive);
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;
   std::vector<std::pair<LinkHandle, LinkDropReason>> pending_drops_;
