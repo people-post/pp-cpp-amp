@@ -108,6 +108,12 @@ struct LinkEvent {
   bool was_connected = false;
   /** Dropped only, ADP: ms since last authenticated RX; -1 if none / carrier. */
   int64_t last_rx_age_ms = -1;
+  /**
+   * Dropped only, ADP: the keepalive cadence the link ran at (the larger of ours and the peer's),
+   * 0 if neither side kept it alive. A `ConnectionDead` drop at 0 is an idle link timing out — not
+   * evidence the peer is gone; above 0 its echo requests went unanswered.
+   */
+  uint32_t keepalive_interval_ms = 0;
 };
 
 inline const char* LinkEventKindName(const LinkEvent::Kind kind) {

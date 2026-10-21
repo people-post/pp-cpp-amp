@@ -321,6 +321,7 @@ void PeerLinkManager::DropLinkNow(PeerLink& live, const LinkDropReason reason) {
     if (conn->LastAuthRxMs() > 0) {
       dropped.last_rx_age_ms = endpoint_.GetClock().NowMs() - conn->LastAuthRxMs();
     }
+    dropped.keepalive_interval_ms = std::max(conn->LocalKeepaliveIntervalMs(), conn->PeerKeepaliveIntervalMs());
     conn->OnPathChange({});
   }
   // Tell the peer to evict too — silent local-only drop left the far side holding a zombie

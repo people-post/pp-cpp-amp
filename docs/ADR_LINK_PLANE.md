@@ -42,7 +42,8 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
    “called only from MeshRuntime Drive/PostToIo/PostDeferred.”
 9. **Link events** (`amp/link/LinkEvents.h`, `MeshRuntime::AddLinkEventListener`):
    `Connected` (after dual-dial adoption), `Dropped` (every `DropLink`, with a
-   `LinkDropReason`, `was_connected`, last-RX age), `PathChanged` (ADP remote
+   `LinkDropReason`, `was_connected`, last-RX age, the keepalive cadence it ran at — 0 means
+   a `ConnectionDead` drop was an idle link timing out, not a dead peer), `PathChanged` (ADP remote
    endpoint migration, from `Connection::OnPathChange`) and `DialFailed` (a dial that
    missed every dial-book candidate — not one this side aborted — with its dial key, the
    book's PeerId when known and the reason: what a peer's reachability is judged by, where

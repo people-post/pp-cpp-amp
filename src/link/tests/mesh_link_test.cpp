@@ -1133,6 +1133,46 @@ TEST(MeshLinkTest, NestedLinkIsDroppedWhenItsReliableLaneGivesUp) {
   EXPECT_TRUE(dead);
 }
 
+// A ConnectionDead drop says whether silence meant anything: a cold link (no keepalives) times out
+// when idle — its peer may be fine — while a kept-alive link went silent with its echoes unanswered.
+TEST(MeshLinkTest, ADroppedLinkReportsTheKeepaliveCadenceItRanAt) {
+  ASSERT_GE(sodium_init(), 0);
+  for (const bool hot : {false, true}) {
+    auto fixture = MeshLinkFixture::Create();
+    ASSERT_TRUE(static_cast<bool>(fixture));
+    auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+    ASSERT_TRUE(static_cast<bool>(bob_addr));
+    ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+    bool associated = false;
+    fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+    fixture->PumpUntil([&] { return associated; });
+    ASSERT_TRUE(associated);
+    if (hot) {
+      fixture->mgr_a->MarkHot("bob");
+      PumpAdvancing(*fixture, [] { return false; }, 20);  // the cadence is announced and echoed
+    }
+    std::vector<LinkEvent> dropped;
+    fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) {
+      if (event.kind == LinkEvent::Kind::Dropped && event.reason == LinkDropReason::ConnectionDead) {
+        dropped.push_back(event);
+      }
+    });
+    // Bob goes silent: only A runs from here.
+    for (int i = 0; i < 6000 && dropped.empty(); ++i) {
+      fixture->clock->Advance(10);
+      fixture->pump_a->Pump();
+      fixture->pump_a->Tick();
+    }
+    ASSERT_EQ(dropped.size(), 1u) << (hot ? "hot" : "cold");
+    EXPECT_TRUE(dropped[0].was_connected);
+    if (hot) {
+      EXPECT_GT(dropped[0].keepalive_interval_ms, 0u) << "its echo requests went unanswered";
+    } else {
+      EXPECT_EQ(dropped[0].keepalive_interval_ms, 0u) << "an idle link timing out";
+    }
+  }
+}
+
 // A024: an ADP and a nested link to one peer coexist; asking for a transport class gets that one.
 TEST(MeshLinkTest, ConnectedLinkByPeerIdHonoursTheTransportClass) {
   ASSERT_GE(sodium_init(), 0);
