@@ -371,7 +371,7 @@ bool RunE2(const int warmup, const int iters) {
       return false;
     }
     auto& h = **created;
-    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/call-media/1.0.0",
+    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/call-media/1.0.0",
                                   pp::amp::CallMediaChannelPolicy());
     if (!ch) {
       std::fprintf(stderr, "E2 OpenChannel failed\n");
@@ -450,7 +450,7 @@ bool RunE3(const int warmup, const int iters) {
       return false;
     }
     auto& h = **created;
-    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0",
+    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat-blob/1.0.0",
                                   pp::amp::BulkChannelPolicy());
     if (!ch) {
       std::fprintf(stderr, "E3 OpenChannel failed\n");
@@ -995,7 +995,7 @@ bool RunF(const int warmup, const int iters) {
       return false;
     }
     auto& h = **created;
-    const auto ch = h.OpenChannel(pbr::test::HarnessSide::A, "b", "/pp-browser/chat/1.0.0",
+    const auto ch = h.OpenChannel(pbr::test::HarnessSide::A, "b", "/test/chat/1.0.0",
                                    pp::amp::ControlJsonChannelPolicy());
     if (!ch) {
       return false;

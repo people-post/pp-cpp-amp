@@ -23,7 +23,7 @@ ChannelPolicy TunnelPolicy() {
 
 // A relay splices a dialer's channel to a target's: DATA flows both ways and is counted.
 TEST(ChannelBridgeTest, ForwardsBothWaysAndCountsTheBytes) {
-  auto created = test::AmpTestRelayPath::Create("/pp-browser/circuit-relay/1.0.0", TunnelPolicy());
+  auto created = test::AmpTestRelayPath::Create("/test/circuit-relay/1.0.0", TunnelPolicy());
   ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
   auto& path = **created;
   ASSERT_EQ(path.TargetMux().State(path.far_channel), ChannelState::Open) << "after create";

@@ -11,8 +11,14 @@ It is the only mesh transport shared by pp-browser and pp-ledger. It is **not** 
 | Channel OPEN / CLOSE, `protocol_id`, QoS classes | L3 |
 | FRAG + reassembly, reliable send queue (waits for window credits) | Large Reliable messages |
 | Neutral policy factories | `ControlJsonChannelPolicy`, `CapabilityChannelPolicy`, `MakeBulkChannelPolicy` / `BulkChannelPolicy`, `CallMediaChannelPolicy`, `CircuitCarrierChannelPolicy` |
-| Amp-owned plumbing ids | e.g. `/amp/circuit-carrier/1.0.0` |
+| Amp-owned plumbing ids | `/pp-amp/capability/1.0.0`, `/pp-amp/circuit-carrier/1.0.0` — see [Protocol ids](#protocol-ids) |
 | Link dial / warm / keepalive | `PeerLinkManager`, `AmpStack` |
+
+## Protocol ids
+
+The prefix names the repo that owns the protocol: `/pp-amp/` (link plumbing, here), `/pp-mesh/`
+(pp-cpp-mesh: circuit, relay, reach, DHT, directory), `/pp-ledger/` (ledger RPC), `/pp/` (product
+protocols any PP app speaks: chat, calls, broadcast). No id names an app. Tests use `/test/` ids.
 
 ## Link composition vocabulary
 

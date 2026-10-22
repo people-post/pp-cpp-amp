@@ -408,7 +408,7 @@ TEST(MeshLinkTest, OpenChannelDataRoundTrip) {
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   // Bob serves the protocol (links refuse opens nobody handles).
   std::vector<uint8_t> received;
-  fixture->mgr_b->SetProtocolHandler("/pp-browser/chat/1.0.0", [&](LinkHandle, const std::string&, uint32_t ch) {
+  fixture->mgr_b->SetProtocolHandler("/test/chat/1.0.0", [&](LinkHandle, const std::string&, uint32_t ch) {
     auto* inbound = fixture->mgr_b->FindConnectedInboundLink();
     ASSERT_NE(inbound, nullptr);
     inbound->Mux()->SetDataHandler(ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
@@ -425,7 +425,7 @@ TEST(MeshLinkTest, OpenChannelDataRoundTrip) {
   bool channel_done = false;
   std::optional<uint32_t> channel_id_result;
   std::string channel_error;
-  fixture->mgr_a->OpenChannel("bob", "/pp-browser/chat/1.0.0", ControlJsonChannelPolicy(),
+  fixture->mgr_a->OpenChannel("bob", "/test/chat/1.0.0", ControlJsonChannelPolicy(),
                               [&](PeerLinkManager::ChannelRoe ch) {
                                 if (ch.isOk()) {
                                   channel_id_result = ch.value();
@@ -1839,9 +1839,9 @@ TEST(MeshLinkTest, CapabilityExchangeAfterAssociation) {
   pbr::test::AmpMeshHarness& h = *harness;
 
   h.mgr_a().SetLocalListenMultiaddrs({h.ma_a});
-  h.mgr_a().SetAdvertisedProtocols({"/pp-browser/chat/1.0.0", "/pp-browser/circuit-relay/1.0.0"});
+  h.mgr_a().SetAdvertisedProtocols({"/test/chat/1.0.0", "/test/circuit-relay/1.0.0"});
   h.mgr_b().SetLocalListenMultiaddrs({h.ma_b});
-  h.mgr_b().SetAdvertisedProtocols({"/pp-browser/chat/1.0.0", "/pp-browser/media-relay/1.0.0"});
+  h.mgr_b().SetAdvertisedProtocols({"/test/chat/1.0.0", "/test/media-relay/1.0.0"});
 
   int caps_a = 0;
   int caps_b = 0;
@@ -1877,7 +1877,7 @@ TEST(MeshLinkTest, CapabilityExchangeAfterAssociation) {
   EXPECT_EQ(outbound->RemoteCapability()->local_peer_id, h.peer_id_b);
   EXPECT_EQ(outbound->RemoteCapability()->listen_multiaddrs, std::vector<std::string>{h.ma_b});
   EXPECT_EQ(outbound->RemoteCapability()->protocols,
-            (std::vector<std::string>{"/pp-browser/chat/1.0.0", "/pp-browser/media-relay/1.0.0"}));
+            (std::vector<std::string>{"/test/chat/1.0.0", "/test/media-relay/1.0.0"}));
 
   auto* inbound = h.mgr_b().FindLink("a");
   ASSERT_NE(inbound, nullptr);
@@ -1885,7 +1885,7 @@ TEST(MeshLinkTest, CapabilityExchangeAfterAssociation) {
   EXPECT_EQ(inbound->RemoteCapability()->local_peer_id, h.peer_id_a);
   EXPECT_EQ(inbound->RemoteCapability()->listen_multiaddrs, std::vector<std::string>{h.ma_a});
   EXPECT_EQ(inbound->RemoteCapability()->protocols,
-            (std::vector<std::string>{"/pp-browser/chat/1.0.0", "/pp-browser/circuit-relay/1.0.0"}));
+            (std::vector<std::string>{"/test/chat/1.0.0", "/test/circuit-relay/1.0.0"}));
 
   EXPECT_EQ(seen_on_a.local_peer_id, h.peer_id_b);
   EXPECT_EQ(seen_on_b.local_peer_id, h.peer_id_a);
@@ -1900,7 +1900,7 @@ TEST(MeshLinkTest, CapabilityOmitsListenAddrsForPeersTheDisclosurePolicyRefuses)
   pbr::test::AmpMeshHarness& h = **created;
   h.mgr_a().SetLocalListenMultiaddrs({h.ma_a});
   h.mgr_b().SetLocalListenMultiaddrs({h.ma_b});
-  h.mgr_a().SetAdvertisedProtocols({"/pp-browser/chat/1.0.0"});
+  h.mgr_a().SetAdvertisedProtocols({"/test/chat/1.0.0"});
   std::vector<std::string> asked;
   h.mgr_a().SetListenAddrDisclosure([&](const std::string& remote_peer_id) {
     asked.push_back(remote_peer_id);
@@ -1922,7 +1922,7 @@ TEST(MeshLinkTest, CapabilityOmitsListenAddrsForPeersTheDisclosurePolicyRefuses)
   ASSERT_NE(on_b->RemoteCapability(), nullptr);
   EXPECT_EQ(on_b->RemoteCapability()->local_peer_id, h.peer_id_a);
   EXPECT_TRUE(on_b->RemoteCapability()->listen_multiaddrs.empty()) << "B learned A's addresses over ch0";
-  EXPECT_EQ(on_b->RemoteCapability()->protocols, std::vector<std::string>{"/pp-browser/chat/1.0.0"});
+  EXPECT_EQ(on_b->RemoteCapability()->protocols, std::vector<std::string>{"/test/chat/1.0.0"});
   EXPECT_EQ(asked, std::vector<std::string>{h.peer_id_b}) << "asked once, with the authenticated PeerId";
 
   auto* on_a = h.mgr_a().FindLink("b");

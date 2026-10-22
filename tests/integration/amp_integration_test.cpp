@@ -33,9 +33,9 @@ TEST_F(AmpIntegrationTest, ChannelResetSiblingSurvives) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch_chat = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch_chat = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   const auto ch_hist =
-      h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-history/1.0.0", pp::amp::ControlJsonChannelPolicy());
+      h.OpenChannel(HarnessSide::A, "b", "/test/chat-history/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch_chat.has_value());
   ASSERT_TRUE(ch_hist.has_value());
 
@@ -71,7 +71,7 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesLoss) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<uint8_t> received;
@@ -97,7 +97,7 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesReorder) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<std::vector<uint8_t>> received;
@@ -130,7 +130,7 @@ TEST_F(AmpIntegrationTest, BulkFragSurvivesReorder) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0", BulkPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat-blob/1.0.0", BulkPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<uint8_t> received;
@@ -159,7 +159,7 @@ TEST_F(AmpIntegrationTest, BulkFragSurvivesLoss) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0", BulkPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat-blob/1.0.0", BulkPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<uint8_t> received;
@@ -186,7 +186,7 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesDup) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<std::vector<uint8_t>> received;
@@ -215,8 +215,8 @@ TEST_F(AmpIntegrationTest, ReliableAndBulkSurviveLossPlusReorder) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch_ctrl = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
-  const auto ch_bulk = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0", BulkPolicy());
+  const auto ch_ctrl = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch_bulk = h.OpenChannel(HarnessSide::A, "b", "/test/chat-blob/1.0.0", BulkPolicy());
   ASSERT_TRUE(ch_ctrl.has_value());
   ASSERT_TRUE(ch_bulk.has_value());
 
@@ -254,7 +254,7 @@ TEST_F(AmpIntegrationTest, DualDialChannelsWorkAfterElection) {
   auto& h = **created;
   ASSERT_TRUE(h.DualAssociate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<uint8_t> received;
@@ -302,7 +302,7 @@ TEST_F(AmpIntegrationTest, OpenChannelWithoutEndpointReturnsCodedError) {
 
   bool done = false;
   pp::amp::PeerLinkManager::Err err_code = pp::amp::PeerLinkManager::Err::Ok;
-  h.mgr_a().OpenChannel("b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy(),
+  h.mgr_a().OpenChannel("b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy(),
                         [&](pp::amp::PeerLinkManager::ChannelRoe channel) {
                           if (!channel) {
                             err_code = channel.error().GetCode();
@@ -341,7 +341,7 @@ TEST_F(AmpIntegrationTest, PathMigrateMidSession) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<uint8_t> received;
@@ -391,7 +391,7 @@ TEST_F(AmpIntegrationTest, LargeFragRoundTripThroughStack) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0", BulkPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat-blob/1.0.0", BulkPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<uint8_t> received;
@@ -413,7 +413,7 @@ TEST_F(AmpIntegrationTest, WireRekeyWithGraceWindow) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
   h.PumpBoth();
 
@@ -459,7 +459,7 @@ TEST_F(AmpIntegrationTest, PostGraceStaleEpochDropped) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   auto* link_a = h.mgr_a().FindLink("b");
@@ -499,7 +499,7 @@ TEST_F(AmpIntegrationTest, RekeySurvivesLoss) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   auto* link_a = h.mgr_a().FindLink("b");
@@ -547,7 +547,7 @@ TEST_F(AmpIntegrationTest, PathMigrateSurvivesLoss) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   std::vector<uint8_t> received;
@@ -761,7 +761,7 @@ TEST_F(AmpIntegrationTest, AdversarialSealedGarbageFloodAdv06) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
   ASSERT_TRUE(ch.has_value());
 
   for (uint32_t i = 0; i < 500; ++i) {
@@ -789,7 +789,7 @@ TEST_F(AmpIntegrationTest, AdversarialFragPartialBombAdv08) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
 
-  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat-blob/1.0.0", RealtimeBulkPolicy());
+  const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat-blob/1.0.0", RealtimeBulkPolicy());
   ASSERT_TRUE(ch.has_value());
 
   for (uint64_t msg_id = 1; msg_id <= 25; ++msg_id) {

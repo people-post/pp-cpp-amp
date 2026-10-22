@@ -10,7 +10,7 @@ TEST(ChannelWireTest, OpenRoundTrip) {
   frame.header.frame_type = ChannelFrameType::Open;
   frame.header.channel_id = 7;
   frame.header.channel_seq = 0;
-  frame.open.protocol_id = "/pp-browser/chat/1.0.0";
+  frame.open.protocol_id = "/test/chat/1.0.0";
   frame.open.channel_class = ChannelClass::Transactional;
   frame.open.flags = 1;
   frame.open.max_message_bytes = 512 * 1024;

@@ -36,7 +36,7 @@ TEST(ChannelMuxTest, OpenAndDataRoundTrip) {
   auto& link = **link_result;
 
   std::vector<uint8_t> received;
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Open);
 
@@ -54,7 +54,7 @@ TEST(ChannelMuxTest, RealtimeUsesBestEffortQos) {
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
 
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/call-media/1.0.0", TestRealtimePolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/call-media/1.0.0", TestRealtimePolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, {'o'})));
   EXPECT_EQ(link.initiator.mux.LastSendQos(), adp::QosClass::BestEffort);
@@ -65,8 +65,8 @@ TEST(ChannelMuxTest, ResetDoesNotKillSiblingChannel) {
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
 
-  auto ch1 = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
-  auto ch2 = link.initiator.mux.OpenOutbound("/pp-browser/chat-history/1.0.0", ControlJsonChannelPolicy());
+  auto ch1 = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  auto ch2 = link.initiator.mux.OpenOutbound("/test/chat-history/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch1));
   ASSERT_TRUE(static_cast<bool>(ch2));
 
@@ -89,25 +89,25 @@ TEST(ChannelMuxTest, CountsOpenChannelsByProtocol) {
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
 
-  auto chat1 = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
-  auto chat2 = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
-  auto media = link.initiator.mux.OpenOutbound("/pp-browser/call-media/1.0.0", TestRealtimePolicy());
+  auto chat1 = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  auto chat2 = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  auto media = link.initiator.mux.OpenOutbound("/test/call-media/1.0.0", TestRealtimePolicy());
   ASSERT_TRUE(static_cast<bool>(chat1));
   ASSERT_TRUE(static_cast<bool>(chat2));
   ASSERT_TRUE(static_cast<bool>(media));
 
   std::unordered_map<std::string, size_t> counts;
   link.initiator.mux.CountOpenChannels(counts);
-  EXPECT_EQ(counts["/pp-browser/chat/1.0.0"], 2u);
-  EXPECT_EQ(counts["/pp-browser/call-media/1.0.0"], 1u);
+  EXPECT_EQ(counts["/test/chat/1.0.0"], 2u);
+  EXPECT_EQ(counts["/test/call-media/1.0.0"], 1u);
 
   // Closing and reset channels are no longer open.
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*chat1)));
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*media)));
   counts.clear();
   link.initiator.mux.CountOpenChannels(counts);
-  EXPECT_EQ(counts["/pp-browser/chat/1.0.0"], 1u);
-  EXPECT_EQ(counts.count("/pp-browser/call-media/1.0.0"), 0u);
+  EXPECT_EQ(counts["/test/chat/1.0.0"], 1u);
+  EXPECT_EQ(counts.count("/test/call-media/1.0.0"), 0u);
 }
 
 TEST(ChannelMuxTest, LargePayloadFragments) {
@@ -115,7 +115,7 @@ TEST(ChannelMuxTest, LargePayloadFragments) {
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
 
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
 
   std::vector<uint8_t> received;
@@ -133,7 +133,7 @@ TEST(ChannelMuxTest, OpenCarriesMaxMessageBytesForBlob) {
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
 
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", BulkChannelPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", BulkChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
 
   std::vector<uint8_t> received;
@@ -160,7 +160,7 @@ TEST(ChannelMuxTest, InboundOpenClampsOfferedBytesToLocalClassCeiling) {
   ChannelPolicy spoofed;
   spoofed.cls = ChannelClass::Control;
   spoofed.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", spoofed);
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", spoofed);
   ASSERT_TRUE(static_cast<bool>(ch));
 
   // Between the Control ceiling and the Bulk ceiling: must be refused on the responder, which
@@ -183,7 +183,7 @@ TEST(ChannelMuxTest, ApplyChannelPolicyRaisesReassemblyBudget) {
   auto& link = **link_result;
 
   // OPEN with default ControlJson budget (256 KiB).
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
 
   ASSERT_TRUE(static_cast<bool>(link.responder.mux.ApplyChannelPolicy(*ch, BulkChannelPolicy())));
@@ -207,7 +207,7 @@ TEST(ChannelMuxTest, CapabilityChannelZero) {
 
   CapabilityPayload offer;
   offer.local_peer_id = "QmCap";
-  offer.protocols = {"/pp-browser/chat/1.0.0"};
+  offer.protocols = {"/test/chat/1.0.0"};
 
   CapabilityPayload decoded;
   link.responder.mux.SetDataHandler(kCapabilityChannelId, [&](uint32_t, std::vector<uint8_t> payload) {
@@ -227,12 +227,12 @@ TEST(ChannelMuxTest, InboundProtocolHandler) {
   auto& link = **link_result;
 
   uint32_t opened_id = 0;
-  link.responder.mux.SetProtocolHandler("/pp-browser/chat/1.0.0", [&](const uint32_t channel_id, const std::string& pid) {
+  link.responder.mux.SetProtocolHandler("/test/chat/1.0.0", [&](const uint32_t channel_id, const std::string& pid) {
     opened_id = channel_id;
-    EXPECT_EQ(pid, "/pp-browser/chat/1.0.0");
+    EXPECT_EQ(pid, "/test/chat/1.0.0");
   });
 
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   EXPECT_EQ(opened_id, *ch);
 }
@@ -242,8 +242,8 @@ TEST(ChannelMuxTest, RemoteResetNotifiesChannelSession) {
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
 
-  auto ch1 = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
-  auto ch2 = link.initiator.mux.OpenOutbound("/pp-browser/chat-history/1.0.0", ControlJsonChannelPolicy());
+  auto ch1 = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  auto ch2 = link.initiator.mux.OpenOutbound("/test/chat-history/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch1));
   ASSERT_TRUE(static_cast<bool>(ch2));
 
@@ -263,7 +263,7 @@ TEST(ChannelSessionTest, ReadOnceClosesAfterFirstFrame) {
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
 
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
 
   ChannelSession session;
@@ -289,7 +289,7 @@ TEST(ChannelSessionTest, ClosedSessionDropsHandlersThatOwnIt) {
     auto link_result = test::AmpTestLink::Create();
     ASSERT_TRUE(static_cast<bool>(link_result));
     auto& link = **link_result;
-    auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+    auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
     ASSERT_TRUE(static_cast<bool>(ch));
 
     std::weak_ptr<ChannelSession> watch;
@@ -333,7 +333,7 @@ TEST(ChannelSessionTest, ClosedSessionForgetsItsMuxAndOutlivesIt) {
       auto link_result = test::AmpTestLink::Create();
       ASSERT_TRUE(static_cast<bool>(link_result));
       auto& link = **link_result;
-      auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+      auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
       ASSERT_TRUE(static_cast<bool>(ch));
       session->Bind(link.responder.mux, *ch, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; });
       switch (route) {
@@ -388,7 +388,7 @@ TEST(ChannelMuxTest, FragWaitsForWindowThenDeliversWholeMessage) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   WindowedTransport transport;
   transport.window = 1;  // 2500 B needs 3 FRAG frames @ 900 B
@@ -414,7 +414,7 @@ TEST(ChannelMuxTest, MessageLargerThanWholeWindowIsDelivered) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   WindowedTransport transport;
   transport.window = 4;
@@ -440,7 +440,7 @@ TEST(ChannelMuxTest, CloseWaitsBehindQueuedData) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   WindowedTransport transport;
   transport.window = 1;
@@ -470,8 +470,8 @@ TEST(ChannelMuxTest, QueuedChannelsShareWindowRoundRobin) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
-  auto big = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
-  auto small = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", ControlJsonChannelPolicy());
+  auto big = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
+  auto small = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(big) && static_cast<bool>(small));
   WindowedTransport transport;
   transport.window = 0;  // window full while both are queued
@@ -499,7 +499,7 @@ TEST(ChannelMuxTest, BestEffortFramesNeverQueue) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/call-media/1.0.0", TestRealtimePolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/call-media/1.0.0", TestRealtimePolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   WindowedTransport transport;
   transport.window = 0;
@@ -514,7 +514,7 @@ TEST(ChannelMuxTest, ResetDropsQueuedFrames) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));
   auto& link = **link_result;
-  auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   WindowedTransport transport;
   transport.window = 0;
@@ -537,7 +537,7 @@ TEST(ChannelMuxTest, PeerCloseOrResetDropsQueuedFrames) {
     auto link_result = test::AmpTestLink::Create();
     ASSERT_TRUE(static_cast<bool>(link_result));
     auto& link = **link_result;
-    auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", TestBulkPolicy());
+    auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
     ASSERT_TRUE(static_cast<bool>(ch));
     WindowedTransport transport;
     transport.window = 0;

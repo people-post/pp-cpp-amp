@@ -30,9 +30,9 @@ inline constexpr const char* kAdpMultiaddrVersion = "1.0.0";
 /**
  * Amp-owned outer circuit carrier for nested A↔B Session ([A024]).
  * Products should use this default via EnableNestedCarrierAccept(true) — do not mint
- * product-namespace aliases (e.g. `/pp-browser/circuit-carrier/…`).
+ * product-namespace aliases.
  */
-inline constexpr const char* kAmpCircuitCarrierProtocolId = "/amp/circuit-carrier/1.0.0";
+inline constexpr const char* kAmpCircuitCarrierProtocolId = "/pp-amp/circuit-carrier/1.0.0";
 
 /** Pre-MSH ADP HMAC key (documented constant; upgraded to K_assoc after handshake). */
 adp::PeerKey PreSessionPeerKey();

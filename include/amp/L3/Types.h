@@ -10,7 +10,7 @@ namespace pp::amp {
 inline constexpr uint8_t kChannelFrameVersion = 1;
 inline constexpr uint32_t kCapabilityChannelId = 0;
 /** Protocol of the capability channel each link keeps open (link plumbing, not a request). */
-inline constexpr const char* kCapabilityProtocolId = "/pp-browser/amp-capability/1.0.0";
+inline constexpr const char* kCapabilityProtocolId = "/pp-amp/capability/1.0.0";
 inline constexpr uint32_t kIllegalChannelId = 0xFFFF'FFFFu;
 inline constexpr int64_t kDefaultFragAssemblyTimeoutMs = 30'000;
 
