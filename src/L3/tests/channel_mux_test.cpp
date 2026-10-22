@@ -110,6 +110,25 @@ TEST(ChannelMuxTest, CountsOpenChannelsByProtocol) {
   EXPECT_EQ(counts.count("/test/call-media/1.0.0"), 0u);
 }
 
+// The capability channel (0) is not "in use" whatever id the peer gave it (another release may name
+// it differently); any other open channel is.
+TEST(ChannelMuxTest, OnlyTheCapabilityChannelOpenIsNotInUse) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto cap = link.initiator.mux.OpenOutbound("/test/older-capability-name/1.0.0", CapabilityChannelPolicy(),
+                                             kCapabilityChannelId);
+  ASSERT_TRUE(static_cast<bool>(cap));
+  EXPECT_FALSE(link.initiator.mux.HasOpenChannelsBesidesCapability());
+  EXPECT_FALSE(link.responder.mux.HasOpenChannelsBesidesCapability());
+  auto chat = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(chat));
+  EXPECT_TRUE(link.initiator.mux.HasOpenChannelsBesidesCapability());
+  EXPECT_TRUE(link.responder.mux.HasOpenChannelsBesidesCapability());
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*chat)));
+  EXPECT_FALSE(link.initiator.mux.HasOpenChannelsBesidesCapability());
+}
+
 TEST(ChannelMuxTest, LargePayloadFragments) {
   auto link_result = test::AmpTestLink::Create();
   ASSERT_TRUE(static_cast<bool>(link_result));

@@ -113,6 +113,12 @@ public:
   ChannelState State(uint32_t channel_id) const;
   /** Add this mux's Open channels to `by_protocol` (protocol id → count). */
   void CountOpenChannels(std::unordered_map<std::string, size_t>& by_protocol) const;
+  /**
+   * Whether any channel but the capability channel is open (the link is in use). The capability
+   * channel is told by its number, not its protocol id: a peer on another release may name it
+   * differently.
+   */
+  bool HasOpenChannelsBesidesCapability() const;
   ChannelClass Class(uint32_t channel_id) const;
   adp::QosClass LastSendQos() const { return last_send_qos_; }
 

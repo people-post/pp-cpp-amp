@@ -568,6 +568,15 @@ void ChannelMux::CountOpenChannels(std::unordered_map<std::string, size_t>& by_p
   }
 }
 
+bool ChannelMux::HasOpenChannelsBesidesCapability() const {
+  for (const auto& [id, channel] : channels_) {
+    if (id != kCapabilityChannelId && channel.state == ChannelState::Open) {
+      return true;
+    }
+  }
+  return false;
+}
+
 ChannelState ChannelMux::State(const uint32_t channel_id) const {
   if (const auto* ch = ChannelById(channel_id)) {
     return ch->state;
