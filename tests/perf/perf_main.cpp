@@ -186,7 +186,7 @@ bool RunC2(const int warmup, const int iters) {
     }
     auto& h = **created;
     const auto t0 = std::chrono::steady_clock::now();
-    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
     if (!ch) {
       std::fprintf(stderr, "C2 OpenChannel failed\n");
       return false;
@@ -230,7 +230,7 @@ bool RunC3(const int warmup, const int iters) {
       return false;
     }
     auto& link = **link_result;
-    auto ch = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", BulkPolicy());
+    auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", BulkPolicy());
     if (!ch) {
       std::fprintf(stderr, "C3 OpenOutbound failed: %s\n", ch.error().message.c_str());
       return false;
@@ -292,7 +292,7 @@ bool RunC4(const int warmup, const int iters) {
       return false;
     }
     auto& link = **link_result;
-    auto ch = link.initiator.mux.OpenOutbound("/pp-browser/call-media/1.0.0", pp::amp::CallMediaChannelPolicy());
+    auto ch = link.initiator.mux.OpenOutbound("/test/call-media/1.0.0", pp::amp::CallMediaChannelPolicy());
     if (!ch) {
       std::fprintf(stderr, "C4 OpenOutbound failed\n");
       return false;

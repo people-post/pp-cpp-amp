@@ -1063,14 +1063,8 @@ bool PeerLinkManager::EvictIdleInboundLocked() {
         conn->IsClosed() || link.IsWarm()) {
       return; // our own dials, warm (kept-alive) links and links still forming are never idle
     }
-    if (const auto* mux = link.Mux()) {
-      std::unordered_map<std::string, size_t> open;
-      mux->CountOpenChannels(open);
-      for (const auto& [protocol, count] : open) {
-        if (count > 0 && protocol != kCapabilityProtocolId) {
-          return; // a channel in use (the capability channel stays open on every link)
-        }
-      }
+    if (const auto* mux = link.Mux(); mux && mux->HasOpenChannelsBesidesCapability()) {
+      return; // a channel in use (the capability channel stays open on every link)
     }
     const int64_t rx = conn->LastAuthRxMs();
     if (now - rx < kMinIdleForEvictionMs) {

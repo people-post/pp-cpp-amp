@@ -47,9 +47,9 @@ bool RunC5(const int warmup, const int iters) {
     }
     auto& link = **link_result;
 
-    auto ch_ctrl = link.initiator.mux.OpenOutbound("/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
-    auto ch_bulk = link.initiator.mux.OpenOutbound("/pp-browser/chat-blob/1.0.0", pp::amp::BulkChannelPolicy());
-    auto ch_rt = link.initiator.mux.OpenOutbound("/pp-browser/call-media/1.0.0", pp::amp::CallMediaChannelPolicy());
+    auto ch_ctrl = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+    auto ch_bulk = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", pp::amp::BulkChannelPolicy());
+    auto ch_rt = link.initiator.mux.OpenOutbound("/test/call-media/1.0.0", pp::amp::CallMediaChannelPolicy());
     if (!ch_ctrl || !ch_bulk || !ch_rt) {
       std::fprintf(stderr, "C5 OpenOutbound failed\n");
       return false;
@@ -203,7 +203,7 @@ bool RunE4(const int warmup, const int iters) {
       return false;
     }
     auto& h = **created;
-    const std::vector<std::string> protos = {pp::amp::kAmpCircuitCarrierProtocolId, "/pp-browser/chat/1.0.0"};
+    const std::vector<std::string> protos = {pp::amp::kAmpCircuitCarrierProtocolId, "/test/chat/1.0.0"};
     h.mgr_a().SetAdvertisedProtocols(protos);
     h.mgr_b().SetAdvertisedProtocols(protos);
     h.mgr_b().EnableNestedCarrierAccept(true);
@@ -215,7 +215,7 @@ bool RunE4(const int warmup, const int iters) {
     // Direct open+data (same as C2 shape).
     {
       const auto t0 = std::chrono::steady_clock::now();
-      const auto ch = h.OpenChannel(HarnessSide::A, "b", "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
+      const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
       if (!ch) {
         return false;
       }
@@ -238,7 +238,7 @@ bool RunE4(const int warmup, const int iters) {
     // Nested: open carrier, establish nested MSH, open chat on nested mux, DATA.
     std::vector<uint8_t> nested_received;
     h.mgr_b().SetProtocolHandler(
-        "/pp-browser/chat/1.0.0",
+        "/test/chat/1.0.0",
         [&](pp::amp::LinkHandle handle, const std::string&, uint32_t channel_id) {
           h.mgr_b().WithLiveLink(handle, [&](pp::amp::PeerLink& link) {
             if (!link.IsCarrierBacked() || !link.Mux()) {
@@ -313,7 +313,7 @@ bool RunE4(const int warmup, const int iters) {
 
     bool ch_done = false;
     std::optional<uint32_t> nested_ch;
-    h.mgr_a().OpenChannelOnLink(*nested, "/pp-browser/chat/1.0.0", pp::amp::ControlJsonChannelPolicy(),
+    h.mgr_a().OpenChannelOnLink(*nested, "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy(),
                                 [&](pp::amp::PeerLinkManager::ChannelRoe ch) {
                                   if (ch.isOk()) {
                                     nested_ch = ch.value();
@@ -456,7 +456,7 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
 
     bool ch_done = false;
     std::optional<uint32_t> ch;
-    rt_a->Links().OpenChannel("b", "/pp-browser/chat-blob/1.0.0", pp::amp::BulkChannelPolicy(),
+    rt_a->Links().OpenChannel("b", "/test/chat-blob/1.0.0", pp::amp::BulkChannelPolicy(),
                               [&](pp::amp::PeerLinkManager::ChannelRoe r) {
                                 if (r.isOk()) {
                                   ch = r.value();
