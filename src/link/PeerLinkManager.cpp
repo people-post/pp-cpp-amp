@@ -2111,4 +2111,18 @@ std::shared_ptr<ChannelSession> PeerLinkManager::BindChannel(const DialKey& peer
   return session;
 }
 
+std::shared_ptr<ChannelSession> PeerLinkManager::BindChannelOnLink(LinkHandle link_handle, uint32_t channel_id,
+                                                                   ChannelPolicy policy,
+                                                                   ChannelSession::FrameHandler on_frame,
+                                                                   ChannelSession::ClosedCallback on_closed) {
+  std::lock_guard lock(strand_mu_);
+  auto* link = table_.FindLive(link_handle);
+  if (!link || link->Phase() != PeerLinkPhase::Connected || !link->Mux()) {
+    return {};
+  }
+  auto session = std::make_shared<ChannelSession>();
+  session->Bind(*link->Mux(), channel_id, std::move(policy), std::move(on_frame), std::move(on_closed));
+  return session;
+}
+
 } // namespace pp::amp

@@ -207,6 +207,14 @@ public:
                                               ChannelPolicy policy,
                                               ChannelSession::FrameHandler on_frame,
                                               ChannelSession::ClosedCallback on_closed = {});
+  /**
+   * Bind a channel on the one link `link` names — what an inbound-channel handler must use: a channel
+   * is numbered per link, and two links to the same peer (direct and relayed) can carry the same number.
+   * Empty when that link is gone or has no mux.
+   */
+  std::shared_ptr<ChannelSession> BindChannelOnLink(LinkHandle link, uint32_t channel_id, ChannelPolicy policy,
+                                                    ChannelSession::FrameHandler on_frame,
+                                                    ChannelSession::ClosedCallback on_closed = {});
 
   /** Tier applies now, or when a link for `peer_key` (dial key or PeerId) next connects. */
   void MarkWarm(const std::string& peer_key);
