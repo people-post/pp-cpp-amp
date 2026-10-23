@@ -1490,6 +1490,60 @@ TEST(MeshLinkTest, DroppedLinkClosesItsChannelSessions) {
   session.reset();  // destruction must not unbind through the destroyed mux either
 }
 
+// An inbound-channel handler binds on the link the channel came in on (its handle), not on whatever link
+// the peer's id resolves to: with two links to one peer the id names the other one.
+TEST(MeshLinkTest, InboundHandlerBindsOnTheLinkItsChannelCameIn) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  std::shared_ptr<ChannelSession> served;
+  std::string got;
+  LinkHandle inbound_link;
+  fixture->mgr_b->SetProtocolHandler("/served/1", [&](LinkHandle link, const std::string&, uint32_t channel_id) {
+    inbound_link = link;
+    served = fixture->mgr_b->BindChannelOnLink(link, channel_id, ControlJsonChannelPolicy(),
+                                               [&](Roe<std::vector<uint8_t>> frame) {
+                                                 if (frame) {
+                                                   got.assign(frame->begin(), frame->end());
+                                                 }
+                                                 return true;
+                                               });
+  });
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated; });
+  ASSERT_TRUE(associated);
+  std::optional<uint32_t> id;
+  fixture->mgr_a->OpenChannel("bob", "/served/1", ControlJsonChannelPolicy(), [&](PeerLinkManager::ChannelRoe ch) {
+    if (ch.isOk()) {
+      id = ch.value();
+    }
+  });
+  fixture->PumpUntil([&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return id && served != nullptr && outbound && outbound->Mux() &&
+           outbound->Mux()->State(*id) == ChannelState::Open;
+  });
+  ASSERT_NE(served, nullptr) << "bound on the inbound link by its handle";
+  auto client = fixture->mgr_a->BindChannel("bob", *id, ControlJsonChannelPolicy(),
+                                            [](Roe<std::vector<uint8_t>>) { return true; });
+  ASSERT_NE(client, nullptr);
+  const std::string hello = "{\"hello\":1}";
+  ASSERT_TRUE(client->EnqueueOutbound(std::vector<uint8_t>(hello.begin(), hello.end())));
+  fixture->PumpUntil([&] { return !got.empty(); });
+  EXPECT_EQ(got, hello);
+
+  LinkHandle stale = inbound_link;
+  stale.generation += 1;
+  EXPECT_EQ(fixture->mgr_b->BindChannelOnLink(stale, *id, ControlJsonChannelPolicy(),
+                                              [](Roe<std::vector<uint8_t>>) { return true; }),
+            nullptr)
+      << "a handle that names no live link binds nothing";
+}
+
 // BurstDial leaves amp:burst:* records in the DialBook; inbound adopt must not take them as the new
 // link's alias (pp-browser dogfood 2026-09-24: an aborted punch key named a relay carrier link).
 TEST(MeshLinkTest, InboundAdoptSkipsEphemeralBurstAlias) {
