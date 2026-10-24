@@ -74,6 +74,9 @@ Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
   link, else refuses the newcomer at once (`Err::TransportFailed`, "refused by the peer"); a full
   handshake backlog drops the hello silently and the dialer resends it on a doubling interval; a
   failed dial backs off from 1 s, doubling to 30 s, jittered ([TUNING.md](TUNING.md)).
+- **A key's candidates are tried in turn.** With another candidate still to try, one that has
+  not answered within `dial_attempt_timeout` gives way to the next; one that answered is the peer,
+  only slow, and keeps the whole `dial_timeout` (a distant node, a post-quantum handshake).
 - **Multiaddrs may name a host.** Besides `/ip4|ip6/<ip>/udp/<port>/adp/1.0.0/p2p/<id>`, a
   dial candidate may be `/dns4|dns6|dns/<host>/udp/<port>/adp/1.0.0/p2p/<id>` (`dns4` asks for an
   IPv4 address, `dns6` IPv6, `dns` either; `/dnsaddr` is not supported). The name is resolved when

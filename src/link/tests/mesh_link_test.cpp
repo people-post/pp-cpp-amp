@@ -2496,6 +2496,51 @@ TEST(MeshLinkTest, EnsureAssociationFallsBackToSecondCandidate) {
   EXPECT_TRUE(fixture->mgr_a->IsConnected("bob"));
 }
 
+// pp-browser #379: a relay listed with its public address first and a dead container address second.
+// The public address answers but its handshake is slow (a distant node, a VPN): it keeps the full dial
+// budget instead of giving way to the fallback at the short per-candidate budget.
+TEST(MeshLinkTest, ACandidateThatAnswersKeepsTheFullDialBudget) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+
+  auto good = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(good));
+  const std::string blackhole = "/ip4/203.0.113.1/udp/59999/adp/1.0.0/p2p/QmBob";
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoints("bob", {*good, blackhole})));
+  fixture->mgr_a->Book().Config().dial_attempt_timeout = std::chrono::milliseconds(30);
+  fixture->mgr_a->Book().Config().dial_timeout = std::chrono::milliseconds(5000);
+
+  std::optional<bool> associated;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
+  const auto heard = [&] {
+    const auto* link = fixture->mgr_a->FindLink("bob");
+    const auto* conn = link ? link->ConnectionOrNull() : nullptr;
+    return conn && conn->LastAuthRxMs() > 0;
+  };
+  for (int i = 0; i < 20 && !heard() && !associated; ++i) {
+    fixture->pump_a->Pump();
+    fixture->pump_b->Pump();
+  }
+  ASSERT_FALSE(associated.has_value()) << "the handshake must still be under way";
+  ASSERT_TRUE(heard()) << "bob answered";
+
+  // Bob's next flight is late: well past the per-candidate budget.
+  for (int i = 0; i < 20; ++i) {
+    fixture->clock->Advance(10);
+    fixture->mgr_a->Tick();
+  }
+  for (int i = 0; i < 200 && !associated; ++i) {
+    fixture->PumpBoth();
+    fixture->clock->Advance(5);
+  }
+  ASSERT_TRUE(associated.has_value());
+  EXPECT_TRUE(*associated);
+  ASSERT_NE(fixture->mgr_a->FindLink("bob"), nullptr);
+  ASSERT_NE(fixture->mgr_a->Book().Find("bob"), nullptr);
+  EXPECT_EQ(fixture->mgr_a->Book().Find("bob")->multiaddr, *good) << "connected on the address that answered";
+}
+
 TEST(MeshRuntimeDriveTest, PostDeferredRunsAfterWorkLane) {
   ASSERT_GE(sodium_init(), 0);
   auto created = pbr::test::AmpMeshHarness::Create();

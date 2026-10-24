@@ -72,7 +72,10 @@ struct PeerLinkConfig {
   size_t max_pending_inbound = 16;
   size_t max_concurrent_dials = 6;
   std::chrono::milliseconds dial_timeout{8000};
-  /** Per-candidate handshake budget when DialBook has further fallbacks (B15/B28). */
+  /**
+   * Per-candidate handshake budget when DialBook has further fallbacks (B15/B28), while the candidate
+   * has not answered; one that answers keeps dial_timeout.
+   */
   std::chrono::milliseconds dial_attempt_timeout{800};
   /**
    * A key's dial failed: no new dial before the backoff. It starts at dial_failure_backoff_initial
