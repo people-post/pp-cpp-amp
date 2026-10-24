@@ -1475,9 +1475,14 @@ void PeerLinkManager::Tick() {
     if (link.HandshakeStartedMs() <= 0) {
       return;
     }
+    // The short per-candidate budget skips an address that does not answer. One that answers is the
+    // peer, only slow (a distant node, a VPN, a post-quantum handshake): it keeps the full budget
+    // rather than giving way to a fallback that may never answer at all.
     int64_t budget = dial_timeout_ms;
+    const auto* conn = link.ConnectionOrNull();
+    const bool heard = conn && conn->LastAuthRxMs() > 0;
     if (const auto* rec = book_.Find(link.PeerKey());
-        rec && rec->dial_index + 1 < rec->candidates.size() && dial_attempt_ms > 0) {
+        !heard && rec && rec->dial_index + 1 < rec->candidates.size() && dial_attempt_ms > 0) {
       budget = std::min(budget, dial_attempt_ms);
     }
     if (now - link.HandshakeStartedMs() > budget) {
