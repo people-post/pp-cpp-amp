@@ -98,8 +98,8 @@ TEST_F(AdpReliableTest, DeliverUnderLoss) {
   EXPECT_TRUE(got.empty());
   p.clock->Advance(10);
   PumpBoth(p);
-  // Second attempt may also be dropped (DropNext 2).
-  p.clock->Advance(10);
+  // Second attempt may also be dropped (DropNext 2); the next resend waits twice as long.
+  p.clock->Advance(20);
   PumpBoth(p);
   ASSERT_EQ(got.size(), 1u);
   EXPECT_EQ(got[0], "rel");
@@ -522,7 +522,7 @@ TEST_F(AdpReliableTest, PacketGivenUpAfterTheRetransmitCapCountsAsLost) {
   auto o = OpenBoth(/*max_rtx=*/2);
   o.p.io_a->DropNext(100);
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("lost")));
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < 8; ++i) {  // resends at 10 and 30 ms (backing off), given up at 70
     PumpBoth(o.p);
     o.p.clock->Advance(10);
   }
@@ -551,15 +551,44 @@ TEST_F(AdpReliableTest, ConnectionStatsTrackItsOwnTrafficAndSmoothedRoundTrip) {
   EXPECT_EQ(a.rtt_samples, 2u);
   EXPECT_EQ(a.rtt_sum_ms, 240u);
   EXPECT_EQ(a.srtt_ms, 90);  // 80 + (160 - 80) / 8
+  EXPECT_EQ(a.rttvar_ms, 50);  // 80 / 2, then 40 + (|160 - 80| - 40) / 4
   EXPECT_EQ(o.b->Stats().reliable_sent, 0u) << "only the acks went back";
 
+  // A lost packet is resent after this path's round trip (90 + 4 × 50 ms), not rtx_interval_ms (10).
   o.p.io_a->DropNext(1);
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("again")));
   PumpBoth(o.p);
   o.p.clock->Advance(10);
   PumpBoth(o.p);
-  EXPECT_GE(o.a->Stats().retransmits, 1u);
+  EXPECT_EQ(o.a->Stats().retransmits, 0u) << "a resend before the round trip is only a duplicate";
+  o.p.clock->Advance(280);
+  PumpBoth(o.p);
+  EXPECT_EQ(o.a->Stats().retransmits, 1u);
   EXPECT_EQ(o.a->Stats().rtt_samples, 2u) << "Karn: no sample from a retransmitted packet";
+}
+
+// Each resend of the same packet waits twice as long as the one before (RFC 6298 §5.5): a path that
+// stopped answering is not flooded with copies.
+TEST_F(AdpReliableTest, ResendOfTheSamePacketBacksOff) {
+  auto o = OpenBoth();  // rtx_interval_ms 10, no round trip measured yet
+  o.p.io_a->DropNext(3);
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("x")));
+  PumpBoth(o.p);
+  o.p.clock->Advance(10);
+  PumpBoth(o.p);
+  EXPECT_EQ(o.a->Stats().retransmits, 1u);
+  o.p.clock->Advance(10);
+  PumpBoth(o.p);
+  EXPECT_EQ(o.a->Stats().retransmits, 1u) << "the second resend waits 20 ms";
+  o.p.clock->Advance(10);
+  PumpBoth(o.p);
+  EXPECT_EQ(o.a->Stats().retransmits, 2u);
+  o.p.clock->Advance(30);
+  PumpBoth(o.p);
+  EXPECT_EQ(o.a->Stats().retransmits, 2u) << "the third waits 40 ms";
+  o.p.clock->Advance(10);
+  PumpBoth(o.p);
+  EXPECT_EQ(o.a->Stats().retransmits, 3u);
 }
 
 TEST_F(AdpReliableTest, GarbageDatagramsCountAsRejected) {

@@ -14,10 +14,17 @@ dialed or accepted):
 |-------|---------|---------|
 | `reliable_window` | 128 | Unacked Reliable packets in flight per connection |
 | `replay_window` | 128 | Reliable replay window (must cover the send window) |
-| `rtx_interval_ms` | 50 | Retransmit interval |
+| `rtx_interval_ms` | 50 | Retransmit interval until a round trip is measured, then the floor of the adaptive one (below) |
 | `max_rtx` | 20 | Retransmits before a packet is given up |
 | `skew_ms` | 60 000 | Accepted clock difference on packet timestamps |
 | `alive_timeout_ms` | 5 000 | A cold link (no keepalive cadence) silent this long is dead |
+
+An authenticated connection resends a Reliable packet after its own round trip (RFC 6298:
+SRTT + 4 × RTTVAR, `kRtoGranularityMs` at least), never sooner than `rtx_interval_ms`, and each
+resend of the same packet waits twice as long as the one before, up to `kMaxRtoMs` (2 s).
+`ConnectionStats` carries `srtt_ms` and `rttvar_ms`. A fixed 50 ms on a 200 ms phone path resent
+every packet about four times; the copies filled the uplink and real traffic stopped getting
+through (pp-browser app lab `group_call_on_the_road`).
 
 `PeerLinkConfig::mux` (`MuxTuning`, applied to every link's channel mux):
 

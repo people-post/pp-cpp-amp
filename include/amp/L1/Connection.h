@@ -70,6 +70,8 @@ struct ConnectionStats {
   uint64_t rtt_sum_ms = 0;
   /** Smoothed round trip (RFC 6298 SRTT, α = 1/8); -1 before the first sample. */
   int64_t srtt_ms = -1;
+  /** Round-trip variation (RFC 6298 RTTVAR, β = 1/4); -1 before the first sample. */
+  int64_t rttvar_ms = -1;
 };
 
 class Connection : public std::enable_shared_from_this<Connection> {
@@ -186,6 +188,8 @@ private:
   int authenticated_max_rtx_ = 0;
   /** Interval before the next resend after `attempts` (doubling for a dialer's handshake). */
   int64_t RetransmitIntervalMs(int attempts) const;
+  /** This association's retransmit timeout from its round trips (see kRtoGranularityMs). */
+  int64_t RtoMs() const;
   /**
    * Set by UpgradeBinder. Before it, the binder key is the well-known pre-session key (anyone
    * can forge a valid HMAC), so Close / Keepalive — which can tear down or degrade the
