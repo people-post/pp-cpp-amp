@@ -30,6 +30,15 @@ inline constexpr size_t kDefaultReplayWindow = kDefaultReliableWindow;
 inline constexpr int64_t kDefaultRtxIntervalMs = 50;
 inline constexpr int kDefaultMaxRtx = 20;
 /**
+ * An authenticated association resends a Reliable packet after its own round trip (RFC 6298: SRTT +
+ * 4 × RTTVAR, at least kRtoGranularityMs over SRTT), never sooner than rtx_interval_ms (a LAN keeps
+ * its quick resend; also the wait before the first round trip is measured), doubling for each resend
+ * of the same packet up to kMaxRtoMs. A fixed rtx_interval_ms on a 200 ms phone path resent every
+ * packet four times, and the copies filled the uplink until nothing got through.
+ */
+inline constexpr int64_t kRtoGranularityMs = 10;
+inline constexpr int64_t kMaxRtoMs = 2000;
+/**
  * Reliable retransmit cap before the association authenticates (UpgradeBinder). A forged
  * ClientHello from a spoofed source gets our Reliable ServerHello resent this many extra times
  * toward the victim address before we give up — kDefaultMaxRtx would be a ~21x reflection

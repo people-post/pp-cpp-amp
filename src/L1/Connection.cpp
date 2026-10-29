@@ -69,10 +69,23 @@ void Connection::Abandon() {
 }
 
 int64_t Connection::RetransmitIntervalMs(int attempts) const {
-  if (authenticated_ || !params_.dialer_backoff) {
+  if (authenticated_) {
+    // Each resend of the same packet doubles the wait (RFC 6298 §5.5), up to kMaxRtoMs.
+    const int doublings = std::min(attempts, 8);
+    return std::min(RtoMs() << doublings, std::max(kMaxRtoMs, params_.rtx_interval_ms));
+  }
+  if (!params_.dialer_backoff) {
     return params_.rtx_interval_ms;
   }
   return params_.rtx_interval_ms << std::min(attempts, 16); // a dialer's handshake: doubling, like SYN retries
+}
+
+int64_t Connection::RtoMs() const {
+  if (stats_.srtt_ms < 0) {
+    return params_.rtx_interval_ms;
+  }
+  const int64_t rto = stats_.srtt_ms + std::max(kRtoGranularityMs, 4 * stats_.rttvar_ms);
+  return std::clamp(rto, params_.rtx_interval_ms, std::max(kMaxRtoMs, params_.rtx_interval_ms));
 }
 
 void Connection::SetPeerEndpoint(IpEndpoint peer) {
@@ -266,7 +279,7 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   Outstanding o;
   o.seq = tx_seq_rel_;
   o.payload.assign(payload.begin(), payload.end());
-  o.next_rtx_ms = now + params_.rtx_interval_ms;
+  o.next_rtx_ms = now + RetransmitIntervalMs(0);
   o.attempts = 0;
   o.first_sent_ms = now;
   // The seq is taken: track the packet whatever this first send does. A
@@ -287,7 +300,14 @@ void Connection::NoteRttSample(const int64_t rtt_ms) {
   const int64_t sample = rtt_ms < 0 ? 0 : rtt_ms;
   ++stats_.rtt_samples;
   stats_.rtt_sum_ms += static_cast<uint64_t>(sample);
-  stats_.srtt_ms = stats_.srtt_ms < 0 ? sample : stats_.srtt_ms + (sample - stats_.srtt_ms) / 8;
+  if (stats_.srtt_ms < 0) {
+    stats_.srtt_ms = sample;
+    stats_.rttvar_ms = sample / 2;
+  } else {
+    const int64_t error = sample > stats_.srtt_ms ? sample - stats_.srtt_ms : stats_.srtt_ms - sample;
+    stats_.rttvar_ms += (error - stats_.rttvar_ms) / 4;
+    stats_.srtt_ms += (sample - stats_.srtt_ms) / 8;
+  }
 }
 
 void Connection::Tick(int64_t now_ms) {
