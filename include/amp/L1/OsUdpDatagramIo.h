@@ -30,15 +30,19 @@ public:
   Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> RecvFrom() override;
   IpEndpoint LocalEndpoint() const override { return local_; }
   std::optional<DatagramIoStats> Stats() const override;
+  /** Binds `LocalEndpoint()` again (its actual port, not the one asked for) with the same options. */
+  Roe<void> Reopen() override;
 
   OsUdpDatagramIo(const OsUdpDatagramIo&) = delete;
   OsUdpDatagramIo& operator=(const OsUdpDatagramIo&) = delete;
 
 private:
-  OsUdpDatagramIo(int fd, IpEndpoint local);
+  OsUdpDatagramIo(int fd, IpEndpoint local, UdpSocketOptions options);
+  void CloseSocket();
 
   int fd_ = -1;
   IpEndpoint local_;
+  UdpSocketOptions options_;
   std::vector<uint8_t> recv_scratch_;
   /** Kernel's count of datagrams dropped for want of receive buffer (Linux SO_RXQ_OVFL); -1: not told. */
   std::atomic<int64_t> receive_drops_{-1};

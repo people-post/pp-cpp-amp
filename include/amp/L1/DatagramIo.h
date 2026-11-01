@@ -41,6 +41,14 @@ public:
   virtual Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> RecvFrom() = 0;
 
   virtual IpEndpoint LocalEndpoint() const = 0;
+
+  /**
+   * Close the socket and open a new one on the same address and port — for a socket the OS left
+   * dead (iOS after a suspend or a path change: sends fail or nothing is received). Same thread as
+   * SendTo / RecvFrom. After a failure the IO has no socket until a later Reopen succeeds.
+   * Not every IO can (default: refused).
+   */
+  virtual Roe<void> Reopen() { return Error("datagram io: reopen not supported"); }
 };
 
 } // namespace pp::adp

@@ -1,14 +1,17 @@
 #include "amp/L1/Clock.h"
 #include "amp/L1/Endpoint.h"
 #include "amp/L1/LossyDatagramIo.h"
+#include "amp/L1/MemoryDatagramIo.h"
 #include "amp/L1/OsUdpDatagramIo.h"
 #include "amp/L1/Types.h"
 
 #include <gtest/gtest.h>
 #include <sodium.h>
 
+#include <chrono>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -248,3 +251,45 @@ TEST(OsUdpBuffersTest, TheKernelsDropsAreCounted) {
   EXPECT_GT(*stats->receive_drops, 0u);
 }
 #endif
+
+namespace {
+
+std::optional<std::vector<uint8_t>> RecvWithin(pp::adp::DatagramIo& io, int tries) {
+  for (int i = 0; i < tries; ++i) {
+    auto got = io.RecvFrom();
+    if (got && *got) {
+      return (*got)->second;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return std::nullopt;
+}
+
+// iOS can leave an app's socket dead after a suspend: the app closes it and binds the same port.
+TEST(AdpOsUdpReopenTest, AReopenedSocketKeepsItsPortAndWorks) {
+  auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  auto peer = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  if (!bound || !peer) {
+    GTEST_SKIP() << "OsUdp Bind failed — skip in restricted environments";
+  }
+  pp::adp::DatagramIo& io = **bound;
+  const pp::adp::IpEndpoint before = io.LocalEndpoint();
+  ASSERT_NE(before.port, 0);
+
+  ASSERT_TRUE(static_cast<bool>(io.Reopen()));
+  EXPECT_EQ(io.LocalEndpoint(), before);
+
+  const std::vector<uint8_t> ping{1, 2, 3};
+  ASSERT_TRUE(static_cast<bool>((*peer)->SendTo(before, ping)));
+  EXPECT_EQ(RecvWithin(io, 200), ping) << "the new socket receives on the old port";
+  ASSERT_TRUE(static_cast<bool>(io.SendTo((*peer)->LocalEndpoint(), ping)));
+  EXPECT_EQ(RecvWithin(**peer, 200), ping) << "and sends from it";
+}
+
+TEST(AdpOsUdpReopenTest, InMemoryIoHasNoSocketToReopen) {
+  auto hub = pp::adp::MemoryDatagramIo::MakeHub();
+  pp::adp::MemoryDatagramIo memory(hub, pp::adp::IpEndpoint::V4(10, 0, 0, 1, 1));
+  EXPECT_FALSE(static_cast<bool>(memory.Reopen()));
+}
+
+} // namespace
