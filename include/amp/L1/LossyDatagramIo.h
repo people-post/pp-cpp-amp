@@ -26,6 +26,7 @@ public:
   Roe<void> SendTo(const IpEndpoint& peer, std::span<const uint8_t> datagram) override;
   Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> RecvFrom() override;
   IpEndpoint LocalEndpoint() const override { return inner_->LocalEndpoint(); }
+  Roe<void> Reopen() override { return inner_->Reopen(); }
 
   void SetDropRate(double rate) { drop_rate_ = rate; }
   void SetDupRate(double rate) { dup_rate_ = rate; }

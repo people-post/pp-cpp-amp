@@ -102,17 +102,24 @@ void EnsureWinsock() {
 void EnsureWinsock() {}
 #endif
 
+void CloseFd(int fd) {
+#if defined(_WIN32)
+  closesocket(fd);
+#else
+  ::close(fd);
+#endif
+}
+
 } // namespace
 
-OsUdpDatagramIo::OsUdpDatagramIo(int fd, IpEndpoint local) : fd_(fd), local_(local) {}
+OsUdpDatagramIo::OsUdpDatagramIo(int fd, IpEndpoint local, UdpSocketOptions options)
+    : fd_(fd), local_(local), options_(options) {}
 
-OsUdpDatagramIo::~OsUdpDatagramIo() {
+OsUdpDatagramIo::~OsUdpDatagramIo() { CloseSocket(); }
+
+void OsUdpDatagramIo::CloseSocket() {
   if (fd_ >= 0) {
-#if defined(_WIN32)
-    closesocket(fd_);
-#else
-    ::close(fd_);
-#endif
+    CloseFd(fd_);
     fd_ = -1;
   }
 }
@@ -197,7 +204,7 @@ static size_t GetBuffer(int fd, int option) {
   return value > 0 ? static_cast<size_t>(value) : 0;
 }
 
-Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& local, const UdpSocketOptions& options) {
+static Roe<std::pair<int, IpEndpoint>> OpenSocket(const IpEndpoint& local, const UdpSocketOptions& options) {
   EnsureWinsock();
   const int family = local.family == IpEndpoint::Family::V4 ? AF_INET : AF_INET6;
   const int fd = static_cast<int>(::socket(family, SOCK_DGRAM, IPPROTO_UDP));
@@ -233,28 +240,41 @@ Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& lo
   socklen_t len = 0;
   ToSockAddr(local, ss, len);
   if (::bind(fd, reinterpret_cast<sockaddr*>(&ss), len) != 0) {
-#if defined(_WIN32)
-    closesocket(fd);
-#else
-    ::close(fd);
-#endif
+    CloseFd(fd);
     return IoErr("bind");
   }
   sockaddr_storage bound{};
   socklen_t blen = sizeof(bound);
   if (::getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &blen) != 0) {
-#if defined(_WIN32)
-    closesocket(fd);
-#else
-    ::close(fd);
-#endif
+    CloseFd(fd);
     return IoErr("getsockname");
   }
-  IpEndpoint actual = FromSockAddr(bound);
-  return std::unique_ptr<OsUdpDatagramIo>(new OsUdpDatagramIo(fd, actual));
+  return std::pair<int, IpEndpoint>{fd, FromSockAddr(bound)};
+}
+
+Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& local, const UdpSocketOptions& options) {
+  auto opened = OpenSocket(local, options);
+  if (!opened) {
+    return opened.error();
+  }
+  return std::unique_ptr<OsUdpDatagramIo>(new OsUdpDatagramIo(opened->first, opened->second, options));
+}
+
+Roe<void> OsUdpDatagramIo::Reopen() {
+  CloseSocket();  // first: the new socket takes the same port
+  auto opened = OpenSocket(local_, options_);
+  if (!opened) {
+    return opened.error();
+  }
+  fd_ = opened->first;
+  receive_drops_.store(-1, std::memory_order_relaxed);
+  return {};
 }
 
 Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_t> datagram) {
+  if (fd_ < 0) {
+    return Error("adp udp: no socket (a reopen failed)");
+  }
   sockaddr_storage ss{};
   socklen_t len = 0;
   if (local_.family == IpEndpoint::Family::V6 && peer.family == IpEndpoint::Family::V4) {
@@ -300,6 +320,9 @@ std::optional<DatagramIoStats> OsUdpDatagramIo::Stats() const {
 }
 
 Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo::RecvFrom() {
+  if (fd_ < 0) {
+    return Error("adp udp: no socket (a reopen failed)");
+  }
   if (recv_scratch_.size() < 2048) {
     recv_scratch_.resize(2048);
   }
