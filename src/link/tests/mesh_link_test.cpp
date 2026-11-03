@@ -2,6 +2,8 @@
 #include "amp/L1/Endpoint.h"
 #include "amp/L1/LossyDatagramIo.h"
 #include "amp/L1/MemoryDatagramIo.h"
+#include "amp/L1/WireCodec.h"
+#include "amp/link/AmpAdpCarrier.h"
 #include "crypto/MlDsa.h"
 #include "amp/L3/ChannelPolicy.h"
 #include "amp/link/AdpMultiaddr.h"
@@ -48,9 +50,11 @@ struct MeshLinkFixture {
   std::unique_ptr<MeshPump> pump_b;
 
   /** `tune` applies to both sides, then `tune_b` to bob's only (a server under test). */
-  static Roe<MeshLinkFixture> Create(const bool lossy = false,
-                                     const std::function<void(PeerLinkConfig&)>& tune = {},
-                                     const std::function<void(PeerLinkConfig&)>& tune_b = {}) {
+  /** `wrap_b`, if set, wraps bob's datagram IO (a test's filter on what bob sends). */
+  static Roe<MeshLinkFixture> Create(
+      const bool lossy = false, const std::function<void(PeerLinkConfig&)>& tune = {},
+      const std::function<void(PeerLinkConfig&)>& tune_b = {},
+      const std::function<std::shared_ptr<adp::DatagramIo>(std::shared_ptr<adp::DatagramIo>)>& wrap_b = {}) {
     MeshLinkFixture f;
     f.clock = std::make_shared<adp::VirtualClock>(1'000'000);
     f.hub = adp::MemoryDatagramIo::MakeHub();
@@ -65,7 +69,7 @@ struct MeshLinkFixture {
       f.ep_b = std::make_unique<adp::Endpoint>(f.lossy_b, f.clock);
     } else {
       f.ep_a = std::make_unique<adp::Endpoint>(f.io_a, f.clock);
-      f.ep_b = std::make_unique<adp::Endpoint>(f.io_b, f.clock);
+      f.ep_b = std::make_unique<adp::Endpoint>(wrap_b ? wrap_b(f.io_b) : f.io_b, f.clock);
     }
     f.ep_b->SetAcceptEnabled(true);
 
@@ -129,6 +133,60 @@ struct MeshLinkFixture {
     return elapsed;
   }
 };
+
+/** Forwards to `inner`, dropping the first datagram `drop` matches. */
+class DropFirstMatchingIo : public adp::DatagramIo {
+public:
+  DropFirstMatchingIo(std::shared_ptr<adp::DatagramIo> inner, std::function<bool(std::span<const uint8_t>)> drop)
+      : inner_(std::move(inner)), drop_(std::move(drop)) {}
+  Roe<void> SendTo(const adp::IpEndpoint& peer, std::span<const uint8_t> datagram) override {
+    if (!dropped && drop_(datagram)) {
+      dropped = true;
+      return {};
+    }
+    return inner_->SendTo(peer, datagram);
+  }
+  Roe<std::optional<std::pair<adp::IpEndpoint, std::vector<uint8_t>>>> RecvFrom() override {
+    return inner_->RecvFrom();
+  }
+  adp::IpEndpoint LocalEndpoint() const override { return inner_->LocalEndpoint(); }
+  bool dropped = false;
+
+private:
+  std::shared_ptr<adp::DatagramIo> inner_;
+  std::function<bool(std::span<const uint8_t>)> drop_;
+};
+
+/** The responder's MSH Finished: the last handshake packet, sent just before it upgrades its HMAC key. */
+bool IsMshFinished(const std::span<const uint8_t> datagram) {
+  auto pkt = adp::WireCodec::Decode(datagram);
+  return pkt && pkt->type == adp::PacketType::DataReliable && pkt->payload.size() >= 2 &&
+         pkt->payload[0] == static_cast<uint8_t>(AmpAdpPayloadKind::Msh) &&
+         pkt->payload[1] == static_cast<uint8_t>(MshMessageType::Finished);
+}
+
+// Dogfood 2026-11-03: the first two in a group call hardly connected. The hop answers a dial, finishes first and
+// upgrades its key; when its Finished was lost, the resend went out under the new key, the dialer still checked the
+// pre-session key, and the dial timed out. Lost once, the link must still come up well inside the dial timeout.
+TEST(MeshLinkTest, ALostFinishedFromTheAnsweringSideStillConnects) {
+  ASSERT_GE(sodium_init(), 0);
+  std::shared_ptr<DropFirstMatchingIo> filter;
+  auto fixture = MeshLinkFixture::Create(false, {}, {}, [&](std::shared_ptr<adp::DatagramIo> io) {
+    filter = std::make_shared<DropFirstMatchingIo>(std::move(io), IsMshFinished);
+    return filter;
+  });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  std::optional<bool> associated;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
+  const int64_t took = fixture->PumpTimed([&] { return associated.has_value(); }, 8000);
+  ASSERT_TRUE(filter->dropped) << "the test never saw bob's Finished";
+  ASSERT_TRUE(associated.has_value()) << "the dial never finished";
+  EXPECT_TRUE(*associated) << "the dial failed";
+  EXPECT_LT(took, 3000) << "connected only after " << took << " ms";
+}
 
 TEST(MeshLinkTest, EnsureAssociationOverMemoryIo) {
   ASSERT_GE(sodium_init(), 0);
