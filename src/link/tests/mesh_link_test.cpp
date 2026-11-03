@@ -1629,7 +1629,7 @@ TEST(MeshLinkTest, LinkEventsConnectedThenDeadDrop) {
   EXPECT_EQ(events_b[0].kind, LinkEvent::Kind::Connected);
   EXPECT_FALSE(events_b[0].outbound);
   // Inbound dial key = "inbound:" + assoc id as lowercase hex (was '0'+nibble → ":;<=>?").
-  ASSERT_EQ(events_b[0].dial_key.size(), std::string("inbound:").size() + 32);
+  ASSERT_EQ(events_b[0].dial_key.size(), std::string("inbound:").size() + 2 * adp::kAssocIdBytes);
   EXPECT_EQ(events_b[0].dial_key.rfind("inbound:", 0), 0u);
   EXPECT_EQ(events_b[0].dial_key.find_first_not_of("0123456789abcdef", 8), std::string::npos)
       << events_b[0].dial_key;

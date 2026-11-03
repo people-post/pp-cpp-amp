@@ -54,11 +54,11 @@ pp::amp::ChannelPolicy BulkPolicy() { return pp::amp::BulkChannelPolicy(); }
 
 bool RunA1(const int warmup, const int iters) {
   std::printf("\n== A1 WireCodec + HmacBinder ==\n");
-  const size_t payloads[] = {0, 600, 1200};
+  const size_t payloads[] = {0, 600, pp::adp::kMaxPayload};
   bool ok = true;
   for (const size_t payload_len : payloads) {
     pp::adp::WirePacket pkt;
-    pkt.type = pp::adp::PacketType::DataBestEffort;
+    pkt.type = pp::adp::PacketType::PlainBestEffort;
     pkt.assoc = AdpAssoc();
     pkt.seq = 1;
     pkt.timestamp_ms = 1;

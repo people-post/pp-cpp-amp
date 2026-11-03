@@ -1,4 +1,5 @@
 #include "amp/L1/HmacBinder.h"
+#include "amp/L1/PacketProtection.h"
 #include "amp/L1/Types.h"
 #include "amp/L1/WireCodec.h"
 
@@ -28,29 +29,27 @@ protected:
 
 TEST_F(AdpWireTest, RoundTripEmptyPayload) {
   pp::adp::WirePacket pkt;
-  pkt.type = pp::adp::PacketType::DataBestEffort;
+  pkt.type = pp::adp::PacketType::PlainBestEffort;
   pkt.assoc = TestAssoc();
   pkt.seq = 1;
   pkt.timestamp_ms = 123456789u;
   auto enc = pp::adp::WireCodec::Encode(pkt);
   ASSERT_TRUE(enc);
-  auto dec = pp::adp::WireCodec::Decode(
-      std::vector<uint8_t>(enc->begin(), enc->end())); // no hmac yet — need pad?
-  // Decode expects trailing hmac bytes in size check — encode alone is header+payload.
-  // Append fake hmac for decode length, then test seal path separately.
   auto sealed = pp::adp::HmacBinder(TestKey()).Seal(*enc);
   ASSERT_TRUE(sealed);
   auto got = pp::adp::WireCodec::Decode(*sealed);
   ASSERT_TRUE(got);
+  EXPECT_EQ(got->type, pp::adp::PacketType::PlainBestEffort);
   EXPECT_EQ(got->seq, 1u);
   EXPECT_EQ(got->timestamp_ms, 123456789u);
   EXPECT_TRUE(got->payload.empty());
   EXPECT_EQ(got->assoc.bytes, TestAssoc().bytes);
 }
 
-TEST_F(AdpWireTest, RoundTripMaxPayload) {
+// The largest payload fills the largest datagram exactly: IPv6's smallest MTU less its headers (A029 H1).
+TEST_F(AdpWireTest, RoundTripMaxPayloadFillsTheLargestDatagram) {
   pp::adp::WirePacket pkt;
-  pkt.type = pp::adp::PacketType::DataReliable;
+  pkt.type = pp::adp::PacketType::PlainReliable;
   pkt.assoc = TestAssoc(0x22);
   pkt.seq = 99;
   pkt.timestamp_ms = 1;
@@ -59,6 +58,8 @@ TEST_F(AdpWireTest, RoundTripMaxPayload) {
   ASSERT_TRUE(enc);
   auto sealed = pp::adp::HmacBinder(TestKey()).Seal(*enc);
   ASSERT_TRUE(sealed);
+  EXPECT_EQ(sealed->size(), pp::adp::kMaxDatagramBytes);
+  EXPECT_EQ(pp::adp::kMaxDatagramBytes, 1280u - 40u - 8u);
   auto got = pp::adp::WireCodec::Decode(*sealed);
   ASSERT_TRUE(got);
   EXPECT_EQ(got->payload.size(), pp::adp::kMaxPayload);
@@ -70,6 +71,7 @@ TEST_F(AdpWireTest, RejectOversizePayload) {
   EXPECT_FALSE(pp::adp::WireCodec::Encode(pkt));
 }
 
+// An older peer's packet (wire v1: version byte 1) is refused, not misread.
 TEST_F(AdpWireTest, RejectUnknownVersion) {
   pp::adp::WirePacket pkt;
   pkt.seq = 1;
@@ -77,43 +79,43 @@ TEST_F(AdpWireTest, RejectUnknownVersion) {
   ASSERT_TRUE(enc);
   auto sealed = pp::adp::HmacBinder(TestKey()).Seal(*enc);
   ASSERT_TRUE(sealed);
-  (*sealed)[0] = 99;
-  // HMAC will fail if we verify; decode checks version before caring about hmac body length.
-  // Fix length: version byte changed but length ok.
-  auto got = pp::adp::WireCodec::Decode(*sealed);
-  EXPECT_FALSE(got);
+  for (const uint8_t first : {uint8_t{0x01}, uint8_t{0x15}, uint8_t{0x35}}) {
+    (*sealed)[0] = first;
+    EXPECT_FALSE(pp::adp::WireCodec::Decode(*sealed)) << int(first);
+    EXPECT_FALSE(pp::adp::WireCodec::PeekType(*sealed)) << int(first);
+  }
 }
 
 TEST_F(AdpWireTest, RejectTruncated) {
   std::vector<uint8_t> tiny{1, 2, 3};
   EXPECT_FALSE(pp::adp::WireCodec::Decode(tiny));
+  EXPECT_FALSE(pp::adp::WireCodec::DecodeSealedHeader(tiny));
 }
 
 TEST_F(AdpWireTest, RejectBadPacketType) {
   pp::adp::WirePacket pkt;
-  pkt.type = pp::adp::PacketType::DataBestEffort;
+  pkt.type = pp::adp::PacketType::PlainBestEffort;
   pkt.seq = 1;
   auto enc = pp::adp::WireCodec::Encode(pkt);
   ASSERT_TRUE(enc);
   auto sealed = pp::adp::HmacBinder(TestKey()).Seal(*enc);
   ASSERT_TRUE(sealed);
-  (*sealed)[1] = 99;
+  (*sealed)[0] = static_cast<uint8_t>((pp::adp::kWireVersion << 4) | 0x0f);
   EXPECT_FALSE(pp::adp::WireCodec::Decode(*sealed));
 }
 
-TEST_F(AdpWireTest, RejectLengthMismatch) {
+// Data is sealed by the session: it has no plain encoding to fall back to, either way.
+TEST_F(AdpWireTest, SealedTypesHaveNoPlainEncoding) {
   pp::adp::WirePacket pkt;
-  pkt.type = pp::adp::PacketType::DataBestEffort;
-  pkt.seq = 1;
-  pkt.payload = {1, 2, 3};
+  pkt.type = pp::adp::PacketType::DataReliable;
+  EXPECT_FALSE(pp::adp::WireCodec::Encode(pkt));
+  pkt.type = pp::adp::PacketType::PlainReliable;
   auto enc = pp::adp::WireCodec::Encode(pkt);
   ASSERT_TRUE(enc);
-  auto sealed = pp::adp::HmacBinder(TestKey()).Seal(*enc);
-  ASSERT_TRUE(sealed);
-  // Claim zero payload bytes while body still contains 3 bytes.
-  (*sealed)[26] = 0;
-  (*sealed)[27] = 0;
-  EXPECT_FALSE(pp::adp::WireCodec::Decode(*sealed));
+  auto maced = pp::adp::HmacBinder(TestKey()).Seal(*enc);
+  ASSERT_TRUE(maced);
+  (*maced)[0] = static_cast<uint8_t>((pp::adp::kWireVersion << 4) | uint8_t(pp::adp::PacketType::DataReliable));
+  EXPECT_FALSE(pp::adp::WireCodec::Decode(*maced));
 }
 
 TEST_F(AdpWireTest, GoldenHeaderLayoutLittleEndian) {
@@ -124,19 +126,30 @@ TEST_F(AdpWireTest, GoldenHeaderLayoutLittleEndian) {
   pkt.timestamp_ms = 0x08070605u;
   auto enc = pp::adp::WireCodec::Encode(pkt);
   ASSERT_TRUE(enc);
-  ASSERT_EQ(enc->size(), pp::adp::kHeaderBytes);
-  EXPECT_EQ((*enc)[0], 1);
-  EXPECT_EQ((*enc)[1], static_cast<uint8_t>(pp::adp::PacketType::Ack));
-  EXPECT_EQ((*enc)[18], 0x01);
-  EXPECT_EQ((*enc)[19], 0x02);
-  EXPECT_EQ((*enc)[20], 0x03);
-  EXPECT_EQ((*enc)[21], 0x04);
-  EXPECT_EQ((*enc)[22], 0x05);
-  EXPECT_EQ((*enc)[23], 0x06);
-  EXPECT_EQ((*enc)[24], 0x07);
-  EXPECT_EQ((*enc)[25], 0x08);
-  EXPECT_EQ((*enc)[26], 0);
-  EXPECT_EQ((*enc)[27], 0);
+  const std::vector<uint8_t> expected = {0x22, 1, 1, 1, 1, 1, 1, 1, 1, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+  EXPECT_EQ(*enc, expected);
+  EXPECT_EQ(enc->size(), pp::adp::kHeaderBytes);
+}
+
+TEST_F(AdpWireTest, GoldenSealedHeaderLayout) {
+  pp::adp::SealedHeader header;
+  header.type = pp::adp::PacketType::DataReliable;
+  header.assoc = TestAssoc(0x01);
+  header.number = 0x04030201u;
+  const auto enc = pp::adp::WireCodec::EncodeSealedHeader(header);
+  const std::array<uint8_t, pp::adp::kSealedHeaderBytes> expected = {0x21, 1, 1,    1,    1,    1,   1,
+                                                                     1,    1, 0x01, 0x02, 0x03, 0x04};
+  EXPECT_EQ(enc, expected);
+
+  std::vector<uint8_t> datagram(enc.begin(), enc.end());
+  datagram.resize(datagram.size() + pp::adp::kPacketTagBytes, 0xee);
+  auto got = pp::adp::WireCodec::DecodeSealedHeader(datagram);
+  ASSERT_TRUE(got);
+  EXPECT_EQ(got->type, pp::adp::PacketType::DataReliable);
+  EXPECT_EQ(got->number, 0x04030201u);
+  EXPECT_EQ(pp::adp::WireCodec::PeekAssoc(datagram).bytes, TestAssoc(0x01).bytes);
+  datagram.pop_back();
+  EXPECT_FALSE(pp::adp::WireCodec::DecodeSealedHeader(datagram)) << "no room for the tag";
 }
 
 TEST_F(AdpWireTest, HmacAcceptsAndRejectsBitFlip) {

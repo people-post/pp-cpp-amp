@@ -1,6 +1,7 @@
 #include "amp/L1/Endpoint.h"
 
 #include "amp/L1/HmacBinder.h"
+#include "amp/L1/PacketProtection.h"
 #include "amp/L1/WireCodec.h"
 
 #include <cstring>
@@ -109,18 +110,19 @@ void Endpoint::Tick() {
 }
 
 void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram) {
-  if (datagram.size() < kHeaderBytes + kHmacBytes) {
+  if (datagram.size() < kSealedHeaderBytes + kPacketTagBytes || datagram.size() > kMaxDatagramBytes) {
     NoteRejected();
     return;
   }
-  AssocId id{};
-  std::memcpy(id.bytes.data(), datagram.data() + 2, kAssocIdBytes);
+  const AssocId id = WireCodec::PeekAssoc(datagram);
 
   if (auto conn = Find(id)) {
     conn->HandleDatagram(from, datagram, clock_->NowMs());
     return;
   }
-  if (!accept_enabled_ || !accept_key_) {
+  // A new association starts only from a plain (HMAC'd) handshake packet: a sealed one names keys nobody here has.
+  auto type = WireCodec::PeekType(datagram);
+  if (!accept_enabled_ || !accept_key_ || !type || IsSealed(*type)) {
     NoteRejected();
     return;
   }
