@@ -118,8 +118,17 @@ public:
   void MarkWarm();
   void MarkHot();
   void ClearWarm();
-  bool IsWarm() const { return keepalive_tier_ != KeepaliveTier::None; }
-  KeepaliveTier GetKeepaliveTier() const { return keepalive_tier_; }
+  /** Kept alive (warm or hot) by a product mark or by a channel open on it. */
+  bool IsWarm() const { return GetKeepaliveTier() != KeepaliveTier::None; }
+  /** The highest of the product mark (MarkWarm / MarkHot) and the open channels' ChannelPolicy::keepalive. */
+  KeepaliveTier GetKeepaliveTier() const;
+  /** The product mark alone (what MarkWarm / MarkHot / ClearWarm set). */
+  KeepaliveTier MarkedKeepaliveTier() const { return keepalive_tier_; }
+  /**
+   * Nothing keeps the link alive any more (no mark, no channel asking) but it still announces a cadence:
+   * tell the peer it stopped, as ClearWarm does, so both ends return to the cold window.
+   */
+  void StopKeepaliveIfUnheld();
 
   /** Scheduled keepalive announcing `interval_ms` (echo requested — docs/KEEPALIVE.md). */
   LinkRoe SendKeepalive(int64_t now_ms, uint32_t interval_ms);

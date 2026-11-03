@@ -6,6 +6,7 @@
 #include "amp/link/Types.h"
 #include "amp/L2/SessionControl.h"
 
+#include <algorithm>
 #include <functional>
 #include <limits>
 
@@ -559,17 +560,28 @@ void PeerLink::AttachMuxTransport() {
   });
 }
 
+KeepaliveTier PeerLink::GetKeepaliveTier() const {
+  return std::max(keepalive_tier_, mux_ ? mux_->ChannelsKeepaliveTier() : KeepaliveTier::None);
+}
+
+void PeerLink::StopKeepaliveIfUnheld() {
+  if (!connection_ || IsCarrierBacked() || connection_->LocalKeepaliveIntervalMs() == 0 ||
+      GetKeepaliveTier() != KeepaliveTier::None) {
+    return;
+  }
+  last_keepalive_tx_ms_ = 0;
+  (void)connection_->StopKeepalive(host_.now_ms ? host_.now_ms() : 0);
+}
+
 void PeerLink::MarkWarm() { keepalive_tier_ = KeepaliveTier::Warm; }
 
 void PeerLink::MarkHot() { keepalive_tier_ = KeepaliveTier::Hot; }
 
 void PeerLink::ClearWarm() {
   keepalive_tier_ = KeepaliveTier::None;
-  last_keepalive_tx_ms_ = 0;
-  // Back to the cold liveness window on both sides.
-  if (connection_ && !IsCarrierBacked()) {
-    (void)connection_->StopKeepalive(host_.now_ms ? host_.now_ms() : 0);
-  }
+  // Back to the cold liveness window on both sides — unless a channel open on the link still keeps it up
+  // (a call's path on a link chat had warmed): the mark is cleared, the channel's tier stays.
+  StopKeepaliveIfUnheld();
 }
 
 PeerLink::LinkRoe PeerLink::SendKeepalive(const int64_t now_ms, const uint32_t interval_ms) {

@@ -118,6 +118,8 @@ public:
    */
   void SetProtection(std::shared_ptr<const IPacketProtection> protection);
   bool Sealing() const { return protection_ != nullptr; }
+  /** The HMAC key before UpgradeBinder (the pre-session key), kept for the handshake's own packets (see below). */
+  bool HasPreUpgradeKeyForTest() const { return pre_upgrade_key_.has_value(); }
   IpEndpoint PeerEndpoint() const { return peer_; }
   /** Amp-clock ms of the last authenticated RX; 0 if none yet. */
   int64_t LastAuthRxMs() const { return last_auth_rx_ms_; }
@@ -175,14 +177,22 @@ public:
 private:
   Connection(Endpoint& endpoint, OpenParams params);
 
-  Roe<void> SendPacket(PacketType type, uint32_t seq, std::span<const uint8_t> payload,
-                       int64_t now_ms);
+  Roe<void> SendPacket(PacketType type, uint32_t seq, std::span<const uint8_t> payload, int64_t now_ms,
+                       const PeerKey* key = nullptr);
   /** A sealed packet: its clear header, then `payload` sealed by protection_ under (space, number = seq). */
   Roe<std::vector<uint8_t>> SealDatagram(PacketType type, uint32_t seq, std::span<const uint8_t> payload) const;
   /** Open a sealed datagram into a WirePacket (seq = its number), or fail: forged, or no keys yet. */
   Roe<WirePacket> OpenDatagram(std::span<const uint8_t> datagram, int64_t now_ms) const;
   /** Plain data after the session has keys: only a handshake duplicate passes (to be acked), else dropped. */
   bool RefusePlainAfterKeys(const WirePacket& pkt);
+  /**
+   * A datagram that fails the current key but passes the pre-upgrade one. The handshake straddles the upgrade: the
+   * end that finishes first upgrades while its last handshake packet (and the peer's ack of it) may still be in
+   * flight under the old key. Taken only to settle those packets — an ack of one we sent under the old key, or a
+   * duplicate of the peer's (acked, never delivered again). The pre-session key is public, so nothing else from it
+   * is trusted: no delivery, no liveness, no path move.
+   */
+  void HandlePreUpgradeKeyPacket(const WirePacket& pkt, int64_t now_ms);
   Roe<void> SendPacketAsFailure(PacketType type, uint32_t seq, std::span<const uint8_t> payload,
                                 int64_t now_ms);
   uint32_t TruncTs(int64_t now_ms) const;
@@ -195,6 +205,8 @@ private:
   AssocId id_{};
   HmacBinder binder_;
   std::shared_ptr<const IPacketProtection> protection_;
+  /** Set by the first UpgradeBinder: the key the handshake's packets went out under. */
+  std::optional<PeerKey> pre_upgrade_key_;
   IpEndpoint peer_{};
   OpenParams params_;
   bool closed_ = false;
@@ -240,6 +252,8 @@ private:
   struct Outstanding {
     /** Sent plain or sealed: a resend goes as it first went (the peer may not have keys yet). */
     PacketType type = PacketType::PlainReliable;
+    /** Sent before UpgradeBinder: resent under pre_upgrade_key_, the key the peer may still be checking with. */
+    bool before_upgrade = false;
     uint32_t seq = 0;
     std::vector<uint8_t> payload;
     int64_t next_rtx_ms = 0;
