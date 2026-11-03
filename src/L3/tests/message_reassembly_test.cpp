@@ -130,5 +130,31 @@ TEST(MessageReassemblyTest, CapsConcurrentPartialMessages) {
   EXPECT_EQ(done->value(), (std::vector<uint8_t>{'a', 'b'}));
 }
 
+// A lossy channel (BestEffort media) loses fragments for good: past the cap the oldest incomplete message gives way,
+// and the newer ones still assemble — the channel never fails over messages it will never get.
+TEST(MessageReassemblyTest, ALossyChannelDropsTheOldestIncompleteMessageInsteadOfFailing) {
+  MessageReassembly asmbl(256 * 1024, /*max_partials=*/2, /*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(asmbl.Push(MakeFrag(100, 0, 2, {'a'}, 2), 10))); // its second fragment was lost
+  ASSERT_TRUE(static_cast<bool>(asmbl.Push(MakeFrag(101, 0, 2, {'b'}, 2), 20))); // and this one's
+  for (uint64_t msg = 102; msg < 200; ++msg) {                                   // a long call of lost fragments
+    auto pushed = asmbl.Push(MakeFrag(msg, 0, 2, {'c'}, 2), static_cast<int64_t>(msg));
+    ASSERT_TRUE(static_cast<bool>(pushed)) << "message " << msg << ": " << pushed.error().message;
+  }
+  auto done = asmbl.Push(MakeFrag(199, 1, 2, {'d'}, 2), 300);
+  ASSERT_TRUE(static_cast<bool>(done));
+  ASSERT_TRUE(done->has_value()) << "the newest message still assembles";
+  EXPECT_EQ(done->value(), (std::vector<uint8_t>{'c', 'd'}));
+  // The oldest gave way: its late fragment starts a fresh partial, not a completed message.
+  auto late = asmbl.Push(MakeFrag(100, 1, 2, {'z'}, 2), 301);
+  ASSERT_TRUE(static_cast<bool>(late));
+  EXPECT_FALSE(late->has_value());
+}
+
+TEST(MessageReassemblyTest, AReliableChannelStillRefusesPastTheCap) {
+  MessageReassembly asmbl(256 * 1024, /*max_partials=*/1, /*lossy=*/false);
+  ASSERT_TRUE(static_cast<bool>(asmbl.Push(MakeFrag(1, 0, 2, {'a'}, 2), 0)));
+  EXPECT_FALSE(static_cast<bool>(asmbl.Push(MakeFrag(2, 0, 2, {'a'}, 2), 0))) << "a reliable peer never loses one";
+}
+
 } // namespace
 } // namespace pp::amp

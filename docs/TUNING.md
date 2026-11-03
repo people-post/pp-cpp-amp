@@ -32,7 +32,7 @@ through (pp-browser app lab `group_call_on_the_road`).
 |-------|---------|---------|
 | `max_concurrent_channels` | 256 | Open channels per link; further OPENs are refused |
 | `max_queued_bytes` | 32 MiB | Reliable bytes waiting for window space; sends beyond fail |
-| `frag_assembly_timeout_ms` | 30 000 | A fragmented message not completed in time is dropped |
+| `frag_assembly_timeout_ms` | 30 000 | A fragmented message not completed in time is dropped (Reliable channels; a lossy — BestEffort — channel drops its own after `kLossyFragAssemblyTimeoutMs`, 1 s, and drops the oldest incomplete one past the 64-partial cap instead of failing the channel) |
 
 The existing `PeerLinkConfig` fields (dial timeouts, keepalive intervals, link
 caps, `network_change_grace`) are tunable as before.

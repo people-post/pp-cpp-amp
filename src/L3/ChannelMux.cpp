@@ -7,6 +7,15 @@ namespace pp::amp {
 
 namespace {
 
+/** A channel's reassembly: lossy (BestEffort) channels drop an incomplete message instead of failing on it. */
+MessageReassembly ReassemblyFor(const ChannelPolicy& policy) {
+  return MessageReassembly(policy.max_message_bytes, 64, QosForClass(policy.cls) == adp::QosClass::BestEffort);
+}
+
+} // namespace
+
+namespace {
+
 inline constexpr size_t kMaxSingleDataBytes = 900;
 
 int64_t DefaultNowMs() { return 0; }
@@ -168,7 +177,7 @@ Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPo
   rec.protocol_id = protocol_id;
   rec.policy = std::move(policy);
   rec.state = ChannelState::Opening;
-  rec.reassembly = MessageReassembly(rec.policy.max_message_bytes);
+  rec.reassembly = ReassemblyFor(rec.policy);
   if (!channels_.emplace(id, std::move(rec)).second) {
     return Error("amp mux: channel id already recorded");
   }
@@ -219,7 +228,7 @@ Roe<void> ChannelMux::ApplyChannelPolicy(const uint32_t channel_id, ChannelPolic
     policy.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
   }
   channel->policy = std::move(policy);
-  channel->reassembly = MessageReassembly(channel->policy.max_message_bytes);
+  channel->reassembly = ReassemblyFor(channel->policy);
   channel->read_clock_ms = -1;  // a (re)bound reader gets a full read_timeout
   return Roe<void>();
 }
@@ -323,7 +332,7 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
     const size_t ceiling = LocalMaxMessageBytesCeiling(rec.policy.cls);
     rec.policy.max_message_bytes = offered > ceiling ? ceiling : offered;
   }
-  rec.reassembly = MessageReassembly(rec.policy.max_message_bytes);
+  rec.reassembly = ReassemblyFor(rec.policy);
   rec.state = ChannelState::Open;
   channels_.emplace(rec.id, std::move(rec));
   if (auto it = pending_handlers_.find(frame.header.channel_id); it != pending_handlers_.end()) {
@@ -654,7 +663,8 @@ void ChannelMux::ExpireIdleReaders(const int64_t now_ms) {
 
 void ChannelMux::Tick(const int64_t now_ms) {
   for (auto& [_, channel] : channels_) {
-    channel.reassembly.SweepExpired(now_ms, tuning_.frag_assembly_timeout_ms);
+    channel.reassembly.SweepExpired(
+        now_ms, channel.reassembly.Lossy() ? kLossyFragAssemblyTimeoutMs : tuning_.frag_assembly_timeout_ms);
   }
   ExpireIdleReaders(now_ms);
   FlushQueued();
