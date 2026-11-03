@@ -26,15 +26,6 @@ public:
   static Roe<std::vector<uint8_t>> OpenPacket(const ByteVector& key, Direction direction, uint32_t session_epoch,
                                               adp::PacketSpace space, uint32_t number, std::span<const uint8_t> header,
                                               std::span<const uint8_t> sealed);
-
-  static ByteVector BuildAad(uint32_t session_epoch, uint32_t channel_id, uint32_t channel_seq, Direction direction);
-
-  static Roe<std::vector<uint8_t>> Seal(const ByteVector& key, uint32_t session_epoch, uint32_t channel_id,
-                                        uint32_t channel_seq, Direction direction,
-                                        std::span<const uint8_t> plaintext);
-
-  static Roe<std::vector<uint8_t>> Open(const ByteVector& key, uint32_t session_epoch, uint32_t channel_id,
-                                       uint32_t channel_seq, Direction direction, std::span<const uint8_t> sealed);
 };
 
 } // namespace pp::amp

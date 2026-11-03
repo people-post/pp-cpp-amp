@@ -27,7 +27,7 @@ TEST(ChannelWireTest, OpenRoundTrip) {
 
 TEST(ChannelWireTest, OpenDecodesLegacyWithoutMaxMessageBytes) {
   // Header + len-prefixed "/x" + class + flags; no trailing max_message_bytes u32.
-  std::vector<uint8_t> wire = {1, 0, 7, 0, 0, 0, 0, 0, 0, 0};
+  std::vector<uint8_t> wire = {0, 7, 0, 0, 0, 0, 0, 0, 0};
   wire.push_back(2);
   wire.push_back(0);
   wire.push_back(0);
@@ -42,6 +42,20 @@ TEST(ChannelWireTest, OpenDecodesLegacyWithoutMaxMessageBytes) {
   ASSERT_TRUE(static_cast<bool>(decoded));
   EXPECT_EQ(decoded->open.protocol_id, "/x");
   EXPECT_EQ(decoded->open.max_message_bytes, 0u);
+}
+
+// Type, channel id, channel seq: 9 bytes, no version byte (the packet's first byte carries the wire version; A029 H1).
+TEST(ChannelWireTest, GoldenDataHeaderLayout) {
+  ChannelFrame frame;
+  frame.header.frame_type = ChannelFrameType::Data;
+  frame.header.channel_id = 0x04030201u;
+  frame.header.channel_seq = 0x08070605u;
+  frame.payload = {0xaa};
+  auto wire = ChannelWire::Encode(frame);
+  ASSERT_TRUE(static_cast<bool>(wire));
+  const std::vector<uint8_t> expected = {static_cast<uint8_t>(ChannelFrameType::Data), 1, 2, 3, 4, 5, 6, 7, 8, 0xaa};
+  EXPECT_EQ(*wire, expected);
+  EXPECT_EQ(kChannelHeaderBytes, 9u);
 }
 
 TEST(ChannelWireTest, DataRoundTrip) {

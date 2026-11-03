@@ -100,6 +100,13 @@ TEST(PacketCryptoTest, AnotherSpaceNumberEpochOrDirectionDoesNotOpen) {
   EXPECT_FALSE(opens(Direction::ResponderToInitiator, 1, PacketSpace::Reliable, 7));
 }
 
+TEST(PacketCryptoTest, AnotherKeyDoesNotOpen) {
+  const auto sealed = Seal(CountingKey(), Direction::InitiatorToResponder, 1, PacketSpace::Reliable, 7);
+  EXPECT_FALSE(
+      static_cast<bool>(SessionCrypto::OpenPacket(ByteVector(kSessionKeyBytes, 0x6b), Direction::InitiatorToResponder,
+                                                  1, PacketSpace::Reliable, 7, kHeader, sealed)));
+}
+
 // The clear header is the associated data: a changed type, connection id or number byte fails the tag.
 TEST(PacketCryptoTest, ATamperedHeaderOrBodyDoesNotOpen) {
   const ByteVector key = CountingKey();

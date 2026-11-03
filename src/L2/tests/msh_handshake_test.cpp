@@ -33,9 +33,9 @@ TEST(MshHandshakeTest, RunEstablishesComplementarySessions) {
   ASSERT_TRUE(static_cast<bool>(bob));
 
   const std::vector<uint8_t> msg = {'p', 'i', 'n', 'g'};
-  auto sealed = alice->Seal(1, 1, msg);
-  ASSERT_TRUE(static_cast<bool>(sealed));
-  auto opened = bob->Open(1, 1, *sealed);
+  std::vector<uint8_t> sealed;
+  ASSERT_TRUE(static_cast<bool>(alice->SealPacket(adp::PacketSpace::Reliable, 1, {}, msg, sealed)));
+  auto opened = bob->OpenPacket(adp::PacketSpace::Reliable, 1, {}, sealed, 0);
   ASSERT_TRUE(static_cast<bool>(opened));
   EXPECT_EQ(*opened, msg);
 

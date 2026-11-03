@@ -104,35 +104,35 @@ bool RunA1(const int warmup, const int iters) {
 }
 
 bool RunA2(const int warmup, const int iters) {
-  std::printf("\n== A2 SessionCrypto Seal/Open ==\n");
+  std::printf("\n== A2 SessionCrypto SealPacket/OpenPacket ==\n");
   const size_t payloads[] = {64, 900, 4096};
   bool ok = true;
   const auto key = SessionKey(0x55);
   uint32_t seq = 1;
   for (const size_t payload_len : payloads) {
     std::vector<uint8_t> plain(payload_len, 0xCD);
-    auto sealed0 = pp::amp::SessionCrypto::Seal(key, 1, 7, seq, pp::amp::Direction::InitiatorToResponder, plain);
-    if (!sealed0) {
+    const std::array<uint8_t, pp::adp::kSealedHeaderBytes> header{};
+    const auto dir = pp::amp::Direction::InitiatorToResponder;
+    const auto space = pp::adp::PacketSpace::BestEffort;
+    std::vector<uint8_t> sealed0;
+    if (!pp::amp::SessionCrypto::SealPacket(key, dir, 1, space, seq, header, plain, sealed0)) {
       std::fprintf(stderr, "A2 seal failed payload=%zu\n", payload_len);
       return false;
     }
-    auto opened0 =
-        pp::amp::SessionCrypto::Open(key, 1, 7, seq, pp::amp::Direction::InitiatorToResponder, *sealed0);
+    auto opened0 = pp::amp::SessionCrypto::OpenPacket(key, dir, 1, space, seq, header, sealed0);
     if (!opened0 || *opened0 != plain) {
       std::fprintf(stderr, "A2 open failed payload=%zu\n", payload_len);
       return false;
     }
 
     auto samples = TimeLoop(warmup, iters, [&] {
-      const uint32_t channel_seq = seq++;
-      auto sealed =
-          pp::amp::SessionCrypto::Seal(key, 1, 7, channel_seq, pp::amp::Direction::InitiatorToResponder, plain);
-      if (!sealed) {
+      const uint32_t number = seq++;
+      std::vector<uint8_t> sealed;
+      if (!pp::amp::SessionCrypto::SealPacket(key, dir, 1, space, number, header, plain, sealed)) {
         ok = false;
         return;
       }
-      auto opened =
-          pp::amp::SessionCrypto::Open(key, 1, 7, channel_seq, pp::amp::Direction::InitiatorToResponder, *sealed);
+      auto opened = pp::amp::SessionCrypto::OpenPacket(key, dir, 1, space, number, header, sealed);
       if (!opened || *opened != plain) {
         ok = false;
       }
@@ -306,8 +306,7 @@ bool RunC4(const int warmup, const int iters) {
     // Re-entrant enqueue during the first transport callback keeps write_inflight_ set
     // so Drop Oldest fires. Only burst once — later drains must not re-enter the burst.
     bool did_burst = false;
-    link.initiator.mux.SetTransport([&](uint32_t channel_id, uint32_t channel_seq, pp::adp::QosClass qos,
-                                        std::vector<uint8_t> sealed) -> pp::Roe<void> {
+    link.initiator.mux.SetTransport([&](pp::adp::QosClass qos, std::vector<uint8_t> wire) -> pp::Roe<void> {
       (void)qos;
       if (!did_burst) {
         did_burst = true;
@@ -318,7 +317,7 @@ bool RunC4(const int warmup, const int iters) {
           }
         }
       }
-      (void)link.responder.mux.OnSealedInbound(channel_id, channel_seq, sealed);
+      (void)link.responder.mux.OnFrameInbound(wire);
       return pp::Roe<void>();
     });
 

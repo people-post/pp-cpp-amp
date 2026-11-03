@@ -13,7 +13,7 @@ struct AmpTestPeer {
   Session session;
   ChannelMux mux;
 
-  explicit AmpTestPeer(Session s) : session(std::move(s)), mux(session) {}
+  explicit AmpTestPeer(Session s) : session(std::move(s)), mux(session.Material().initiator) {}
 };
 
 struct AmpTestLink {
@@ -58,15 +58,13 @@ struct AmpTestLink {
 
 private:
   void WireTransport() {
-    initiator.mux.SetPeerSession(&responder.session);
-    responder.mux.SetPeerSession(&initiator.session);
-    initiator.mux.SetTransport([this](uint32_t ch, uint32_t seq, adp::QosClass, std::vector<uint8_t> sealed) {
-      (void)initiator.mux.LastSendQos();
-      (void)responder.mux.OnSealedInbound(ch, seq, sealed);
+    // Frames cross in the clear: the link seals them on a real stack (L1 / PeerLink tests cover that).
+    initiator.mux.SetTransport([this](adp::QosClass, std::vector<uint8_t> frame) {
+      (void)responder.mux.OnFrameInbound(frame);
       return Roe<void>();
     });
-    responder.mux.SetTransport([this](uint32_t ch, uint32_t seq, adp::QosClass, std::vector<uint8_t> sealed) {
-      (void)initiator.mux.OnSealedInbound(ch, seq, sealed);
+    responder.mux.SetTransport([this](adp::QosClass, std::vector<uint8_t> frame) {
+      (void)initiator.mux.OnFrameInbound(frame);
       return Roe<void>();
     });
   }

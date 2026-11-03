@@ -1,6 +1,7 @@
 #pragma once
 
 #include "amp/L1/Connection.h"
+#include "amp/L1/ReplayWindow.h"
 #include "amp/L3/Capability.h"
 #include "amp/L3/ChannelMux.h"
 #include "amp/L3/ChannelSession.h"
@@ -202,6 +203,10 @@ private:
   void HandleCarrierFrame(std::span<const uint8_t> payload);
   void HandleLaneFrame(AmpAdpPayloadKind kind, std::span<const uint8_t> payload);
   void DeliverSealedCarrierWire(std::span<const uint8_t> wire);
+  /** An opened frame to the mux, once Connected (a sealed packet before then is dropped; reliable ones resend). */
+  void DeliverFrame(std::span<const uint8_t> frame);
+  /** A carrier-backed link's packet: [kind][number] then `frame` sealed with the session's keys (A029 H1). */
+  Roe<std::vector<uint8_t>> SealCarrierFrame(adp::QosClass qos, std::span<const uint8_t> frame);
   void FlushLaneBacklog();
   /** Announce the reliable lane (an ack with nothing acked); older peers drop the unknown kind. */
   void SendLaneProbe();
@@ -209,6 +214,13 @@ private:
   void StartHandshakeCommon(MshAdpHandshake::Role role, CompleteCb on_established);
 
   static Failure WrapConnectionFailure(const adp::Connection::Failure& child);
+
+  /**
+   * A carrier-backed link's replay windows: a hop between the two ends could replay an inner packet, and only the
+   * window turns it away. The reliable one is wide: a lane resend arrives late, past newer best-effort traffic.
+   */
+  static constexpr size_t kCarrierBestEffortReplayWindow = 128;
+  static constexpr size_t kCarrierReliableReplayWindow = 1024;
 
   LinkId link_id_;
   uint32_t generation_ = 0;
@@ -235,7 +247,13 @@ private:
   std::optional<CapabilityPayload> remote_capability_;
 
   std::unique_ptr<MshAdpHandshake> handshake_;
-  std::unique_ptr<Session> session_;
+  /** Shared with the connection, which seals and opens with it (adp::IPacketProtection). */
+  std::shared_ptr<Session> session_;
+  /** Carrier-backed only: inner packet numbers, per space (the nonce's), and their replay windows. */
+  uint32_t carrier_tx_be_ = 0;
+  uint32_t carrier_tx_rel_ = 0;
+  adp::ReplayWindow carrier_rx_be_{kCarrierBestEffortReplayWindow, /*slide_on_gap=*/true};
+  adp::ReplayWindow carrier_rx_rel_{kCarrierReliableReplayWindow, /*slide_on_gap=*/true};
   std::unique_ptr<ChannelMux> mux_;
   ByteVector master_ikm_;
   ByteVector transcript_hash_;

@@ -380,8 +380,7 @@ struct WindowedTransport {
 
   void Attach(test::AmpTestLink& link) {
     link.initiator.mux.SetTransportCredits([this] { return window > outstanding ? window - outstanding : 0; });
-    link.initiator.mux.SetTransport([this, &link](uint32_t ch, uint32_t seq, adp::QosClass qos,
-                                                  std::vector<uint8_t> sealed) {
+    link.initiator.mux.SetTransport([this, &link](adp::QosClass qos, std::vector<uint8_t> frame) {
       if (qos == adp::QosClass::Reliable) {
         if (outstanding >= window) {
           return Roe<void>(Error("adp: window full"));
@@ -389,7 +388,7 @@ struct WindowedTransport {
         ++outstanding;
       }
       ++sends;
-      (void)link.responder.mux.OnSealedInbound(ch, seq, sealed);
+      (void)link.responder.mux.OnFrameInbound(frame);
       return Roe<void>();
     });
   }

@@ -33,12 +33,6 @@ public:
   Roe<std::vector<uint8_t>> OpenPacket(adp::PacketSpace space, uint32_t number, std::span<const uint8_t> header,
                                        std::span<const uint8_t> sealed, int64_t now_ms) const override;
 
-  Roe<std::vector<uint8_t>> Seal(uint32_t channel_id, uint32_t channel_seq,
-                                 std::span<const uint8_t> plaintext) const;
-
-  Roe<std::vector<uint8_t>> Open(uint32_t channel_id, uint32_t channel_seq, std::span<const uint8_t> sealed,
-                                 int64_t now_ms = 0) const;
-
   /** Bump epoch and re-derive directional keys (assoc key unchanged). */
   Roe<void> Rekey();
 
