@@ -111,11 +111,4 @@ struct PeerLinkConfig {
  */
 Roe<void> ValidatePeerLinkConfig(const PeerLinkConfig& config);
 
-/** Scheduled keepalive tier on a connected link (see docs/KEEPALIVE.md). */
-enum class KeepaliveTier {
-  None = 0,
-  Warm = 1,
-  Hot = 2,
-};
-
 } // namespace pp::amp

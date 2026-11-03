@@ -120,6 +120,8 @@ public:
    */
   bool HasOpenChannelsBesidesCapability() const;
   ChannelClass Class(uint32_t channel_id) const;
+  /** The highest ChannelPolicy::keepalive among channels open or opening on this mux. */
+  KeepaliveTier ChannelsKeepaliveTier() const;
   adp::QosClass LastSendQos() const { return last_send_qos_; }
 
   static Roe<void> SendCapabilityOffer(ChannelMux& mux, const CapabilityPayload& offer);

@@ -9,6 +9,17 @@
 
 namespace pp::amp {
 
+/**
+ * Scheduled keepalive tier on a connected link (see docs/KEEPALIVE.md). A link keeps the highest tier
+ * that its product mark (PeerLinkManager::MarkWarm / MarkHot) or any channel open on it (ChannelPolicy::keepalive)
+ * asks for.
+ */
+enum class KeepaliveTier {
+  None = 0,
+  Warm = 1,
+  Hot = 2,
+};
+
 enum class ChannelDropPolicy {
   Never,
   Oldest,
@@ -30,6 +41,12 @@ struct ChannelPolicy {
    */
   std::chrono::milliseconds read_timeout{0};
   std::function<void()> on_outbound_drop;
+  /**
+   * While this channel is open (bound), its link keeps at least this keepalive tier: a link that must stay
+   * alive because of what rides it (a call's standby path) says so by the channel, and the tier goes when
+   * the channel closes — whatever else shares the link keeps its own.
+   */
+  KeepaliveTier keepalive = KeepaliveTier::None;
 };
 
 /** Generic reliable JSON / control RPC profile (chat, history, dial-back, …). */
@@ -72,7 +89,9 @@ inline ChannelPolicy BulkChannelPolicy() { return MakeBulkChannelPolicy(); }
 
 /**
  * Call-media / realtime frames: BestEffort + drop Oldest under outbound burst.
- * No read timeout by default: a muted or paused stream is legitimately silent.
+   * No read timeout by default: a muted or paused stream is legitimately silent. No keepalive tier: carriers
+ * and relay data lanes build on it, and their links' tiers are their owners' (a call's own control channel
+ * keeps its path hot — pp-cpp-mesh CallMediaControlChannelPolicy).
  */
 inline ChannelPolicy CallMediaChannelPolicy(std::chrono::milliseconds read_timeout = std::chrono::milliseconds{0}) {
   ChannelPolicy policy;
