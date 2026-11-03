@@ -13,6 +13,8 @@ inline constexpr uint32_t kCapabilityChannelId = 0;
 inline constexpr const char* kCapabilityProtocolId = "/pp-amp/capability/1.0.0";
 inline constexpr uint32_t kIllegalChannelId = 0xFFFF'FFFFu;
 inline constexpr int64_t kDefaultFragAssemblyTimeoutMs = 30'000;
+/** A lossy (BestEffort) channel's partial message expires sooner: its sender never resends a fragment. */
+inline constexpr int64_t kLossyFragAssemblyTimeoutMs = 1'000;
 
 enum class ChannelFrameType : uint8_t {
   Open = 0,

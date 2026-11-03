@@ -2,8 +2,20 @@
 
 namespace pp::amp {
 
-MessageReassembly::MessageReassembly(const size_t max_message_bytes, const size_t max_partials)
-    : max_message_bytes_(max_message_bytes), max_partials_(max_partials) {}
+MessageReassembly::MessageReassembly(const size_t max_message_bytes, const size_t max_partials, const bool lossy)
+    : max_message_bytes_(max_message_bytes), max_partials_(max_partials), lossy_(lossy) {}
+
+void MessageReassembly::DropOldestPartial() {
+  auto oldest = partial_.begin();
+  for (auto it = partial_.begin(); it != partial_.end(); ++it) {
+    if (it->second.started_ms < oldest->second.started_ms) {
+      oldest = it;
+    }
+  }
+  if (oldest != partial_.end()) {
+    partial_.erase(oldest);
+  }
+}
 
 Roe<std::optional<std::vector<uint8_t>>> MessageReassembly::Push(const ChannelFragBody& frag, const int64_t now_ms) {
   if (frag.frag_count == 0 || frag.frag_index >= frag.frag_count) {
@@ -24,7 +36,10 @@ Roe<std::optional<std::vector<uint8_t>>> MessageReassembly::Push(const ChannelFr
     // A cap independent of max_message_bytes_: without it, a peer can open one in-flight partial
     // per distinct msg_id without ever completing any of them.
     if (partial_.size() >= max_partials_) {
-      return Error("amp ch: too many in-flight partial messages");
+      if (!lossy_) {
+        return Error("amp ch: too many in-flight partial messages");
+      }
+      DropOldestPartial(); // lost to a dropped fragment: make room, the newer one is wanted
     }
     it = partial_.emplace(frag.msg_id, Partial{}).first;
     it->second.frag_count = frag.frag_count;
