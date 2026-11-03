@@ -59,6 +59,25 @@ Roe<std::vector<uint8_t>> Session::Open(const uint32_t channel_id, const uint32_
   return opened.error();
 }
 
+Roe<void> Session::SealPacket(const adp::PacketSpace space, const uint32_t number,
+                              const std::span<const uint8_t> header, const std::span<const uint8_t> plaintext,
+                              std::vector<uint8_t>& out) const {
+  return SessionCrypto::SealPacket(material_.k_send, OutDirection(), material_.session_epoch, space, number, header,
+                                   plaintext, out);
+}
+
+Roe<std::vector<uint8_t>> Session::OpenPacket(const adp::PacketSpace space, const uint32_t number,
+                                              const std::span<const uint8_t> header,
+                                              const std::span<const uint8_t> sealed, const int64_t now_ms) const {
+  auto opened = SessionCrypto::OpenPacket(material_.k_recv, InDirection(), material_.session_epoch, space, number,
+                                          header, sealed);
+  if (opened || !HasGraceRecvKey(now_ms)) {
+    return opened;
+  }
+  return SessionCrypto::OpenPacket(*previous_recv_key_, InDirection(), material_.session_epoch - 1, space, number,
+                                   header, sealed);
+}
+
 Roe<void> Session::Rekey() {
   material_.session_epoch += 1;
   auto refreshed = SessionKeys::Derive(master_ikm_, transcript_hash_, material_.initiator, material_.session_epoch);
