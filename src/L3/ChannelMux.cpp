@@ -3,6 +3,8 @@
 #include "amp/L3/AmpChannelLimits.h"
 #include "amp/L3/Capability.h"
 
+#include <algorithm>
+
 namespace pp::amp {
 
 namespace {
@@ -598,6 +600,17 @@ ChannelClass ChannelMux::Class(const uint32_t channel_id) const {
     return ch->policy.cls;
   }
   return ChannelClass::Control;
+}
+
+KeepaliveTier ChannelMux::ChannelsKeepaliveTier() const {
+  KeepaliveTier tier = KeepaliveTier::None;
+  for (const auto& [id, channel] : channels_) {
+    (void)id;
+    if (channel.state == ChannelState::Open || channel.state == ChannelState::Opening) {
+      tier = std::max(tier, channel.policy.keepalive);
+    }
+  }
+  return tier;
 }
 
 Roe<void> ChannelMux::SendCapabilityOffer(ChannelMux& mux, const CapabilityPayload& offer) {

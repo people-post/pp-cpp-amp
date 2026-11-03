@@ -40,9 +40,14 @@ On receipt: record the peer cadence; if echo is requested, reply at once with a 
 | Warm | `PeerLinkManager::MarkWarm` | `keepalive_warm_interval` (60 s) | Silent > window (dead-peer) |
 | Hot | `PeerLinkManager::MarkHot` | `keepalive_hot_interval` (20 s) | Silent > window (dead-peer) |
 
+A link keeps the **highest** of two sources (since v3.5.0):
+
+- **The product mark** — `MarkWarm` / `MarkHot` / `ClearWarm`, one slot per link (last write wins).
+- **Its open channels** — `ChannelPolicy::keepalive`: while a channel asking for a tier is open (or opening) on the link, at either end that bound it, the link keeps at least that tier; it goes when the channel closes. A link kept up because of what rides it says so by the channel (a call's paths: pp-cpp-mesh `CallMediaControlChannelPolicy`, on every path of a call — call-path-resilience K008), so links shared by several features (chat warms a peer, a call rides the same link) never undo each other: a call ending leaves chat's warm mark, and `ClearWarm` leaves an open channel's tier.
+
 - **Any** Connected ADP link with a warm/hot tier sends scheduled keepalives — inbound too.
 - Warm/hot links are **not** exempt from eviction: with echoes, silence past the window means dead (reason `connection-dead` in `LinkEvent`). A closed Connection is evicted immediately (B25).
-- `ClearWarm` sends a stop notice (cadence 0, no echo) so both ends return to the cold window.
+- `ClearWarm` — and the last channel asking for a tier closing — sends a stop notice (cadence 0, no echo) so both ends return to the cold window, unless the other source still keeps the link up.
 - `PeerLinkManager::Tick` sends due keepalives **before** eviction, so a freshly warmed link announces its cadence before it is judged against the cold window.
 
 Configure cadences via `PeerLinkConfig::keepalive_hot_interval` / `keepalive_warm_interval`; products choose tiers (pp-browser: call-path-resilience K008).

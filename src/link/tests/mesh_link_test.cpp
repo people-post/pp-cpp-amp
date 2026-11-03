@@ -188,6 +188,116 @@ TEST(MeshLinkTest, ALostFinishedFromTheAnsweringSideStillConnects) {
   EXPECT_LT(took, 3000) << "connected only after " << took << " ms";
 }
 
+/** A long-lived channel that keeps its link hot while open (a call's standby path, call-path-resilience K008). */
+ChannelPolicy HotChannelPolicy() {
+  ChannelPolicy policy = ControlJsonChannelPolicy(std::chrono::milliseconds{0});
+  policy.read_once = false;
+  policy.keepalive = KeepaliveTier::Hot;
+  return policy;
+}
+
+constexpr const char* kHotProtocol = "/test/hot/1";
+
+/** A→bob associated, a HotChannelPolicy channel open at both ends (bob binds it with the same policy). */
+struct HotChannelLink {
+  uint32_t channel_id = 0;
+  PeerLink* a = nullptr;
+  PeerLink* b = nullptr;
+};
+
+std::optional<HotChannelLink> OpenHotChannel(MeshLinkFixture& f) {
+  auto bob_addr = FormatAdpMultiaddr(f.addr_b, "QmBob");
+  if (!bob_addr || !f.mgr_a->RegisterEndpoint("bob", *bob_addr)) {
+    return std::nullopt;
+  }
+  f.mgr_b->SetProtocolHandler(kHotProtocol, [&f](LinkHandle link, const std::string&, uint32_t ch) {
+    f.mgr_b->WithLiveLink(link,
+                          [&](PeerLink& inbound) { (void)inbound.Mux()->ApplyChannelPolicy(ch, HotChannelPolicy()); });
+  });
+  bool associated = false;
+  f.mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  f.PumpUntil([&] { return associated && f.mgr_b->FindConnectedInboundLink() != nullptr; });
+  std::optional<uint32_t> id;
+  f.mgr_a->OpenChannel("bob", kHotProtocol, HotChannelPolicy(), [&](PeerLinkManager::ChannelRoe ch) {
+    if (ch.isOk()) {
+      id = ch.value();
+    }
+  });
+  f.PumpUntil([&] {
+    auto* a = f.mgr_a->FindLink("bob");
+    return id && a && a->Mux()->State(*id) == ChannelState::Open;
+  });
+  HotChannelLink out;
+  out.a = f.mgr_a->FindLink("bob");
+  out.b = f.mgr_b->FindConnectedInboundLink();
+  if (!id || !out.a || !out.b) {
+    return std::nullopt;
+  }
+  out.channel_id = *id;
+  return out;
+}
+
+// call-path-resilience K008: a call's standby path carries nothing until a failover, and a cold link is
+// evicted after 5 s of silence. Its channels keep the link hot — at both ends, since both bind them — so it
+// survives the silence; the tier goes with the channel.
+TEST(MeshLinkTest, AnOpenHotChannelKeepsItsSilentLinkAliveAndTheTierGoesWithIt) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto hot = OpenHotChannel(*fixture);
+  ASSERT_TRUE(hot.has_value());
+  EXPECT_EQ(hot->a->GetKeepaliveTier(), KeepaliveTier::Hot);
+  EXPECT_EQ(hot->b->GetKeepaliveTier(), KeepaliveTier::Hot);
+  EXPECT_EQ(hot->a->MarkedKeepaliveTier(), KeepaliveTier::None) << "no product mark: the channel asks";
+
+  const auto a_handle = hot->a->Handle();
+  fixture->PumpTimed([] { return false; }, 3 * adp::kAliveTimeoutMs, 100);
+  bool a_alive = false;
+  fixture->mgr_a->WithLiveLink(a_handle, [&](PeerLink& link) { a_alive = link.Phase() == PeerLinkPhase::Connected; });
+  ASSERT_TRUE(a_alive) << "a silent link with a hot channel outlived the cold window";
+  auto* b = fixture->mgr_b->FindConnectedInboundLink();
+  ASSERT_NE(b, nullptr);
+  EXPECT_GT(b->ConnectionOrNull()->LocalKeepaliveIntervalMs(), 0u) << "bob keeps it up too";
+
+  auto* a = fixture->mgr_a->FindLink("bob");
+  ASSERT_TRUE(static_cast<bool>(a->Mux()->CloseChannel(hot->channel_id)));
+  fixture->PumpTimed([] { return false; }, 300, 100);
+  a = fixture->mgr_a->FindLink("bob");
+  b = fixture->mgr_b->FindConnectedInboundLink();
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  EXPECT_EQ(a->GetKeepaliveTier(), KeepaliveTier::None);
+  EXPECT_EQ(a->ConnectionOrNull()->LocalKeepaliveIntervalMs(), 0u) << "stopped, and told bob";
+  EXPECT_EQ(b->ConnectionOrNull()->LocalKeepaliveIntervalMs(), 0u);
+  EXPECT_EQ(b->ConnectionOrNull()->PeerKeepaliveIntervalMs(), 0u) << "bob heard A stop";
+}
+
+// Messaging and calls share links: chat warms a peer, a call's channel makes the same link hot. The call
+// ending (its channel closing) leaves chat's warm tier, and chat's ClearWarm leaves the call's hot one.
+TEST(MeshLinkTest, ChatsWarmMarkAndACallsHotChannelShareALink) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_a->MarkWarm("bob");
+  auto hot = OpenHotChannel(*fixture);
+  ASSERT_TRUE(hot.has_value());
+  EXPECT_EQ(hot->a->MarkedKeepaliveTier(), KeepaliveTier::Warm);
+  EXPECT_EQ(hot->a->GetKeepaliveTier(), KeepaliveTier::Hot) << "the higher of the two";
+
+  fixture->mgr_a->ClearWarm("bob");
+  EXPECT_EQ(hot->a->GetKeepaliveTier(), KeepaliveTier::Hot) << "a cleared mark leaves the channel's tier";
+  fixture->PumpTimed([] { return false; }, 300, 100);
+  EXPECT_GT(hot->a->ConnectionOrNull()->LocalKeepaliveIntervalMs(), 0u) << "and its keepalives";
+
+  fixture->mgr_a->MarkWarm("bob");
+  ASSERT_TRUE(static_cast<bool>(hot->a->Mux()->CloseChannel(hot->channel_id)));
+  fixture->PumpTimed([] { return false; }, 300, 100);
+  auto* a = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(a, nullptr);
+  EXPECT_EQ(a->GetKeepaliveTier(), KeepaliveTier::Warm) << "the call is over; chat's warm mark stays";
+  EXPECT_GT(a->ConnectionOrNull()->LocalKeepaliveIntervalMs(), 0u);
+}
+
 TEST(MeshLinkTest, EnsureAssociationOverMemoryIo) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();

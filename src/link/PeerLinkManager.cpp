@@ -1415,6 +1415,7 @@ void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
     }
     const auto tier = link.GetKeepaliveTier();
     if (tier == KeepaliveTier::None) {
+      link.StopKeepaliveIfUnheld(); // the last channel keeping it up closed
       return;
     }
     const int64_t interval_ms = tier == KeepaliveTier::Hot ? book_.Config().keepalive_hot_interval.count()
