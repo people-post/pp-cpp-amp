@@ -318,7 +318,8 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   if (closed_) {
     return Failure::Of(Err::Closed, "adp: send on closed connection");
   }
-  if (payload.size() > kMaxPayload) {
+  // A sealed packet's header and tag are smaller than an HMAC packet's: it carries a little more.
+  if (payload.size() > (Sealing() ? kMaxSealedPayload : kMaxPayload)) {
     return Failure::Of(Err::PayloadTooLarge, "adp: payload too large");
   }
   const int64_t now = endpoint_->GetClock().NowMs();

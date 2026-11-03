@@ -207,6 +207,8 @@ private:
   void DeliverFrame(std::span<const uint8_t> frame);
   /** A carrier-backed link's packet: [kind][number] then `frame` sealed with the session's keys (A029 H1). */
   Roe<std::vector<uint8_t>> SealCarrierFrame(adp::QosClass qos, std::span<const uint8_t> frame);
+  /** A carrier-backed link's frame budget: what one outer DATA frame carries, less the inner packet's wrapping. */
+  size_t CarrierMaxFrameBytes() const;
   void FlushLaneBacklog();
   /** Announce the reliable lane (an ack with nothing acked); older peers drop the unknown kind. */
   void SendLaneProbe();

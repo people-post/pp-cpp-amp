@@ -1067,6 +1067,24 @@ TEST(MeshLinkTest, AConnectedLinkSealsItsDataAtBothEnds) {
   EXPECT_TRUE(b_seals);
 }
 
+// A029 H1: a nested link's largest packet (its frame budget, sealed, in the lane's wrapper) rides one DATA frame of
+// the outer link whole — before, a full 900 B frame was fragmented again by the outer mux.
+TEST(MeshLinkTest, ANestedLinksLargestPacketFitsOneOuterFrame) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+  auto* nested_a = FindNestedLink(*fixture, nested->nested_key);
+  auto* outer_a = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(nested_a, nullptr);
+  ASSERT_NE(outer_a, nullptr);
+  const size_t inner_packet =
+      kCarrierLaneHeaderBytes + kCarrierSealedHeaderBytes + nested_a->Mux()->MaxFrameBytes() + adp::kPacketTagBytes;
+  EXPECT_EQ(inner_packet, outer_a->Mux()->MaxFrameBytes() - kChannelHeaderBytes);
+  EXPECT_GT(nested_a->Mux()->MaxFrameBytes(), 1100u);
+}
+
 // A029 H1: a nested link's inner packets carry their own numbers, and a hop between the ends that replays one is
 // turned away — on a best-effort channel nothing above would notice the duplicate.
 TEST(MeshLinkTest, ANestedLinkTurnsAwayAReplayedInnerPacket) {

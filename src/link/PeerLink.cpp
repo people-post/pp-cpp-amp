@@ -282,6 +282,14 @@ void PeerLink::DeliverFrame(const std::span<const uint8_t> frame) {
   (void)mux_->OnFrameInbound(frame);
 }
 
+size_t PeerLink::CarrierMaxFrameBytes() const {
+  // An inner packet must ride one DATA frame of the outer link whole (the hop's bridge forwards it as it is): a
+  // frame larger than this would be fragmented twice, once by each mux.
+  const size_t outer =
+      carrier_ && carrier_->Mux() ? carrier_->Mux()->MaxFrameBytes() : ChannelMux::kDirectMaxFrameBytes;
+  return outer - kChannelHeaderBytes - kCarrierLaneHeaderBytes - kCarrierSealedHeaderBytes - adp::kPacketTagBytes;
+}
+
 Roe<std::vector<uint8_t>> PeerLink::SealCarrierFrame(const adp::QosClass qos, const std::span<const uint8_t> frame) {
   if (!session_) {
     return Error("amp link: no session to seal with");
@@ -440,6 +448,9 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   }
   session_ = std::make_shared<Session>(std::move(*session));
   mux_ = std::make_unique<ChannelMux>(session_->Material().initiator);
+  if (IsCarrierBacked()) {
+    mux_->SetMaxFrameBytes(CarrierMaxFrameBytes());
+  }
   if (connection_) {
     connection_->SetProtection(session_); // data goes sealed from here (A029 H1)
   }

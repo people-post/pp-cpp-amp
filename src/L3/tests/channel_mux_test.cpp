@@ -399,6 +399,56 @@ struct WindowedTransport {
   }
 };
 
+/** Records each frame's size; frames cross to the responder as AmpTestLink's do. */
+struct SizeRecordingTransport {
+  std::vector<size_t> sizes;
+  void Attach(test::AmpTestLink& link) {
+    link.initiator.mux.SetTransport([this, &link](adp::QosClass, std::vector<uint8_t> frame) {
+      sizes.push_back(frame.size());
+      (void)link.responder.mux.OnFrameInbound(frame);
+      return Roe<void>();
+    });
+  }
+};
+
+// A029 H1: the link's budget, not a fixed 900 B, decides when a message fragments, and fragments fill it.
+TEST(ChannelMuxTest, AMessageFragmentsOnlyPastTheLinksFrameBudgetAndFillsIt) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  EXPECT_EQ(link.initiator.mux.MaxFrameBytes(),
+            adp::kMaxDatagramBytes - adp::kSealedHeaderBytes - adp::kPacketTagBytes);
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  SizeRecordingTransport transport;
+  transport.Attach(link);
+  std::vector<std::vector<uint8_t>> received;
+  link.responder.mux.SetDataHandler(
+      *ch, [&](uint32_t, std::vector<uint8_t> payload) { received.push_back(std::move(payload)); });
+  const size_t budget = link.initiator.mux.MaxFrameBytes();
+
+  const std::vector<uint8_t> whole(budget - kChannelHeaderBytes, 0x11);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, whole)));
+  ASSERT_EQ(transport.sizes.size(), 1u) << "one DATA frame exactly at the budget";
+  EXPECT_EQ(transport.sizes[0], budget);
+
+  transport.sizes.clear();
+  const std::vector<uint8_t> over(whole.size() + 1, 0x22);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, over)));
+  ASSERT_EQ(transport.sizes.size(), 2u);
+  EXPECT_EQ(transport.sizes[0], budget) << "the first fragment fills the budget";
+  ASSERT_EQ(received.size(), 2u);
+  EXPECT_EQ(received[1], over);
+
+  transport.sizes.clear();
+  link.initiator.mux.SetMaxFrameBytes(600);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(1000, 0x33))));
+  for (const size_t size : transport.sizes) {
+    EXPECT_LE(size, 600u);
+  }
+  EXPECT_EQ(transport.sizes.size(), 2u);
+}
+
 // Regression: a message needing more fragments than the window had room for
 // was refused ("transport window full"); ChannelSession then closed the
 // channel and the reply was lost. It now waits for room and arrives whole.
@@ -409,7 +459,7 @@ TEST(ChannelMuxTest, FragWaitsForWindowThenDeliversWholeMessage) {
   auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
   ASSERT_TRUE(static_cast<bool>(ch));
   WindowedTransport transport;
-  transport.window = 1;  // 2500 B needs 3 FRAG frames @ 900 B
+  transport.window = 1; // 2500 B needs 3 FRAG frames (a direct link's chunk is 1178 B)
   transport.Attach(link);
 
   std::vector<uint8_t> received;

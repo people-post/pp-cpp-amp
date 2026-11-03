@@ -22,6 +22,8 @@ enum class PacketSpace : uint8_t {
 
 /** The AEAD tag a sealed packet ends with. */
 inline constexpr size_t kPacketTagBytes = 16;
+/** The largest payload a sealed packet carries: the largest datagram less its clear header and tag. */
+inline constexpr size_t kMaxSealedPayload = kMaxDatagramBytes - kSealedHeaderBytes - kPacketTagBytes;
 
 /**
  * Seals and opens one association's data packets: an AEAD whose nonce is derived from the packet's space and number,

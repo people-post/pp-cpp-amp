@@ -26,6 +26,8 @@ enum class AmpAdpPayloadKind : uint8_t {
 
 /** A sealed carrier packet's clear header: kind, packet number. Its associated data. */
 inline constexpr size_t kCarrierSealedHeaderBytes = 1 + 4;
+/** The reliable lane's wrapper around an inner packet: kind, lane seq. */
+inline constexpr size_t kCarrierLaneHeaderBytes = 1 + 4;
 
 /** A sealed carrier packet's clear header, decoded. */
 struct CarrierSealedHeader {

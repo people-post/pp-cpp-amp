@@ -16,8 +16,6 @@ MessageReassembly ReassemblyFor(const ChannelPolicy& policy) {
 
 namespace {
 
-inline constexpr size_t kMaxSingleDataBytes = 900;
-
 int64_t DefaultNowMs() { return 0; }
 
 /**
@@ -470,7 +468,8 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     return Error("amp mux: payload too large");
   }
 
-  if (payload.size() <= kMaxSingleDataBytes) {
+  const size_t max_single = max_frame_bytes_ - kChannelHeaderBytes;
+  if (payload.size() <= max_single) {
     ChannelFrame frame;
     frame.header.frame_type = ChannelFrameType::Data;
     frame.header.channel_id = channel_id;
@@ -484,9 +483,9 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     return Roe<void>();
   }
 
+  const size_t chunk_bytes = max_frame_bytes_ - kChannelHeaderBytes - kChannelFragFieldsBytes;
   const uint64_t msg_id = next_frag_msg_id_++;
-  const uint16_t frag_count =
-      static_cast<uint16_t>((payload.size() + kMaxSingleDataBytes - 1) / kMaxSingleDataBytes);
+  const uint16_t frag_count = static_cast<uint16_t>((payload.size() + chunk_bytes - 1) / chunk_bytes);
   // Fragments the window cannot take now wait in the send queue, so a message
   // larger than the window (or several at once) still goes out in full.
   const adp::QosClass qos = QosForClass(channel->policy.cls);
@@ -495,8 +494,8 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     return Error("amp mux: send queue full");
   }
   for (uint16_t i = 0; i < frag_count; ++i) {
-    const size_t offset = static_cast<size_t>(i) * kMaxSingleDataBytes;
-    const size_t chunk_len = std::min(kMaxSingleDataBytes, payload.size() - offset);
+    const size_t offset = static_cast<size_t>(i) * chunk_bytes;
+    const size_t chunk_len = std::min(chunk_bytes, payload.size() - offset);
     ChannelHeader header;
     header.frame_type = ChannelFrameType::Frag;
     header.channel_id = channel_id;

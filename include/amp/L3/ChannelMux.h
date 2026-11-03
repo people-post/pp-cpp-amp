@@ -1,5 +1,6 @@
 #pragma once
 
+#include "amp/L1/PacketProtection.h"
 #include "amp/L1/Types.h"
 #include "amp/L3/AmpChannelLimits.h"
 #include "amp/L3/Capability.h"
@@ -50,6 +51,15 @@ public:
   void SetTransportCredits(TransportCredits credits);
   void SetClock(std::function<int64_t()> now_ms);
   void SetTuning(const MuxTuning& tuning) { tuning_ = tuning; }
+
+  /**
+   * The largest encoded frame its transport carries in one packet (the link's budget, A029 H1): a payload that fits
+   * with a frame header goes as one DATA frame, a larger one as FRAG chunks that fill the budget.
+   */
+  void SetMaxFrameBytes(size_t bytes) { max_frame_bytes_ = bytes; }
+  size_t MaxFrameBytes() const { return max_frame_bytes_; }
+  /** A direct ADP link's budget: one sealed packet's payload. */
+  static constexpr size_t kDirectMaxFrameBytes = adp::kMaxSealedPayload;
 
   /** Allocate id and send OPEN (local initiator). Pass fixed_id for reserved channels (e.g. 0). */
   Roe<uint32_t> OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,
@@ -185,6 +195,7 @@ private:
   void ExpireIdleReaders(int64_t now_ms);
 
   TransportSend transport_;
+  size_t max_frame_bytes_ = kDirectMaxFrameBytes;
   TransportCredits transport_credits_;
   std::unordered_map<uint32_t, std::deque<QueuedFrame>> send_queues_;
   /** Channels with queued frames, in round-robin order. */
