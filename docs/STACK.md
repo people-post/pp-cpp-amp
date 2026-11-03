@@ -6,12 +6,23 @@ Amp layer map and product entry points.
 
 | Layer | Headers | Role |
 |-------|---------|------|
-| L1 ADP | `amp/L1/` | UDP association, Reliable/BestEffort, HMAC binder |
-| L2 MSH | `amp/L2/` | Session handshake, AEAD, rekey, session control |
-| L3 mux | `amp/L3/` | Channel OPEN/CLOSE, FRAG, Bulk credit, capability codec |
+| L1 ADP | `amp/L1/` | UDP association, Reliable/BestEffort, sealed data packets (through `IPacketProtection`), HMAC for the handshake and control packets |
+| L2 MSH | `amp/L2/` | Session handshake, the packet AEAD (nonce from the packet number), rekey, session control |
+| L3 mux | `amp/L3/` | Channel OPEN/CLOSE, FRAG to the link's frame budget, Bulk credit, capability codec |
 | Link | `amp/link/` | Dial book, PeerLink, MeshRuntime / MeshPump |
 
 Dependencies: `pp-cpp-common` + `pp-cpp-crypto` only. No product L4.
+
+### Wire v2 (since v4.0.0)
+
+One packet, sealed once. A data packet is the version/type byte, the 8 B association id and the packet number in
+the clear, then the frame sealed with the session's keys: XChaCha20-Poly1305, the nonce derived from direction, packet
+space, key epoch and packet number (never sent), the clear header as associated data — 29 B around the frame. The frame
+(type, channel id, channel seq, fragment fields) travels sealed. Handshake and control packets (ack, close, keepalive)
+keep a sequence number, a timestamp and an HMAC (33 B). The largest datagram is 1232 B, IPv6's smallest MTU less its
+headers; a link's mux fragments to what one packet carries (`ChannelMux::SetMaxFrameBytes`). A carrier-backed link
+seals its inner packets the same way, `[kind][number]` in the clear, each space with its own replay window. Peers on
+wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
 
 ## Product entry
 

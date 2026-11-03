@@ -4,9 +4,9 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 
 ## Goals
 
-- Isolate **L1 HMAC**, **L2 AEAD**, and **L3 FRAG** before blaming `AmpStack`.
+- Isolate **L1 HMAC** (handshake / control), the **packet AEAD**, and **L3 FRAG** before blaming `AmpStack`.
 - Prefer **MemoryDatagramIo** for CPU/alloc baselines; **OsUdpDatagramIo** for real latency.
-- Shape workloads from product limits (`AmpChannelLimits`, ADP `kMaxPayload=1200`, FRAG chunk **900 B**).
+- Shape workloads from product limits (`AmpChannelLimits`, ADP `kMaxDatagramBytes=1232`: `kMaxPayload=1199`, a direct link's FRAG chunk **1178 B**).
 - Report **distributions** (p50/p95/p99); CSV lines prefixed with `csv,`.
 - Keep CI light; heavier link counts via env.
 
@@ -14,11 +14,11 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 
 | ID | What | Status |
 |----|------|--------|
-| **A1** | Wire+HMAC 0/600/1200 | **scaffold** |
-| **A2** | SessionCrypto Seal/Open 64/900/4KiB | **scaffold** |
+| **A1** | Wire+HMAC 0/600/max (HMAC packets) | **scaffold** |
+| **A2** | SessionCrypto SealPacket/OpenPacket 64/900/4KiB | **scaffold** |
 | **A3** | FRAG ChannelWire encode only | **scaffold** |
 | **B1** | Reliable + loss 0/5/10% | **scaffold** |
-| **B2** | BestEffort flood 1200 B | **scaffold** |
+| **B2** | BestEffort flood at the largest payload | **scaffold** |
 | **B3** | Media ~40 B proc latency (50 pps clock) | **scaffold** |
 | **OsUdp** | Loopback Reliable ~76 KiB | **scaffold** |
 | **C1–C4** | Assoc / open+data / FRAG / Drop Oldest | **scaffold** |
