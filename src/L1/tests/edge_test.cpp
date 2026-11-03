@@ -317,4 +317,92 @@ TEST_F(AdpEdgeTest, DuplicateOpenSameAssocFails) {
   EXPECT_NE(c2.error().message.find("assoc already open"), std::string::npos);
 }
 
+// The handshake straddles the HMAC key upgrade: the end that finishes first upgrades while its last handshake packet,
+// or the peer's ack of it, may still be in flight under the pre-session key. A two-person group call over a lossy
+// link hardly connected (dogfood 2026-11-03): a lost Finished was resent under the new key, the peer still checked the
+// old one, and the dial timed out.
+struct UpgradePair {
+  Pair p = MakePair();
+  std::shared_ptr<pp::adp::Connection> a;
+  std::shared_ptr<pp::adp::Connection> b;
+  std::vector<std::vector<uint8_t>> at_a;
+  std::vector<std::vector<uint8_t>> at_b;
+
+  UpgradePair() {
+    pp::adp::OpenParams op;
+    op.key = Key(9); // the pre-session key
+    op.id = Aid();
+    op.mint_id = false;
+    op.peer = p.addr_b;
+    a = *p.ep_a->Open(op);
+    op.peer = p.addr_a;
+    b = *p.ep_b->Open(op);
+    a->OnMessage([this](const pp::adp::Message& m) { at_a.push_back(m.payload); });
+    b->OnMessage([this](const pp::adp::Message& m) { at_b.push_back(m.payload); });
+  }
+  void Pump() {
+    for (int i = 0; i < 4; ++i) {
+      p.ep_a->Pump();
+      p.ep_b->Pump();
+    }
+  }
+  void ResendRound() {
+    p.clock->Advance(pp::adp::kMaxRtoMs);
+    a->Tick(p.clock->NowMs());
+    b->Tick(p.clock->NowMs());
+    Pump();
+  }
+};
+
+TEST_F(AdpEdgeTest, AHandshakePacketLostAcrossTheUpgradeIsResentUnderItsOwnKey) {
+  UpgradePair u;
+  u.p.io_b->DropNext(1); // B's last handshake packet (its Finished) is lost
+  ASSERT_TRUE(u.b->Send(pp::adp::QosClass::Reliable, std::vector<uint8_t>{'f', 'i', 'n'}));
+  u.b->UpgradeBinder(Key(2)); // B finished first
+  u.ResendRound();
+  ASSERT_EQ(u.at_a.size(), 1u) << "A, still on the pre-session key, takes the resend";
+  EXPECT_EQ(u.at_a[0], (std::vector<uint8_t>{'f', 'i', 'n'}));
+  // A's ack went out under the pre-session key; B, upgraded, still takes it for that packet.
+  EXPECT_EQ(u.b->ReliableCreditsRemaining(), pp::adp::kDefaultReliableWindow);
+}
+
+TEST_F(AdpEdgeTest, ALateHandshakeDuplicateUnderTheOldKeyIsAckedNotDeliveredAgain) {
+  UpgradePair u;
+  u.p.io_a->DropNext(1); // A's ack of B's packet is lost
+  ASSERT_TRUE(u.b->Send(pp::adp::QosClass::Reliable, std::vector<uint8_t>{'f', 'i', 'n'}));
+  u.Pump();
+  ASSERT_EQ(u.at_a.size(), 1u);
+  u.a->UpgradeBinder(Key(2)); // A finished on it; B has not upgraded yet
+  u.ResendRound();            // B resends under the pre-session key
+  EXPECT_EQ(u.at_a.size(), 1u) << "not delivered twice";
+  EXPECT_EQ(u.b->ReliableCreditsRemaining(), pp::adp::kDefaultReliableWindow) << "acked, B stops resending";
+}
+
+TEST_F(AdpEdgeTest, AfterTheUpgradeTheOldKeyOnlySettlesTheHandshake) {
+  UpgradePair u;
+  u.a->UpgradeBinder(Key(2));
+  // A fresh packet, a keepalive and a close under the public pre-session key: none is taken.
+  ASSERT_TRUE(u.b->Send(pp::adp::QosClass::Reliable, std::vector<uint8_t>{'n', 'e', 'w'}));
+  ASSERT_TRUE(u.b->SendKeepalive(u.p.clock->NowMs(), 1000));
+  u.Pump();
+  EXPECT_TRUE(u.at_a.empty());
+  EXPECT_EQ(u.a->PeerKeepaliveIntervalMs(), 0u);
+  EXPECT_EQ(u.b->ReliableCreditsRemaining(), pp::adp::kDefaultReliableWindow - 1) << "not acked";
+  EXPECT_EQ(u.a->LastAuthRxMs(), 0) << "no liveness from the old key";
+  u.b->Close();
+  u.Pump();
+  EXPECT_FALSE(u.a->IsClosed());
+}
+
+// After both ends upgrade, data under the new key flows as before and acks of it need the new key.
+TEST_F(AdpEdgeTest, AfterBothUpgradesDataIsUnderTheNewKey) {
+  UpgradePair u;
+  u.a->UpgradeBinder(Key(2));
+  u.b->UpgradeBinder(Key(2));
+  ASSERT_TRUE(u.b->Send(pp::adp::QosClass::Reliable, std::vector<uint8_t>{'d'}));
+  u.Pump();
+  ASSERT_EQ(u.at_a.size(), 1u);
+  EXPECT_EQ(u.b->ReliableCreditsRemaining(), pp::adp::kDefaultReliableWindow);
+}
+
 } // namespace

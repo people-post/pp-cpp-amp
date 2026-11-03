@@ -100,6 +100,9 @@ void Connection::SetPeerEndpoint(IpEndpoint peer) {
 }
 
 void Connection::UpgradeBinder(PeerKey key) {
+  if (!pre_upgrade_key_) {
+    pre_upgrade_key_ = binder_.Key();
+  }
   binder_.SetKey(key);
   params_.max_rtx = authenticated_max_rtx_;
   authenticated_ = true;
@@ -213,7 +216,7 @@ void Connection::DeliverReliableInOrder() {
 }
 
 Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std::span<const uint8_t> payload,
-                                 int64_t now_ms) {
+                                             int64_t now_ms, const PeerKey* key) {
   if (peer_.port == 0 && type != PacketType::Close) {
     // Allow send only if peer known (except we still encode close).
   }
@@ -228,7 +231,7 @@ Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std:
   if (!encoded) {
     return Failure::Of(Err::WireError, encoded.error().message);
   }
-  auto sealed = binder_.Seal(std::move(*encoded));
+  auto sealed = key ? HmacBinder(*key).Seal(std::move(*encoded)) : binder_.Seal(std::move(*encoded));
   if (!sealed) {
     return Failure::Of(Err::WireError, sealed.error().message);
   }
@@ -277,6 +280,7 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   }
   ++tx_seq_rel_;
   Outstanding o;
+  o.before_upgrade = !pre_upgrade_key_;
   o.seq = tx_seq_rel_;
   o.payload.assign(payload.begin(), payload.end());
   o.next_rtx_ms = now + RetransmitIntervalMs(0);
@@ -325,7 +329,10 @@ void Connection::Tick(int64_t now_ms) {
     o.next_rtx_ms = now_ms + RetransmitIntervalMs(o.attempts);
     endpoint_->NoteRetransmit();
     ++stats_.retransmits;
-    (void)SendPacket(PacketType::DataReliable, o.seq, o.payload, now_ms);
+    // Under the key it first went out with: the peer of a handshake that finished here first still checks the
+    // pre-session key, and a resend under the new one never got through (the dial timed out).
+    const PeerKey* key = o.before_upgrade && pre_upgrade_key_ ? &*pre_upgrade_key_ : nullptr;
+    (void)SendPacket(PacketType::DataReliable, o.seq, o.payload, now_ms, key);
   }
   // Drop permanently failed from front.
   while (!outstanding_.empty() && outstanding_.front().attempts >= params_.max_rtx &&
@@ -339,6 +346,12 @@ void Connection::Tick(int64_t now_ms) {
 void Connection::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram,
                                 int64_t now_ms) {
   if (!binder_.Verify(datagram)) {
+    if (pre_upgrade_key_ && HmacBinder(*pre_upgrade_key_).Verify(datagram)) {
+      if (auto decoded = WireCodec::Decode(datagram)) {
+        HandlePreUpgradeKeyPacket(*decoded, now_ms);
+        return;
+      }
+    }
     endpoint_->NoteRejected();
     return;
   }
@@ -348,6 +361,25 @@ void Connection::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t>
     return;
   }
   HandleAuthenticated(*decoded, from, now_ms);
+}
+
+void Connection::HandlePreUpgradeKeyPacket(const WirePacket& pkt, const int64_t now_ms) {
+  if (!AcceptSkew(pkt.timestamp_ms, now_ms)) {
+    return;
+  }
+  if (pkt.type == PacketType::Ack) {
+    // Only for a packet we sent under that key: a forged ack (anyone may hold the pre-session key) can stop a
+    // handshake resend at most, never data's.
+    outstanding_.erase(std::remove_if(outstanding_.begin(), outstanding_.end(),
+                                      [&](const Outstanding& o) { return o.before_upgrade && o.seq == pkt.seq; }),
+                       outstanding_.end());
+    return;
+  }
+  if (pkt.type == PacketType::DataReliable && rx_rel_.Classify(pkt.seq) == ReplayWindow::Verdict::Duplicate) {
+    // The peer's handshake packet again (our ack was lost or went out under the new key): ack it under the key it
+    // came with, which is the one the peer checks acks of it with.
+    (void)SendPacket(PacketType::Ack, pkt.seq, {}, now_ms, &*pre_upgrade_key_);
+  }
 }
 
 void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& from, int64_t now_ms) {
