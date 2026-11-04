@@ -202,8 +202,7 @@ private:
    * is trusted: no delivery, no liveness, no path move.
    */
   void HandlePreUpgradeKeyPacket(const WirePacket& pkt, int64_t now_ms);
-  Roe<void> SendPacketAsFailure(PacketType type, uint32_t seq, std::span<const uint8_t> payload,
-                                int64_t now_ms);
+  Roe<void> SendPacketAsFailure(PacketType type, uint32_t seq, std::span<const uint8_t> payload, int64_t now_ms);
   uint32_t TruncTs(int64_t now_ms) const;
   bool AcceptSkew(uint32_t ts, int64_t now_ms) const;
   void MaybeLearnPath(const IpEndpoint& from);

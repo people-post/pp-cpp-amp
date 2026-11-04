@@ -2,7 +2,6 @@
 
 #include "amp/L3/Types.h"
 
-
 #include <cstdint>
 #include <span>
 #include <string>
@@ -46,8 +45,7 @@ public:
   static Roe<std::vector<uint8_t>> Encode(const ChannelFrame& frame);
   /** Encode a FRAG frame from a payload span (avoids copying into ChannelFragBody::chunk). */
   static Roe<std::vector<uint8_t>> EncodeFrag(const ChannelHeader& header, uint64_t msg_id, uint16_t frag_index,
-                                              uint16_t frag_count, uint32_t total_len,
-                                              std::span<const uint8_t> chunk);
+                                              uint16_t frag_count, uint32_t total_len, std::span<const uint8_t> chunk);
   static Roe<ChannelFrame> Decode(std::span<const uint8_t> wire);
 
   static Roe<std::vector<uint8_t>> EncodeLenUtf8Le(std::string_view text);

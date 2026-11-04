@@ -65,7 +65,7 @@ public:
       });
     });
     if (!ran) {
-      task();  // the runtime is gone: nothing runs on its lane any more
+      task(); // the runtime is gone: nothing runs on its lane any more
     }
   }
 
@@ -79,7 +79,8 @@ MeshRuntime::MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, st
                          PeerLinkConfig config)
     : endpoint_(endpoint),
       links_(endpoint, std::move(local_identity), std::move(local_peer_id), std::move(config), io_mu_),
-      pump_(endpoint, links_), resolver_([this](std::function<void()> fn) { PostToIo(std::move(fn)); }) {
+      pump_(endpoint, links_),
+      resolver_([this](std::function<void()> fn) { PostToIo(std::move(fn)); }) {
   links_.SetCompletionPoster([this](std::function<void()> fn) { PostToIo(std::move(fn)); });
   links_.SetHostResolver([this](const std::string& host, HostFamily family, uint16_t port,
                                 std::function<void(Roe<adp::IpEndpoint>)> done) {
@@ -119,7 +120,7 @@ bool MeshRuntime::BeginDriveLocked() {
   }
   const std::thread::id claimed = claimed_driver_.load(std::memory_order_acquire);
   if (claimed != std::thread::id{} && claimed != std::this_thread::get_id()) {
-    refused_drives_.fetch_add(1, std::memory_order_relaxed);  // a second driver
+    refused_drives_.fetch_add(1, std::memory_order_relaxed); // a second driver
     return false;
   }
   driving_.store(true, std::memory_order_release);
@@ -132,9 +133,13 @@ void MeshRuntime::EndDriveLocked() {
   driving_.store(false, std::memory_order_release);
 }
 
-void MeshRuntime::ClaimDriver() { claimed_driver_.store(std::this_thread::get_id(), std::memory_order_release); }
+void MeshRuntime::ClaimDriver() {
+  claimed_driver_.store(std::this_thread::get_id(), std::memory_order_release);
+}
 
-void MeshRuntime::ReleaseDriver() { claimed_driver_.store(std::thread::id{}, std::memory_order_release); }
+void MeshRuntime::ReleaseDriver() {
+  claimed_driver_.store(std::thread::id{}, std::memory_order_release);
+}
 
 bool MeshRuntime::OnDriverThread() const {
   const std::thread::id self = std::this_thread::get_id();
@@ -163,7 +168,9 @@ void MeshRuntime::PumpLocked() {
   pump_.Pump();
 }
 
-void MeshRuntime::TickLocked() { pump_.Tick(); }
+void MeshRuntime::TickLocked() {
+  pump_.Tick();
+}
 
 void MeshRuntime::DrainPostedIoLocked() {
   for (size_t budget = 0; budget < 32 && !io_queue_.empty(); ++budget) {
@@ -360,18 +367,15 @@ void MeshRuntime::WhenChannelOpen(const DialKey& peer_key, uint32_t channel_id, 
   links_.WhenChannelOpen(peer_key, channel_id, deadline_ms_abs, std::move(done));
 }
 
-void MeshRuntime::WhenChannelOpenIn(const DialKey& peer_key, uint32_t channel_id,
-                                    std::chrono::milliseconds remaining,
+void MeshRuntime::WhenChannelOpenIn(const DialKey& peer_key, uint32_t channel_id, std::chrono::milliseconds remaining,
                                     std::function<void(bool ok)> done) {
   links_.WhenChannelOpenIn(peer_key, channel_id, remaining, std::move(done));
 }
 
 std::shared_ptr<ChannelSession> MeshRuntime::BindChannel(const DialKey& peer_key, uint32_t channel_id,
-                                                         ChannelPolicy policy,
-                                                         ChannelSession::FrameHandler on_frame,
+                                                         ChannelPolicy policy, ChannelSession::FrameHandler on_frame,
                                                          ChannelSession::ClosedCallback on_closed) {
-  return links_.BindChannel(peer_key, channel_id, std::move(policy), std::move(on_frame),
-                            std::move(on_closed));
+  return links_.BindChannel(peer_key, channel_id, std::move(policy), std::move(on_frame), std::move(on_closed));
 }
 
 LinkSnapshotEx MeshRuntime::SnapshotByDialKey(const DialKey& key) const {
@@ -402,10 +406,11 @@ Roe<void> MeshRuntime::RegisterEndpoint(const DialKey& peer_key, const std::stri
   return links_.RegisterEndpoint(peer_key, multiaddr);
 }
 
-void MeshRuntime::UnregisterEndpoint(const DialKey& peer_key) { links_.UnregisterEndpoint(peer_key); }
+void MeshRuntime::UnregisterEndpoint(const DialKey& peer_key) {
+  links_.UnregisterEndpoint(peer_key);
+}
 
-Roe<void> MeshRuntime::RegisterEndpoints(const DialKey& peer_key,
-                                         const std::vector<std::string>& multiaddrs) {
+Roe<void> MeshRuntime::RegisterEndpoints(const DialKey& peer_key, const std::vector<std::string>& multiaddrs) {
   return links_.RegisterEndpoints(peer_key, multiaddrs);
 }
 
@@ -445,15 +450,25 @@ std::optional<CapabilityExtension> MeshRuntime::RemoteCapabilityExtension(const 
   return links_.RemoteCapabilityExtension(peer_id);
 }
 
-void MeshRuntime::MarkWarm(const DialKey& peer_key) { links_.MarkWarm(peer_key); }
+void MeshRuntime::MarkWarm(const DialKey& peer_key) {
+  links_.MarkWarm(peer_key);
+}
 
-void MeshRuntime::MarkHot(const DialKey& peer_key) { links_.MarkHot(peer_key); }
+void MeshRuntime::MarkHot(const DialKey& peer_key) {
+  links_.MarkHot(peer_key);
+}
 
-void MeshRuntime::ClearWarm(const DialKey& peer_key) { links_.ClearWarm(peer_key); }
+void MeshRuntime::ClearWarm(const DialKey& peer_key) {
+  links_.ClearWarm(peer_key);
+}
 
-void MeshRuntime::ClearDialBackoff(const DialKey& peer_key) { links_.ClearDialBackoff(peer_key); }
+void MeshRuntime::ClearDialBackoff(const DialKey& peer_key) {
+  links_.ClearDialBackoff(peer_key);
+}
 
-void MeshRuntime::AbortInflightDial(const DialKey& peer_key) { links_.AbortInflightDial(peer_key); }
+void MeshRuntime::AbortInflightDial(const DialKey& peer_key) {
+  links_.AbortInflightDial(peer_key);
+}
 
 void MeshRuntime::NotifyNetworkChanged() {
   PostToIo([this]() { (void)links_.OnNetworkChanged(); });
@@ -487,8 +502,7 @@ void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chr
     }
   }
 
-  auto settle = [this](BurstDialResult result, BurstDialCb done,
-                       std::shared_ptr<std::vector<std::string>> keys,
+  auto settle = [this](BurstDialResult result, BurstDialCb done, std::shared_ptr<std::vector<std::string>> keys,
                        std::shared_ptr<std::vector<std::string>> peer_ids) {
     PostDeferred([this, result = std::move(result), done = std::move(done), keys = std::move(keys),
                   peer_ids = std::move(peer_ids)]() mutable {
@@ -500,8 +514,7 @@ void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chr
             continue;
           }
           auto snap = SnapshotByDialKey(key);
-          if (result.ok && snap.base.phase == PeerLinkPhase::Connected &&
-              snap.transport == TransportClass::Adp) {
+          if (result.ok && snap.base.phase == PeerLinkPhase::Connected && snap.transport == TransportClass::Adp) {
             continue;
           }
           AbortInflightDial(key);

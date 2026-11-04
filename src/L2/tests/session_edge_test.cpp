@@ -62,8 +62,8 @@ TEST(SessionEdgeTest, FromMaterialRejectsEmptyMasterOrTranscript) {
 TEST(SessionEdgeTest, AssocKeyMatchesMaterial) {
   auto established = MshHandshake::Run(MakeIdentity(), MakeIdentity());
   ASSERT_TRUE(static_cast<bool>(established));
-  auto session = Session::FromMaterial(established->initiator_material, established->master_ikm,
-                                       established->transcript_hash);
+  auto session =
+      Session::FromMaterial(established->initiator_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(session));
   const auto assoc = session->AssocKey();
   EXPECT_EQ(0, std::memcmp(assoc.bytes.data(), session->Material().k_assoc.data(), kAssocKeyBytes));
@@ -72,10 +72,10 @@ TEST(SessionEdgeTest, AssocKeyMatchesMaterial) {
 TEST(SessionEdgeTest, BidirectionalSealOpenAfterHandshake) {
   auto established = MshHandshake::Run(MakeIdentity(), MakeIdentity());
   ASSERT_TRUE(static_cast<bool>(established));
-  auto alice = Session::FromMaterial(established->initiator_material, established->master_ikm,
-                                     established->transcript_hash);
-  auto bob = Session::FromMaterial(established->responder_material, established->master_ikm,
-                                   established->transcript_hash);
+  auto alice =
+      Session::FromMaterial(established->initiator_material, established->master_ikm, established->transcript_hash);
+  auto bob =
+      Session::FromMaterial(established->responder_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(alice));
   ASSERT_TRUE(static_cast<bool>(bob));
 
@@ -97,8 +97,8 @@ TEST(SessionEdgeTest, BidirectionalSealOpenAfterHandshake) {
 TEST(SessionEdgeTest, ApplyRekeyRejectsUnexpectedEpoch) {
   auto established = MshHandshake::Run(MakeIdentity(), MakeIdentity());
   ASSERT_TRUE(static_cast<bool>(established));
-  auto session = Session::FromMaterial(established->initiator_material, established->master_ikm,
-                                       established->transcript_hash);
+  auto session =
+      Session::FromMaterial(established->initiator_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(session));
   EXPECT_FALSE(static_cast<bool>(session->ApplyRekey(3, 1000)));
   EXPECT_FALSE(static_cast<bool>(session->ApplyRekey(1, 1000)));
@@ -107,8 +107,8 @@ TEST(SessionEdgeTest, ApplyRekeyRejectsUnexpectedEpoch) {
 TEST(SessionEdgeTest, RekeyClearsGraceState) {
   auto established = MshHandshake::Run(MakeIdentity(), MakeIdentity());
   ASSERT_TRUE(static_cast<bool>(established));
-  auto bob = Session::FromMaterial(established->responder_material, established->master_ikm,
-                                   established->transcript_hash);
+  auto bob =
+      Session::FromMaterial(established->responder_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(bob));
   ASSERT_TRUE(static_cast<bool>(bob->ApplyRekey(2, 1000)));
   EXPECT_TRUE(bob->HasGraceRecvKey(1500));
@@ -119,10 +119,10 @@ TEST(SessionEdgeTest, RekeyClearsGraceState) {
 TEST(SessionEdgeTest, RekeyInvalidatesPriorEpochTraffic) {
   auto established = MshHandshake::Run(MakeIdentity(), MakeIdentity());
   ASSERT_TRUE(static_cast<bool>(established));
-  auto alice = Session::FromMaterial(established->initiator_material, established->master_ikm,
-                                     established->transcript_hash);
-  auto bob = Session::FromMaterial(established->responder_material, established->master_ikm,
-                                   established->transcript_hash);
+  auto alice =
+      Session::FromMaterial(established->initiator_material, established->master_ikm, established->transcript_hash);
+  auto bob =
+      Session::FromMaterial(established->responder_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(alice));
   ASSERT_TRUE(static_cast<bool>(bob));
 

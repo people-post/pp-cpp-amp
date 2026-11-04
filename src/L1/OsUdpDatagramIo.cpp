@@ -115,7 +115,9 @@ void CloseFd(int fd) {
 OsUdpDatagramIo::OsUdpDatagramIo(int fd, IpEndpoint local, UdpSocketOptions options)
     : fd_(fd), local_(local), options_(options) {}
 
-OsUdpDatagramIo::~OsUdpDatagramIo() { CloseSocket(); }
+OsUdpDatagramIo::~OsUdpDatagramIo() {
+  CloseSocket();
+}
 
 void OsUdpDatagramIo::CloseSocket() {
   if (fd_ >= 0) {
@@ -261,7 +263,7 @@ Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& lo
 }
 
 Roe<void> OsUdpDatagramIo::Reopen() {
-  CloseSocket();  // first: the new socket takes the same port
+  CloseSocket(); // first: the new socket takes the same port
   auto opened = OpenSocket(local_, options_);
   if (!opened) {
     return opened.error();
@@ -290,21 +292,20 @@ Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_
   } else {
     ToSockAddr(peer, ss, len);
   }
-  const auto n = ::sendto(fd_, reinterpret_cast<const char*>(datagram.data()),
-                          static_cast<int>(datagram.size()), 0, reinterpret_cast<sockaddr*>(&ss),
-                          len);
+  const auto n = ::sendto(fd_, reinterpret_cast<const char*>(datagram.data()), static_cast<int>(datagram.size()), 0,
+                          reinterpret_cast<sockaddr*>(&ss), len);
   if (n < 0 || static_cast<size_t>(n) != datagram.size()) {
 #if defined(_WIN32)
     const int err = WSAGetLastError();
-    const bool unreachable = err == WSAEHOSTUNREACH || err == WSAENETUNREACH || err == WSAEHOSTDOWN ||
-                             err == WSAENETDOWN;
+    const bool unreachable =
+        err == WSAEHOSTUNREACH || err == WSAENETUNREACH || err == WSAEHOSTDOWN || err == WSAENETDOWN;
 #else
     const int err = errno;
     const bool unreachable = err == EHOSTUNREACH || err == ENETUNREACH || err == EHOSTDOWN || err == ENETDOWN;
 #endif
-    return Error(unreachable ? kDatagramSendUnreachable : 0,
-                 std::string("adp udp: sendto dst=") + EndpointLabel(peer) + " src=" + EndpointLabel(local_) +
-                     " errno=" + std::to_string(err));
+    return Error(unreachable ? kDatagramSendUnreachable : 0, std::string("adp udp: sendto dst=") + EndpointLabel(peer) +
+                                                                 " src=" + EndpointLabel(local_) +
+                                                                 " errno=" + std::to_string(err));
   }
   return {};
 }
@@ -352,9 +353,8 @@ Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo:
     }
   }
 #else
-  const auto n =
-      ::recvfrom(fd_, reinterpret_cast<char*>(recv_scratch_.data()), static_cast<int>(recv_scratch_.size()), 0,
-                 reinterpret_cast<sockaddr*>(&ss), &len);
+  const auto n = ::recvfrom(fd_, reinterpret_cast<char*>(recv_scratch_.data()), static_cast<int>(recv_scratch_.size()),
+                            0, reinterpret_cast<sockaddr*>(&ss), &len);
 #endif
   if (n < 0) {
 #if defined(_WIN32)
@@ -370,8 +370,7 @@ Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo:
     return IoErr("recvfrom");
   }
   std::vector<uint8_t> buf(recv_scratch_.begin(), recv_scratch_.begin() + n);
-  return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{
-      {FromSockAddr(ss), std::move(buf)}};
+  return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{{FromSockAddr(ss), std::move(buf)}};
 }
 
 } // namespace pp::adp

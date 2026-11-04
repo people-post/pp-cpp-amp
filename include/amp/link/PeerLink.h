@@ -74,12 +74,12 @@ public:
   using LinkRoe = CodedRoe<void, Err>;
   using CompleteCb = std::function<void(LinkRoe)>;
 
-  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound,
-           std::shared_ptr<adp::Connection> connection, MshIdentity local_identity, PeerLinkHostPorts host);
+  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound, std::shared_ptr<adp::Connection> connection,
+           MshIdentity local_identity, PeerLinkHostPorts host);
 
   /** Nested Session over circuit carrier (no ADP Connection). */
-  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound,
-           std::shared_ptr<ChannelSession> carrier, MshIdentity local_identity, PeerLinkHostPorts host);
+  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound, std::shared_ptr<ChannelSession> carrier,
+           MshIdentity local_identity, PeerLinkHostPorts host);
 
   ~PeerLink();
 
@@ -94,9 +94,7 @@ public:
   PeerLinkPhase Phase() const { return phase_; }
   bool IsOutbound() const { return outbound_; }
   bool IsCarrierBacked() const { return carrier_ != nullptr; }
-  TransportClass Transport() const {
-    return IsCarrierBacked() ? TransportClass::Carrier : TransportClass::Adp;
-  }
+  TransportClass Transport() const { return IsCarrierBacked() ? TransportClass::Carrier : TransportClass::Adp; }
   LinkId Id() const { return link_id_; }
   uint32_t Generation() const { return generation_; }
   LinkHandle Handle() const { return LinkHandle{link_id_, generation_}; }
@@ -113,9 +111,7 @@ public:
   Session* GetSession() { return session_.get(); }
   ChannelSession* Carrier() { return carrier_.get(); }
 
-  const CapabilityPayload* RemoteCapability() const {
-    return remote_capability_ ? &*remote_capability_ : nullptr;
-  }
+  const CapabilityPayload* RemoteCapability() const { return remote_capability_ ? &*remote_capability_ : nullptr; }
 
   void MarkWarm();
   void MarkHot();
@@ -149,7 +145,7 @@ public:
   /** Asked to prove it is alive (PeerLinkManager::VerifyLink): the same probing, its own drop reason. */
   void MarkVerifying(int64_t now_ms) {
     if (suspect_since_ms_ != 0) {
-      return;  // already probing (a network change): that verdict answers this too
+      return; // already probing (a network change): that verdict answers this too
     }
     suspect_since_ms_ = now_ms;
     last_probe_ms_ = 0;
@@ -206,7 +202,7 @@ public:
 
   /** Exercises the MshChunk reassembly bound directly, without a live handshake. */
   Roe<std::optional<std::vector<uint8_t>>> PushMshChunkForTest(MshMessageType type, uint16_t index, uint16_t count,
-                                                                std::span<const uint8_t> chunk) {
+                                                               std::span<const uint8_t> chunk) {
     return PushMshChunk(type, index, count, chunk);
   }
 
@@ -291,7 +287,7 @@ private:
   std::function<void(Roe<void>)> rekey_cb_;
   int64_t handshake_started_ms_ = 0;
   Roe<std::optional<std::vector<uint8_t>>> PushMshChunk(MshMessageType type, uint16_t index, uint16_t count,
-                                                         std::span<const uint8_t> chunk);
+                                                        std::span<const uint8_t> chunk);
   bool punched_ = false;
 };
 

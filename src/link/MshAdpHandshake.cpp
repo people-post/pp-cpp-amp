@@ -76,9 +76,9 @@ Roe<std::vector<uint8_t>> MshAdpHandshake::EncodeHello(const MshMessageType type
 }
 
 Roe<MshPayload> MshAdpHandshake::BuildLocalPayload(const KemState& kem, const ByteVector& remote_kem_pk,
-                                                     ByteVector& shared_secret_out) {
-  if (identity_.ml_dsa_public_key.size() != pp::kMlDsa65PublicKeyBytes
-      || identity_.ml_dsa_secret_key.size() != pp::kMlDsa65SecretKeyBytes) {
+                                                   ByteVector& shared_secret_out) {
+  if (identity_.ml_dsa_public_key.size() != pp::kMlDsa65PublicKeyBytes ||
+      identity_.ml_dsa_secret_key.size() != pp::kMlDsa65SecretKeyBytes) {
     return Error("amp msh adp: bad identity key sizes");
   }
   auto encap = ::pp::MlKem::Encapsulate(remote_kem_pk);
@@ -104,7 +104,10 @@ Roe<MshPayload> MshAdpHandshake::BuildLocalPayload(const KemState& kem, const By
 
 MshAdpHandshake::MshAdpHandshake(const Role role, MshIdentity identity, SendWire send, CompleteHandler on_complete,
                                  const bool chunked_wire)
-    : role_(role), identity_(std::move(identity)), send_(std::move(send)), on_complete_(std::move(on_complete)),
+    : role_(role),
+      identity_(std::move(identity)),
+      send_(std::move(send)),
+      on_complete_(std::move(on_complete)),
       chunked_wire_(chunked_wire) {}
 
 Roe<void> MshAdpHandshake::SendMessage(const MshMessageType type, const std::span<const uint8_t> body) {
@@ -163,35 +166,127 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
 
   if (role_ == Role::Responder) {
     switch (type) {
-    case MshMessageType::ClientHello: {
-      if (started_) {
-        return Error("amp msh adp: duplicate client hello");
+      case MshMessageType::ClientHello: {
+        if (started_) {
+          return Error("amp msh adp: duplicate client hello");
+        }
+        started_ = true;
+        auto parsed = MshMessages::DecodeHello(MshMessageType::ClientHello, body);
+        if (!parsed) {
+          return Fail(parsed.error().message);
+        }
+        remote_hello_ = std::move(*parsed);
+        AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
+
+        auto kem = NewEphemeralKem();
+        if (!kem) {
+          return Fail(kem.error().message);
+        }
+        local_kem_ = std::move(*kem);
+        auto server_hello = EncodeHello(MshMessageType::ServerHello, *local_kem_);
+        if (!server_hello) {
+          return Fail(server_hello.error().message);
+        }
+        AppendPart(transcript_, *server_hello);
+        return SendMessage(MshMessageType::ServerHello, *server_hello);
       }
-      started_ = true;
-      auto parsed = MshMessages::DecodeHello(MshMessageType::ClientHello, body);
+      case MshMessageType::ClientPayload: {
+        if (!remote_hello_ || !local_kem_) {
+          return Error("amp msh adp: client payload out of order");
+        }
+        auto parsed = MshMessages::DecodePayload(MshMessageType::ClientPayload, body);
+        if (!parsed) {
+          return Fail(parsed.error().message);
+        }
+        if (auto verified = VerifyPayload(*parsed); !verified) {
+          return Fail(verified.error().message);
+        }
+        if (parsed->static_kem_public_key != remote_hello_->kem_public_key) {
+          return Fail("amp msh adp: client payload kem key does not match client hello");
+        }
+        remote_payload_ = std::move(*parsed);
+        AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
+
+        auto client_ss = ::pp::MlKem::Decapsulate(local_kem_->ephemeral_secret, remote_payload_->kem_ciphertext);
+        if (!client_ss) {
+          return Fail(client_ss.error().message);
+        }
+
+        ByteVector server_ss;
+        auto server_payload_struct = BuildLocalPayload(*local_kem_, remote_hello_->kem_public_key, server_ss);
+        if (!server_payload_struct) {
+          return Fail(server_payload_struct.error().message);
+        }
+        auto server_payload = MshMessages::EncodePayload(MshMessageType::ServerPayload, *server_payload_struct);
+        if (!server_payload) {
+          return Fail(server_payload.error().message);
+        }
+        AppendPart(transcript_, *server_payload);
+        if (auto sent = SendMessage(MshMessageType::ServerPayload, *server_payload); !sent) {
+          return sent.error();
+        }
+
+        auto master = CombineMasterIkm(*client_ss, server_ss);
+        if (!master) {
+          return Fail(master.error().message);
+        }
+        master_ikm_ = std::move(*master);
+        return Roe<void>();
+      }
+      case MshMessageType::Finished: {
+        if (master_ikm_.empty()) {
+          return Error("amp msh adp: finished out of order");
+        }
+        if (auto ok = MshHandshake::VerifyFinished(master_ikm_, transcript_, body); !ok) {
+          return Fail(ok.error().message);
+        }
+        AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
+
+        auto finished = MshHandshake::BuildFinished(master_ikm_, transcript_);
+        if (!finished) {
+          return Fail(finished.error().message);
+        }
+        AppendPart(transcript_, *finished);
+        if (auto sent = SendMessage(MshMessageType::Finished, *finished); !sent) {
+          return sent.error();
+        }
+        return MaybeComplete();
+      }
+      default:
+        return Error("amp msh adp: unexpected responder message");
+    }
+  }
+
+  switch (type) {
+    case MshMessageType::ServerHello: {
+      if (!started_ || remote_hello_.has_value()) {
+        return Error("amp msh adp: server hello out of order");
+      }
+      auto parsed = MshMessages::DecodeHello(MshMessageType::ServerHello, body);
       if (!parsed) {
         return Fail(parsed.error().message);
       }
       remote_hello_ = std::move(*parsed);
       AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
 
-      auto kem = NewEphemeralKem();
-      if (!kem) {
-        return Fail(kem.error().message);
+      ByteVector client_ss;
+      auto client_payload_struct = BuildLocalPayload(*local_kem_, remote_hello_->kem_public_key, client_ss);
+      if (!client_payload_struct) {
+        return Fail(client_payload_struct.error().message);
       }
-      local_kem_ = std::move(*kem);
-      auto server_hello = EncodeHello(MshMessageType::ServerHello, *local_kem_);
-      if (!server_hello) {
-        return Fail(server_hello.error().message);
+      client_ss_ = std::move(client_ss);
+      auto client_payload = MshMessages::EncodePayload(MshMessageType::ClientPayload, *client_payload_struct);
+      if (!client_payload) {
+        return Fail(client_payload.error().message);
       }
-      AppendPart(transcript_, *server_hello);
-      return SendMessage(MshMessageType::ServerHello, *server_hello);
+      AppendPart(transcript_, *client_payload);
+      return SendMessage(MshMessageType::ClientPayload, *client_payload);
     }
-    case MshMessageType::ClientPayload: {
-      if (!remote_hello_ || !local_kem_) {
-        return Error("amp msh adp: client payload out of order");
+    case MshMessageType::ServerPayload: {
+      if (!remote_hello_ || client_ss_.empty()) {
+        return Error("amp msh adp: server payload out of order");
       }
-      auto parsed = MshMessages::DecodePayload(MshMessageType::ClientPayload, body);
+      auto parsed = MshMessages::DecodePayload(MshMessageType::ServerPayload, body);
       if (!parsed) {
         return Fail(parsed.error().message);
       }
@@ -199,37 +294,27 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
         return Fail(verified.error().message);
       }
       if (parsed->static_kem_public_key != remote_hello_->kem_public_key) {
-        return Fail("amp msh adp: client payload kem key does not match client hello");
+        return Fail("amp msh adp: server payload kem key does not match server hello");
       }
       remote_payload_ = std::move(*parsed);
       AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
 
-      auto client_ss = ::pp::MlKem::Decapsulate(local_kem_->ephemeral_secret, remote_payload_->kem_ciphertext);
-      if (!client_ss) {
-        return Fail(client_ss.error().message);
+      auto server_ss = ::pp::MlKem::Decapsulate(local_kem_->ephemeral_secret, remote_payload_->kem_ciphertext);
+      if (!server_ss) {
+        return Fail(server_ss.error().message);
       }
-
-      ByteVector server_ss;
-      auto server_payload_struct =
-          BuildLocalPayload(*local_kem_, remote_hello_->kem_public_key, server_ss);
-      if (!server_payload_struct) {
-        return Fail(server_payload_struct.error().message);
-      }
-      auto server_payload = MshMessages::EncodePayload(MshMessageType::ServerPayload, *server_payload_struct);
-      if (!server_payload) {
-        return Fail(server_payload.error().message);
-      }
-      AppendPart(transcript_, *server_payload);
-      if (auto sent = SendMessage(MshMessageType::ServerPayload, *server_payload); !sent) {
-        return sent.error();
-      }
-
-      auto master = CombineMasterIkm(*client_ss, server_ss);
+      auto master = CombineMasterIkm(client_ss_, *server_ss);
       if (!master) {
         return Fail(master.error().message);
       }
       master_ikm_ = std::move(*master);
-      return Roe<void>();
+
+      auto finished = MshHandshake::BuildFinished(master_ikm_, transcript_);
+      if (!finished) {
+        return Fail(finished.error().message);
+      }
+      AppendPart(transcript_, *finished);
+      return SendMessage(MshMessageType::Finished, *finished);
     }
     case MshMessageType::Finished: {
       if (master_ikm_.empty()) {
@@ -239,93 +324,10 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
         return Fail(ok.error().message);
       }
       AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
-
-      auto finished = MshHandshake::BuildFinished(master_ikm_, transcript_);
-      if (!finished) {
-        return Fail(finished.error().message);
-      }
-      AppendPart(transcript_, *finished);
-      if (auto sent = SendMessage(MshMessageType::Finished, *finished); !sent) {
-        return sent.error();
-      }
       return MaybeComplete();
     }
     default:
-      return Error("amp msh adp: unexpected responder message");
-    }
-  }
-
-  switch (type) {
-  case MshMessageType::ServerHello: {
-    if (!started_ || remote_hello_.has_value()) {
-      return Error("amp msh adp: server hello out of order");
-    }
-    auto parsed = MshMessages::DecodeHello(MshMessageType::ServerHello, body);
-    if (!parsed) {
-      return Fail(parsed.error().message);
-    }
-    remote_hello_ = std::move(*parsed);
-    AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
-
-    ByteVector client_ss;
-    auto client_payload_struct = BuildLocalPayload(*local_kem_, remote_hello_->kem_public_key, client_ss);
-    if (!client_payload_struct) {
-      return Fail(client_payload_struct.error().message);
-    }
-    client_ss_ = std::move(client_ss);
-    auto client_payload = MshMessages::EncodePayload(MshMessageType::ClientPayload, *client_payload_struct);
-    if (!client_payload) {
-      return Fail(client_payload.error().message);
-    }
-    AppendPart(transcript_, *client_payload);
-    return SendMessage(MshMessageType::ClientPayload, *client_payload);
-  }
-  case MshMessageType::ServerPayload: {
-    if (!remote_hello_ || client_ss_.empty()) {
-      return Error("amp msh adp: server payload out of order");
-    }
-    auto parsed = MshMessages::DecodePayload(MshMessageType::ServerPayload, body);
-    if (!parsed) {
-      return Fail(parsed.error().message);
-    }
-    if (auto verified = VerifyPayload(*parsed); !verified) {
-      return Fail(verified.error().message);
-    }
-    if (parsed->static_kem_public_key != remote_hello_->kem_public_key) {
-      return Fail("amp msh adp: server payload kem key does not match server hello");
-    }
-    remote_payload_ = std::move(*parsed);
-    AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
-
-    auto server_ss = ::pp::MlKem::Decapsulate(local_kem_->ephemeral_secret, remote_payload_->kem_ciphertext);
-    if (!server_ss) {
-      return Fail(server_ss.error().message);
-    }
-    auto master = CombineMasterIkm(client_ss_, *server_ss);
-    if (!master) {
-      return Fail(master.error().message);
-    }
-    master_ikm_ = std::move(*master);
-
-    auto finished = MshHandshake::BuildFinished(master_ikm_, transcript_);
-    if (!finished) {
-      return Fail(finished.error().message);
-    }
-    AppendPart(transcript_, *finished);
-    return SendMessage(MshMessageType::Finished, *finished);
-  }
-  case MshMessageType::Finished: {
-    if (master_ikm_.empty()) {
-      return Error("amp msh adp: finished out of order");
-    }
-    if (auto ok = MshHandshake::VerifyFinished(master_ikm_, transcript_, body); !ok) {
-      return Fail(ok.error().message);
-    }
-    AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
-    return MaybeComplete();
-  }
-  default:
-    return Error("amp msh adp: unexpected initiator message");
+      return Error("amp msh adp: unexpected initiator message");
   }
 }
 

@@ -238,8 +238,7 @@ bool RunE4(const int warmup, const int iters) {
     // Nested: open carrier, establish nested MSH, open chat on nested mux, DATA.
     std::vector<uint8_t> nested_received;
     h.mgr_b().SetProtocolHandler(
-        "/test/chat/1.0.0",
-        [&](pp::amp::LinkHandle handle, const std::string&, uint32_t channel_id) {
+        "/test/chat/1.0.0", [&](pp::amp::LinkHandle handle, const std::string&, uint32_t channel_id) {
           h.mgr_b().WithLiveLink(handle, [&](pp::amp::PeerLink& link) {
             if (!link.IsCarrierBacked() || !link.Mux()) {
               return;
@@ -264,8 +263,7 @@ bool RunE4(const int warmup, const int iters) {
         return false;
       }
       auto* outer_wait = h.mgr_a().FindLink("b");
-      return outer_wait && outer_wait->Mux() &&
-             outer_wait->Mux()->State(*carrier_ch) == pp::amp::ChannelState::Open;
+      return outer_wait && outer_wait->Mux() && outer_wait->Mux()->State(*carrier_ch) == pp::amp::ChannelState::Open;
     });
     if (!carrier_ch) {
       std::fprintf(stderr, "E4 carrier open failed\n");
@@ -345,12 +343,14 @@ bool RunE4(const int warmup, const int iters) {
       std::fprintf(stderr, "E4 nested SendData failed\n");
       return false;
     }
-    if (!h.PumpUntilReceived(nested_received, [&] { return nested_received == msg; }, 3000)) {
+    if (!h.PumpUntilReceived(
+            nested_received, [&] { return nested_received == msg; }, 3000)) {
       std::fprintf(stderr, "E4 nested DATA missing (got %zu bytes)\n", nested_received.size());
       return false;
     }
     if (i >= case_warmup) {
-      nested_data_ns.push_back(std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t_nested0).count());
+      nested_data_ns.push_back(
+          std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t_nested0).count());
     }
   }
 

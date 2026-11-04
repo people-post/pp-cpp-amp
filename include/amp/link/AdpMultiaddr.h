@@ -2,7 +2,6 @@
 
 #include "amp/L1/Types.h"
 
-
 #include <string>
 
 namespace pp::amp {

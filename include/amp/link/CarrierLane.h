@@ -87,13 +87,13 @@ private:
   bool failed_ = false;
 
   uint32_t next_tx_seq_ = 1;
-  std::deque<Outstanding> outstanding_;  // ascending seq
+  std::deque<Outstanding> outstanding_; // ascending seq
   int64_t rto_ms_;
   int64_t srtt_ms_ = 0;
   int64_t rttvar_ms_ = 0;
   bool have_rtt_ = false;
 
-  uint32_t rx_cumulative_ = 0;  // every seq ≤ this was delivered
+  uint32_t rx_cumulative_ = 0; // every seq ≤ this was delivered
   std::map<uint32_t, std::vector<uint8_t>> rx_hold_;
 };
 

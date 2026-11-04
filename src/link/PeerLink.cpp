@@ -19,24 +19,26 @@ constexpr size_t kMaxLaneBacklogFrames = 256;
 
 PeerLink::Failure PeerLink::WrapConnectionFailure(const adp::Connection::Failure& child) {
   switch (child.GetCode()) {
-  case adp::Connection::Err::Closed:
-  case adp::Connection::Err::WindowFull:
-    return Failure::Of(Err::TransportUnavailable,
-                       detail::AppendFrom("amp link: transport unavailable", "adp", child.message));
-  case adp::Connection::Err::PayloadTooLarge:
-  case adp::Connection::Err::SeqWrap:
-  case adp::Connection::Err::WireError:
-  default:
-    return Failure::Of(Err::TransportFailed,
-                       detail::AppendFrom("amp link: transport failed", "adp", child.message));
+    case adp::Connection::Err::Closed:
+    case adp::Connection::Err::WindowFull:
+      return Failure::Of(Err::TransportUnavailable,
+                         detail::AppendFrom("amp link: transport unavailable", "adp", child.message));
+    case adp::Connection::Err::PayloadTooLarge:
+    case adp::Connection::Err::SeqWrap:
+    case adp::Connection::Err::WireError:
+    default:
+      return Failure::Of(Err::TransportFailed, detail::AppendFrom("amp link: transport failed", "adp", child.message));
   }
 }
 
 PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool outbound,
-                   std::shared_ptr<adp::Connection> connection, MshIdentity local_identity,
-                   PeerLinkHostPorts host)
-    : peer_key_(std::move(peer_key)), remote_peer_id_(std::move(remote_peer_id)), outbound_(outbound),
-      connection_(std::move(connection)), identity_(std::move(local_identity)), host_(std::move(host)) {
+                   std::shared_ptr<adp::Connection> connection, MshIdentity local_identity, PeerLinkHostPorts host)
+    : peer_key_(std::move(peer_key)),
+      remote_peer_id_(std::move(remote_peer_id)),
+      outbound_(outbound),
+      connection_(std::move(connection)),
+      identity_(std::move(local_identity)),
+      host_(std::move(host)) {
   connection_->OnMessage([this](const adp::Message& message) {
     if (message.sealed) {
       DeliverFrame(message.payload);
@@ -48,8 +50,12 @@ PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool 
 
 PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool outbound,
                    std::shared_ptr<ChannelSession> carrier, MshIdentity local_identity, PeerLinkHostPorts host)
-    : peer_key_(std::move(peer_key)), remote_peer_id_(std::move(remote_peer_id)), outbound_(outbound),
-      carrier_(std::move(carrier)), lane_(std::make_unique<CarrierLane>()), identity_(std::move(local_identity)),
+    : peer_key_(std::move(peer_key)),
+      remote_peer_id_(std::move(remote_peer_id)),
+      outbound_(outbound),
+      carrier_(std::move(carrier)),
+      lane_(std::make_unique<CarrierLane>()),
+      identity_(std::move(local_identity)),
       host_(std::move(host)) {
   AttachCarrierFrameHandler();
 }
@@ -330,8 +336,8 @@ void PeerLink::TickCarrierLane(const int64_t now_ms) {
 }
 
 Roe<std::optional<std::vector<uint8_t>>> PeerLink::PushMshChunk(const MshMessageType type, const uint16_t index,
-                                                                 const uint16_t count,
-                                                                 const std::span<const uint8_t> chunk) {
+                                                                const uint16_t count,
+                                                                const std::span<const uint8_t> chunk) {
   if (count == 0 || index >= count) {
     return Error("amp link: bad msh chunk meta");
   }
@@ -435,8 +441,7 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
     }
   }
   if (!expected_peer_id.empty() && remote_peer_id_ != expected_peer_id) {
-    FailAssociationMessage(Error("amp link: authenticated peer id does not match dial target"),
-                           Err::HandshakeFailed);
+    FailAssociationMessage(Error("amp link: authenticated peer id does not match dial target"), Err::HandshakeFailed);
     return;
   }
 
@@ -468,10 +473,9 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
     // Dual-dial loser ([A026]): tear down this link after stack unwinds. If another Connected
     // Session to the same remote remains, association still succeeded for waiters.
     phase_ = PeerLinkPhase::Backoff;
-    const std::string drop_key = peer_key_;  // dial alias for the survivor
+    const std::string drop_key = peer_key_; // dial alias for the survivor
     const std::string remote = remote_peer_id_;
-    const bool assoc_ok =
-        !remote.empty() && host_.has_other_connected && host_.has_other_connected(remote);
+    const bool assoc_ok = !remote.empty() && host_.has_other_connected && host_.has_other_connected(remote);
     if (host_.schedule_drop) {
       host_.schedule_drop(Handle());
     }
@@ -494,7 +498,7 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
     establish_cb_ = nullptr;
   }
   if (lane_) {
-    SendLaneProbe();  // a peer that lost every handshake-time probe still learns of the lane
+    SendLaneProbe(); // a peer that lost every handshake-time probe still learns of the lane
     FlushLaneBacklog();
   }
 }
@@ -530,15 +534,13 @@ void PeerLink::FailVersionMismatch(const std::vector<uint8_t>& versions) {
 }
 
 void PeerLink::DemoteForScheduledDrop() {
-  if (phase_ == PeerLinkPhase::Connected || phase_ == PeerLinkPhase::Handshaking ||
-      phase_ == PeerLinkPhase::Dialing) {
+  if (phase_ == PeerLinkPhase::Connected || phase_ == PeerLinkPhase::Handshaking || phase_ == PeerLinkPhase::Dialing) {
     phase_ = PeerLinkPhase::Backoff;
   }
   if (mux_) {
     mux_->ClearProtocolHandlers();
   }
 }
-
 
 void PeerLink::AttachMuxTransport() {
   mux_->SetTransportCredits([this]() -> size_t {
@@ -587,9 +589,13 @@ void PeerLink::StopKeepaliveIfUnheld() {
   (void)connection_->StopKeepalive(host_.now_ms ? host_.now_ms() : 0);
 }
 
-void PeerLink::MarkWarm() { keepalive_tier_ = KeepaliveTier::Warm; }
+void PeerLink::MarkWarm() {
+  keepalive_tier_ = KeepaliveTier::Warm;
+}
 
-void PeerLink::MarkHot() { keepalive_tier_ = KeepaliveTier::Hot; }
+void PeerLink::MarkHot() {
+  keepalive_tier_ = KeepaliveTier::Hot;
+}
 
 void PeerLink::ClearWarm() {
   keepalive_tier_ = KeepaliveTier::None;

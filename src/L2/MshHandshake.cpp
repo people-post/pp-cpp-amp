@@ -53,9 +53,9 @@ Roe<std::vector<uint8_t>> EncodeHello(const MshMessageType type, const KemState&
 }
 
 Roe<MshPayload> BuildPayload(const MshIdentity& identity, const KemState& kem,
-                              const ByteVector& remote_ephemeral_public) {
-  if (identity.ml_dsa_public_key.size() != pp::kMlDsa65PublicKeyBytes
-      || identity.ml_dsa_secret_key.size() != pp::kMlDsa65SecretKeyBytes) {
+                             const ByteVector& remote_ephemeral_public) {
+  if (identity.ml_dsa_public_key.size() != pp::kMlDsa65PublicKeyBytes ||
+      identity.ml_dsa_secret_key.size() != pp::kMlDsa65SecretKeyBytes) {
     return Error("amp msh: bad identity key sizes");
   }
   auto encap = ::pp::MlKem::Encapsulate(remote_ephemeral_public);
@@ -107,13 +107,13 @@ Roe<ByteVector> CombineMasterIkm(const ByteVector& client_ss, const ByteVector& 
 Roe<ByteVector> FinishedMac(const ByteVector& master_ikm, const ByteVector& transcript_hash) {
   pp::EnsureSodiumInit();
   unsigned char prk[crypto_kdf_hkdf_sha256_KEYBYTES];
-  if (crypto_kdf_hkdf_sha256_extract(prk, reinterpret_cast<const unsigned char*>(kAmpHkdfSalt), std::strlen(kAmpHkdfSalt),
-                                     master_ikm.data(), master_ikm.size()) != 0) {
+  if (crypto_kdf_hkdf_sha256_extract(prk, reinterpret_cast<const unsigned char*>(kAmpHkdfSalt),
+                                     std::strlen(kAmpHkdfSalt), master_ikm.data(), master_ikm.size()) != 0) {
     return Error("amp msh: finished hkdf extract failed");
   }
   ByteVector finished_key(kSessionKeyBytes);
-  if (crypto_kdf_hkdf_sha256_expand(finished_key.data(), finished_key.size(), kAmpFinishedInfo, std::strlen(kAmpFinishedInfo),
-                                    prk) != 0) {
+  if (crypto_kdf_hkdf_sha256_expand(finished_key.data(), finished_key.size(), kAmpFinishedInfo,
+                                    std::strlen(kAmpFinishedInfo), prk) != 0) {
     return Error("amp msh: finished hkdf expand failed");
   }
   ByteVector mac(kFinishedMacBytes);
@@ -154,8 +154,8 @@ Roe<void> MshHandshake::VerifyFinished(const ByteVector& master_ikm, const std::
   if (!expected) {
     return expected.error();
   }
-  if (finished->mac.size() != expected->size()
-      || sodium_memcmp(finished->mac.data(), expected->data(), expected->size()) != 0) {
+  if (finished->mac.size() != expected->size() ||
+      sodium_memcmp(finished->mac.data(), expected->data(), expected->size()) != 0) {
     return Error("amp msh: finished mismatch");
   }
   return Roe<void>();

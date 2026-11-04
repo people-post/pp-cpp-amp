@@ -3,7 +3,6 @@
 #include "amp/L2/MshHandshake.h"
 #include "amp/L2/Types.h"
 
-
 #include <functional>
 #include <optional>
 #include <span>
@@ -49,7 +48,8 @@ private:
 
   Roe<KemState> NewEphemeralKem();
   Roe<std::vector<uint8_t>> EncodeHello(MshMessageType type, const KemState& kem);
-  Roe<MshPayload> BuildLocalPayload(const KemState& kem, const ByteVector& remote_kem_pk, ByteVector& shared_secret_out);
+  Roe<MshPayload> BuildLocalPayload(const KemState& kem, const ByteVector& remote_kem_pk,
+                                    ByteVector& shared_secret_out);
   Roe<void> SendMessage(MshMessageType type, std::span<const uint8_t> body);
   Roe<void> Fail(std::string message);
   Roe<void> MaybeComplete();

@@ -65,7 +65,7 @@ TEST(IoExecutorTest, RunAndWaitRunsOnTheCallerUnderTheIoLock) {
   std::thread driver;
   executor->RunAndWait([&]() {
     on_lane = executor->RunsTasksOnCurrentThread();
-    executor->RunAndWait([]() {});  // nested: the io lock is recursive
+    executor->RunAndWait([]() {}); // nested: the io lock is recursive
     // A drive from another thread waits for this task: it is on the lane.
     driver = std::thread([&]() {
       runtime.Drive();

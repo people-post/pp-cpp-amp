@@ -2,7 +2,6 @@
 
 #include "amp/L2/Types.h"
 
-
 #include <cstdint>
 #include <span>
 #include <vector>

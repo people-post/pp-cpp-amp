@@ -47,7 +47,7 @@ void CarrierLane::OnAck(const LaneAckFields& ack, const int64_t now_ms) {
   for (auto it = outstanding_.begin(); it != outstanding_.end();) {
     if (acked(it->seq)) {
       if (it->attempts == 1) {
-        SampleRtt(now_ms - it->sent_ms);  // Karn: resent frames give no sample
+        SampleRtt(now_ms - it->sent_ms); // Karn: resent frames give no sample
       }
       it = outstanding_.erase(it);
       continue;
@@ -84,8 +84,7 @@ CarrierLane::Received CarrierLane::OnData(const uint32_t seq, const std::span<co
   if (seq > rx_cumulative_ && !rx_hold_.contains(seq) && seq - rx_cumulative_ <= config_.window) {
     rx_hold_.emplace(seq, std::vector<uint8_t>(inner.begin(), inner.end()));
   }
-  for (auto it = rx_hold_.begin(); it != rx_hold_.end() && it->first == rx_cumulative_ + 1;
-       it = rx_hold_.erase(it)) {
+  for (auto it = rx_hold_.begin(); it != rx_hold_.end() && it->first == rx_cumulative_ + 1; it = rx_hold_.erase(it)) {
     out.deliver.push_back(std::move(it->second));
     ++rx_cumulative_;
   }

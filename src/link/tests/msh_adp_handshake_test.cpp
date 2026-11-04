@@ -145,8 +145,7 @@ TEST(MshAdpHandshakeTest, RejectsPayloadKemKeyMismatchingHello) {
   Roe<MshAdpEstablished> server_result = Error("not completed");
 
   MshAdpHandshake client(
-      MshAdpHandshake::Role::Initiator, client_identity,
-      pump.SendToServer([&](std::vector<uint8_t> wire) {
+      MshAdpHandshake::Role::Initiator, client_identity, pump.SendToServer([&](std::vector<uint8_t> wire) {
         auto type = AmpAdpCarrier::DecodeMshType(wire);
         if (type && *type == MshMessageType::ClientPayload) {
           return RebindPayloadToOtherKemKey(client_identity, wire);

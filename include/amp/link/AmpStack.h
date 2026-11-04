@@ -6,7 +6,6 @@
 #include "amp/link/MeshRuntime.h"
 #include "amp/L2/Types.h"
 
-
 #include <memory>
 #include <string>
 
@@ -24,8 +23,8 @@ public:
     PeerLinkConfig link_config;
   };
 
-  static Roe<std::unique_ptr<AmpStack>> Create(std::shared_ptr<adp::DatagramIo> io,
-                                               std::shared_ptr<adp::Clock> clock, Config config);
+  static Roe<std::unique_ptr<AmpStack>> Create(std::shared_ptr<adp::DatagramIo> io, std::shared_ptr<adp::Clock> clock,
+                                               Config config);
 
   adp::Endpoint& GetEndpoint() { return *endpoint_; }
   MeshRuntime& Runtime() { return *runtime_; }

@@ -1,6 +1,5 @@
 #include "amp/L1/HmacBinder.h"
 
-
 #include <sodium.h>
 
 #include <cstring>
@@ -9,8 +8,7 @@ namespace pp::adp {
 
 HmacBinder::HmacBinder(PeerKey key) : key_(key) {}
 
-std::array<uint8_t, kHmacBytes> HmacBinder::ComputeTag(const PeerKey& key,
-                                                       std::span<const uint8_t> mac_input) {
+std::array<uint8_t, kHmacBytes> HmacBinder::ComputeTag(const PeerKey& key, std::span<const uint8_t> mac_input) {
   std::array<uint8_t, crypto_auth_hmacsha256_BYTES> full{};
   crypto_auth_hmacsha256(full.data(), mac_input.data(), mac_input.size(), key.bytes.data());
   std::array<uint8_t, kHmacBytes> tag{};

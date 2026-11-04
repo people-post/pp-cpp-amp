@@ -50,8 +50,8 @@ struct ChannelPolicy {
 };
 
 /** Generic reliable JSON / control RPC profile (chat, history, dial-back, …). */
-inline ChannelPolicy ControlJsonChannelPolicy(
-    std::chrono::milliseconds read_timeout = std::chrono::milliseconds{8000}) {
+inline ChannelPolicy ControlJsonChannelPolicy(std::chrono::milliseconds read_timeout = std::chrono::milliseconds{
+                                                  8000}) {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Control;
   policy.drop = ChannelDropPolicy::Never;
@@ -85,7 +85,9 @@ inline ChannelPolicy MakeBulkChannelPolicy() {
 }
 
 /** Large Reliable binary / content-addressed object transfer (product-neutral). */
-inline ChannelPolicy BulkChannelPolicy() { return MakeBulkChannelPolicy(); }
+inline ChannelPolicy BulkChannelPolicy() {
+  return MakeBulkChannelPolicy();
+}
 
 /**
  * Call-media / realtime frames: BestEffort + drop Oldest under outbound burst.
@@ -110,7 +112,8 @@ inline ChannelPolicy CallMediaChannelPolicy(std::chrono::milliseconds read_timeo
  * BestEffort (Realtime) so inner media FRAG bursts are not capped by ADP reliable_window.
  * Nested MSH is a few frames; MemoryDatagramIo tests are lossless. Dual QoS lanes later.
  */
-inline ChannelPolicy CircuitCarrierChannelPolicy(std::chrono::milliseconds read_timeout = std::chrono::milliseconds{0}) {
+inline ChannelPolicy CircuitCarrierChannelPolicy(std::chrono::milliseconds read_timeout = std::chrono::milliseconds{
+                                                     0}) {
   return CallMediaChannelPolicy(read_timeout);
 }
 

@@ -5,7 +5,6 @@
 #include "amp/L1/Types.h"
 #include "amp/L2/Types.h"
 
-
 #include <sodium.h>
 
 #include <chrono>

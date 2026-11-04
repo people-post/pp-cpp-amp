@@ -2,7 +2,6 @@
 
 #include "amp/L3/ChannelWire.h"
 
-
 #include <string>
 #include <vector>
 

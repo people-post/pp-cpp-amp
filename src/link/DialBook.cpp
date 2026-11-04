@@ -128,8 +128,7 @@ void DialBook::UnregisterEndpoint(const DialKey& peer_key) {
   dial_failures_.erase(peer_key);
 }
 
-Roe<void> DialBook::RegisterEndpoints(const DialKey& peer_key,
-                                      const std::vector<std::string>& multiaddrs) {
+Roe<void> DialBook::RegisterEndpoints(const DialKey& peer_key, const std::vector<std::string>& multiaddrs) {
   EndpointRecord rec;
   rec.peer_id = peer_key;
   std::string prev_preferred;
@@ -240,8 +239,8 @@ bool DialBook::InBackoff(const DialKey& peer_key, std::chrono::steady_clock::tim
   return it != dial_failed_until_.end() && it->second > now;
 }
 
-std::optional<std::chrono::milliseconds> DialBook::BackoffRemaining(
-    const DialKey& peer_key, std::chrono::steady_clock::time_point now) const {
+std::optional<std::chrono::milliseconds> DialBook::BackoffRemaining(const DialKey& peer_key,
+                                                                    std::chrono::steady_clock::time_point now) const {
   auto it = dial_failed_until_.find(peer_key);
   if (it == dial_failed_until_.end() || it->second <= now) {
     return std::nullopt;

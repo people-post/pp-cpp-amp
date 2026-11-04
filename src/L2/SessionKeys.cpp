@@ -46,9 +46,8 @@ Roe<ByteVector> SessionKeys::TranscriptHash(const std::vector<ByteVector>& trans
   return hash;
 }
 
-Roe<SessionMaterial> SessionKeys::Derive(std::span<const uint8_t> master_ikm,
-                                           std::span<const uint8_t> transcript_hash, bool initiator,
-                                           uint32_t session_epoch) {
+Roe<SessionMaterial> SessionKeys::Derive(std::span<const uint8_t> master_ikm, std::span<const uint8_t> transcript_hash,
+                                         bool initiator, uint32_t session_epoch) {
   if (master_ikm.empty()) {
     return Error("amp: empty master ikm");
   }

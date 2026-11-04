@@ -100,8 +100,8 @@ TEST_F(AdpOsUdpFaultTest, ReliableSurvivesDropNextOnOsUdp) {
   });
 
   p.lossy_a->DropNext(2);
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("os"), 2)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("os"), 2)));
   for (int i = 0; i < 80 && got.empty(); ++i) {
     PumpBoth(p);
     p.clock->Advance(10);
@@ -142,8 +142,8 @@ TEST_F(AdpOsUdpFaultTest, ReliableSurvivesDropRateOnOsUdp) {
   constexpr int kCount = 24;
   for (int i = 0; i < kCount; ++i) {
     const char c = static_cast<char>('a' + (i % 26));
-    ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)));
+    ASSERT_TRUE(
+        (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)));
   }
   for (int round = 0; round < 300 && static_cast<int>(got.size()) < kCount; ++round) {
     PumpBoth(p);
@@ -186,8 +186,8 @@ TEST_F(AdpOsUdpFaultTest, ReliableSurvivesReorderOnOsUdp) {
   });
 
   for (const char* s : {"w0", "w1", "w2", "w3", "w4"}) {
-    ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(s), 2)));
+    ASSERT_TRUE(
+        (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(s), 2)));
   }
   p.lossy_a->FlushReorder();
   p.lossy_a->SetReorderWindow(0);

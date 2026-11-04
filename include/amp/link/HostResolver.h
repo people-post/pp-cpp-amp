@@ -29,12 +29,12 @@ public:
   using Done = std::function<void(Roe<adp::IpEndpoint>)>;
   using Post = std::function<void(std::function<void()>)>;
   /** How a lookup is done; ResolveHostNow by default (tests replace it). */
-  using Lookup = std::function<Roe<adp::IpEndpoint>(const std::string &host, HostFamily family, uint16_t port)>;
+  using Lookup = std::function<Roe<adp::IpEndpoint>(const std::string& host, HostFamily family, uint16_t port)>;
 
   explicit HostResolver(Post post, Lookup lookup = {});
   ~HostResolver();
-  HostResolver(const HostResolver &) = delete;
-  HostResolver &operator=(const HostResolver &) = delete;
+  HostResolver(const HostResolver&) = delete;
+  HostResolver& operator=(const HostResolver&) = delete;
 
   void Resolve(std::string host, HostFamily family, uint16_t port, Done done);
 

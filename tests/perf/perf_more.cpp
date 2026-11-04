@@ -310,9 +310,7 @@ bool RunE1(const int warmup, const int iters) {
       std::fprintf(stderr, "E1 inbound missing\n");
       return false;
     }
-    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-      received += payload.size();
-    });
+    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received += payload.size(); });
 
     const auto t0 = std::chrono::steady_clock::now();
     size_t sent = 0;
@@ -377,8 +375,7 @@ bool RunE2(const int warmup, const int iters) {
       return false;
     }
     auto& h = **created;
-    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/call-media/1.0.0",
-                                  pp::amp::CallMediaChannelPolicy());
+    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/call-media/1.0.0", pp::amp::CallMediaChannelPolicy());
     if (!ch) {
       std::fprintf(stderr, "E2 OpenChannel failed\n");
       return false;
@@ -390,9 +387,8 @@ bool RunE2(const int warmup, const int iters) {
       std::fprintf(stderr, "E2 inbound missing\n");
       return false;
     }
-    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-      received += payload.size() >= kPacketBytes ? 1 : 0;
-    });
+    inbound->Mux()->SetDataHandler(
+        *ch, [&](uint32_t, std::vector<uint8_t> payload) { received += payload.size() >= kPacketBytes ? 1 : 0; });
 
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<uint8_t> frame(kPacketBytes, 0xE2);
@@ -456,8 +452,7 @@ bool RunE3(const int warmup, const int iters) {
       return false;
     }
     auto& h = **created;
-    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat-blob/1.0.0",
-                                  pp::amp::BulkChannelPolicy());
+    const auto ch = h.OpenChannel(HarnessSide::A, "b", "/test/chat-blob/1.0.0", pp::amp::BulkChannelPolicy());
     if (!ch) {
       std::fprintf(stderr, "E3 OpenChannel failed\n");
       return false;
@@ -469,9 +464,7 @@ bool RunE3(const int warmup, const int iters) {
       std::fprintf(stderr, "E3 inbound missing\n");
       return false;
     }
-    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-      received += payload.size();
-    });
+    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received += payload.size(); });
 
     const auto t0 = std::chrono::steady_clock::now();
     size_t sent = 0;
@@ -579,8 +572,7 @@ bool RunD1Multi(const int warmup, const int drive_iters) {
     for (int i = 0; i < n_links; ++i) {
       Client c;
       const auto addr = pp::adp::IpEndpoint::V4(10, 9, static_cast<uint8_t>(1 + i / 200),
-                                                 static_cast<uint8_t>(1 + (i % 200)),
-                                                 static_cast<uint16_t>(10000 + i));
+                                                static_cast<uint8_t>(1 + (i % 200)), static_cast<uint16_t>(10000 + i));
       c.io = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr);
       c.ep = std::make_unique<pp::adp::Endpoint>(c.io, clock);
       auto keys = pp::MlDsa::GenerateKeyPair();
@@ -780,8 +772,7 @@ bool RunA3(const int warmup, const int iters) {
   for (const size_t payload_len : payloads) {
     std::vector<uint8_t> payload(payload_len, 0xA3);
     constexpr size_t kChunk = 900;
-    const uint16_t frag_count =
-        static_cast<uint16_t>((payload_len + kChunk - 1) / kChunk);
+    const uint16_t frag_count = static_cast<uint16_t>((payload_len + kChunk - 1) / kChunk);
     auto samples = TimeLoop(case_warmup, case_iters, [&] {
       for (uint16_t i = 0; i < frag_count; ++i) {
         const size_t offset = static_cast<size_t>(i) * kChunk;
@@ -795,7 +786,7 @@ bool RunA3(const int warmup, const int iters) {
         frame.frag.frag_count = frag_count;
         frame.frag.total_len = static_cast<uint32_t>(payload_len);
         frame.frag.chunk.assign(payload.begin() + static_cast<std::ptrdiff_t>(offset),
-                               payload.begin() + static_cast<std::ptrdiff_t>(offset + n));
+                                payload.begin() + static_cast<std::ptrdiff_t>(offset + n));
         auto wire = pp::amp::ChannelWire::Encode(frame);
         if (!wire) {
           std::abort();
@@ -850,15 +841,13 @@ bool RunD2(const int warmup, const int iters) {
 
     size_t received = 0;
     hub_rt->Links().SetProtocolHandler(
-        "/pp-perf/fanin/1.0.0",
-        [&](pp::amp::LinkHandle handle, const std::string&, uint32_t channel_id) {
+        "/pp-perf/fanin/1.0.0", [&](pp::amp::LinkHandle handle, const std::string&, uint32_t channel_id) {
           hub_rt->Links().WithLiveLink(handle, [&](pp::amp::PeerLink& link) {
             if (!link.Mux()) {
               return;
             }
-            link.Mux()->SetDataHandler(channel_id, [&](uint32_t, std::vector<uint8_t> payload) {
-              received += payload.size();
-            });
+            link.Mux()->SetDataHandler(channel_id,
+                                       [&](uint32_t, std::vector<uint8_t> payload) { received += payload.size(); });
           });
         });
 
@@ -870,8 +859,7 @@ bool RunD2(const int warmup, const int iters) {
     std::vector<Client> clients;
     for (int i = 0; i < kClients; ++i) {
       Client c;
-      const auto addr =
-          pp::adp::IpEndpoint::V4(10, 8, 1, static_cast<uint8_t>(i + 1), static_cast<uint16_t>(8100 + i));
+      const auto addr = pp::adp::IpEndpoint::V4(10, 8, 1, static_cast<uint8_t>(i + 1), static_cast<uint16_t>(8100 + i));
       c.io = std::make_shared<pp::adp::MemoryDatagramIo>(hub, addr);
       c.ep = std::make_unique<pp::adp::Endpoint>(c.io, clock);
       auto keys = pp::MlDsa::GenerateKeyPair();
@@ -1001,8 +989,8 @@ bool RunF(const int warmup, const int iters) {
       return false;
     }
     auto& h = **created;
-    const auto ch = h.OpenChannel(pbr::test::HarnessSide::A, "b", "/test/chat/1.0.0",
-                                   pp::amp::ControlJsonChannelPolicy());
+    const auto ch =
+        h.OpenChannel(pbr::test::HarnessSide::A, "b", "/test/chat/1.0.0", pp::amp::ControlJsonChannelPolicy());
     if (!ch) {
       return false;
     }

@@ -26,8 +26,8 @@ Roe<uint32_t> ReadU32(std::span<const uint8_t>& wire) {
   if (wire.size() < 4) {
     return Error("amp ch: truncated u32");
   }
-  uint32_t v = static_cast<uint32_t>(wire[0]) | (static_cast<uint32_t>(wire[1]) << 8)
-               | (static_cast<uint32_t>(wire[2]) << 16) | (static_cast<uint32_t>(wire[3]) << 24);
+  uint32_t v = static_cast<uint32_t>(wire[0]) | (static_cast<uint32_t>(wire[1]) << 8) |
+               (static_cast<uint32_t>(wire[2]) << 16) | (static_cast<uint32_t>(wire[3]) << 24);
   wire = wire.subspan(4);
   return v;
 }
@@ -99,40 +99,40 @@ Roe<std::vector<uint8_t>> ChannelWire::Encode(const ChannelFrame& frame) {
   AppendU32(out, frame.header.channel_seq);
 
   switch (frame.header.frame_type) {
-  case ChannelFrameType::Open: {
-    auto proto = EncodeLenUtf8Le(frame.open.protocol_id);
-    if (!proto) {
-      return proto.error();
-    }
-    out.insert(out.end(), proto->begin(), proto->end());
-    out.push_back(static_cast<uint8_t>(frame.open.channel_class));
-    AppendU16(out, frame.open.flags);
-    AppendU32(out, frame.open.max_message_bytes);
-    break;
-  }
-  case ChannelFrameType::OpenAck:
-    out.push_back(frame.open_ack_result);
-    break;
-  case ChannelFrameType::Data:
-    out.insert(out.end(), frame.payload.begin(), frame.payload.end());
-    break;
-  case ChannelFrameType::Close:
-    if (!frame.payload.empty()) {
-      auto reason = EncodeLenUtf8Le(std::string(frame.payload.begin(), frame.payload.end()));
-      if (!reason) {
-        return reason.error();
+    case ChannelFrameType::Open: {
+      auto proto = EncodeLenUtf8Le(frame.open.protocol_id);
+      if (!proto) {
+        return proto.error();
       }
-      out.insert(out.end(), reason->begin(), reason->end());
+      out.insert(out.end(), proto->begin(), proto->end());
+      out.push_back(static_cast<uint8_t>(frame.open.channel_class));
+      AppendU16(out, frame.open.flags);
+      AppendU32(out, frame.open.max_message_bytes);
+      break;
     }
-    break;
-  case ChannelFrameType::Reset:
-    AppendU32(out, frame.reset_code);
-    break;
-  case ChannelFrameType::Frag:
-    // Handled above.
-    break;
-  default:
-    return Error("amp ch: unknown frame type");
+    case ChannelFrameType::OpenAck:
+      out.push_back(frame.open_ack_result);
+      break;
+    case ChannelFrameType::Data:
+      out.insert(out.end(), frame.payload.begin(), frame.payload.end());
+      break;
+    case ChannelFrameType::Close:
+      if (!frame.payload.empty()) {
+        auto reason = EncodeLenUtf8Le(std::string(frame.payload.begin(), frame.payload.end()));
+        if (!reason) {
+          return reason.error();
+        }
+        out.insert(out.end(), reason->begin(), reason->end());
+      }
+      break;
+    case ChannelFrameType::Reset:
+      AppendU32(out, frame.reset_code);
+      break;
+    case ChannelFrameType::Frag:
+      // Handled above.
+      break;
+    default:
+      return Error("amp ch: unknown frame type");
   }
   return out;
 }
@@ -166,99 +166,99 @@ Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
   auto body = wire.subspan(kChannelHeaderBytes);
 
   switch (frame.header.frame_type) {
-  case ChannelFrameType::Open: {
-    size_t consumed = 0;
-    auto proto = DecodeLenUtf8Le(body, consumed);
-    if (!proto) {
-      return proto.error();
-    }
-    body = body.subspan(consumed);
-    if (body.empty()) {
-      return Error("amp ch: missing channel class");
-    }
-    frame.open.protocol_id = std::move(*proto);
-    frame.open.channel_class = static_cast<ChannelClass>(body[0]);
-    body = body.subspan(1);
-    auto flags = ReadU16(body);
-    if (!flags) {
-      return flags.error();
-    }
-    frame.open.flags = *flags;
-    // Optional trailing u32 for forward/backward decode: absent → 0 (peer default).
-    if (!body.empty()) {
-      auto max_bytes = ReadU32(body);
-      if (!max_bytes) {
-        return max_bytes.error();
-      }
-      frame.open.max_message_bytes = *max_bytes;
-    }
-    if (auto trailing = ExpectEmpty(body); !trailing) {
-      return trailing.error();
-    }
-    break;
-  }
-  case ChannelFrameType::OpenAck:
-    if (body.empty()) {
-      return Error("amp ch: missing open ack result");
-    }
-    frame.open_ack_result = body[0];
-    if (auto trailing = ExpectEmpty(body.subspan(1)); !trailing) {
-      return trailing.error();
-    }
-    break;
-  case ChannelFrameType::Data:
-    frame.payload.assign(body.begin(), body.end());
-    break;
-  case ChannelFrameType::Close:
-    if (!body.empty()) {
+    case ChannelFrameType::Open: {
       size_t consumed = 0;
-      auto reason = DecodeLenUtf8Le(body, consumed);
-      if (!reason) {
-        return reason.error();
+      auto proto = DecodeLenUtf8Le(body, consumed);
+      if (!proto) {
+        return proto.error();
       }
-      frame.payload.assign(reason->begin(), reason->end());
-      if (auto trailing = ExpectEmpty(body.subspan(consumed)); !trailing) {
+      body = body.subspan(consumed);
+      if (body.empty()) {
+        return Error("amp ch: missing channel class");
+      }
+      frame.open.protocol_id = std::move(*proto);
+      frame.open.channel_class = static_cast<ChannelClass>(body[0]);
+      body = body.subspan(1);
+      auto flags = ReadU16(body);
+      if (!flags) {
+        return flags.error();
+      }
+      frame.open.flags = *flags;
+      // Optional trailing u32 for forward/backward decode: absent → 0 (peer default).
+      if (!body.empty()) {
+        auto max_bytes = ReadU32(body);
+        if (!max_bytes) {
+          return max_bytes.error();
+        }
+        frame.open.max_message_bytes = *max_bytes;
+      }
+      if (auto trailing = ExpectEmpty(body); !trailing) {
         return trailing.error();
       }
+      break;
     }
-    break;
-  case ChannelFrameType::Reset: {
-    auto code = ReadU32(body);
-    if (!code) {
-      return code.error();
+    case ChannelFrameType::OpenAck:
+      if (body.empty()) {
+        return Error("amp ch: missing open ack result");
+      }
+      frame.open_ack_result = body[0];
+      if (auto trailing = ExpectEmpty(body.subspan(1)); !trailing) {
+        return trailing.error();
+      }
+      break;
+    case ChannelFrameType::Data:
+      frame.payload.assign(body.begin(), body.end());
+      break;
+    case ChannelFrameType::Close:
+      if (!body.empty()) {
+        size_t consumed = 0;
+        auto reason = DecodeLenUtf8Le(body, consumed);
+        if (!reason) {
+          return reason.error();
+        }
+        frame.payload.assign(reason->begin(), reason->end());
+        if (auto trailing = ExpectEmpty(body.subspan(consumed)); !trailing) {
+          return trailing.error();
+        }
+      }
+      break;
+    case ChannelFrameType::Reset: {
+      auto code = ReadU32(body);
+      if (!code) {
+        return code.error();
+      }
+      frame.reset_code = *code;
+      if (auto trailing = ExpectEmpty(body); !trailing) {
+        return trailing.error();
+      }
+      break;
     }
-    frame.reset_code = *code;
-    if (auto trailing = ExpectEmpty(body); !trailing) {
-      return trailing.error();
+    case ChannelFrameType::Frag: {
+      auto msg_id = ReadU64(body);
+      if (!msg_id) {
+        return msg_id.error();
+      }
+      auto frag_index = ReadU16(body);
+      if (!frag_index) {
+        return frag_index.error();
+      }
+      auto frag_count = ReadU16(body);
+      if (!frag_count) {
+        return frag_count.error();
+      }
+      auto total_len = ReadU32(body);
+      if (!total_len) {
+        return total_len.error();
+      }
+      frame.frag.msg_id = *msg_id;
+      frame.frag.frag_index = *frag_index;
+      frame.frag.frag_count = *frag_count;
+      frame.frag.total_len = *total_len;
+      frame.frag.chunk.assign(body.begin(), body.end());
+      break;
     }
-    break;
-  }
-  case ChannelFrameType::Frag: {
-    auto msg_id = ReadU64(body);
-    if (!msg_id) {
-      return msg_id.error();
-    }
-    auto frag_index = ReadU16(body);
-    if (!frag_index) {
-      return frag_index.error();
-    }
-    auto frag_count = ReadU16(body);
-    if (!frag_count) {
-      return frag_count.error();
-    }
-    auto total_len = ReadU32(body);
-    if (!total_len) {
-      return total_len.error();
-    }
-    frame.frag.msg_id = *msg_id;
-    frame.frag.frag_index = *frag_index;
-    frame.frag.frag_count = *frag_count;
-    frame.frag.total_len = *total_len;
-    frame.frag.chunk.assign(body.begin(), body.end());
-    break;
-  }
-  default:
-    return Error("amp ch: unknown frame type");
+    default:
+      return Error("amp ch: unknown frame type");
   }
   return frame;
 }

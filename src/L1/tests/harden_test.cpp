@@ -90,12 +90,10 @@ TEST_F(AdpHardenTest, OsUdpLoopbackSmoke) {
   opb.peer = addr_a;
   auto cb = ep_b->Open(opb);
   ASSERT_TRUE(cb);
-  (*cb)->OnMessage([&](const pp::adp::Message& m) {
-    got.assign(m.payload.begin(), m.payload.end());
-  });
+  (*cb)->OnMessage([&](const pp::adp::Message& m) { got.assign(m.payload.begin(), m.payload.end()); });
 
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("udp"), 3)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("udp"), 3)));
   // OS UDP needs wall time for kernel delivery / RTX; virtual Advance alone can finish in 0ms.
   for (int i = 0; i < 80 && got.empty(); ++i) {
     for (int j = 0; j < 8; ++j) {
@@ -143,8 +141,7 @@ TEST_F(AdpHardenTest, MultiConnectionStressMemory) {
   }
   for (int i = 0; i < N; ++i) {
     const uint8_t b = static_cast<uint8_t>(i);
-    ASSERT_TRUE(cons[static_cast<size_t>(i)]->Send(pp::adp::QosClass::BestEffort,
-                                                   std::span<const uint8_t>(&b, 1)));
+    ASSERT_TRUE(cons[static_cast<size_t>(i)]->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(&b, 1)));
   }
   ep_b->Pump();
   EXPECT_EQ(received, static_cast<size_t>(N));
@@ -218,8 +215,7 @@ TEST_F(AdpHardenTest, AcceptedConnectionCapsRetransmitsBeforeAuth) {
   auto accepted = ep_b->Find(Aid());
   ASSERT_NE(accepted, nullptr);
   const uint8_t data = 0xAA;
-  ASSERT_TRUE(static_cast<bool>(
-      accepted->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(&data, 1))));
+  ASSERT_TRUE(static_cast<bool>(accepted->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(&data, 1))));
 
   size_t reliable_sends = 0;
   for (int round = 0; round < 200; ++round) {
@@ -376,8 +372,7 @@ TEST_F(AdpHardenTest, PumpRespectsItsBudget) {
   constexpr size_t kSent = 20;
   for (size_t i = 0; i < kSent; ++i) {
     const uint8_t b = static_cast<uint8_t>(i);
-    ASSERT_TRUE(static_cast<bool>(
-        (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(&b, 1))));
+    ASSERT_TRUE(static_cast<bool>((*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(&b, 1))));
   }
 
   ep_b->Pump(/*budget=*/5);

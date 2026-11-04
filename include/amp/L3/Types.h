@@ -48,10 +48,10 @@ enum class ChannelState : uint8_t {
 
 inline adp::QosClass QosForClass(ChannelClass cls) {
   switch (cls) {
-  case ChannelClass::Realtime:
-    return adp::QosClass::BestEffort;
-  default:
-    return adp::QosClass::Reliable;
+    case ChannelClass::Realtime:
+      return adp::QosClass::BestEffort;
+    default:
+      return adp::QosClass::Reliable;
   }
 }
 

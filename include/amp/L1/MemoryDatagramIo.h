@@ -86,8 +86,7 @@ public:
 private:
   std::mutex mu_;
   std::unordered_map<IpEndpoint, MemoryDatagramIo*, IpEndpointHash> ios_;
-  std::unordered_map<IpEndpoint, std::deque<std::pair<IpEndpoint, std::vector<uint8_t>>>, IpEndpointHash>
-      queues_;
+  std::unordered_map<IpEndpoint, std::deque<std::pair<IpEndpoint, std::vector<uint8_t>>>, IpEndpointHash> queues_;
 };
 
 } // namespace pp::adp

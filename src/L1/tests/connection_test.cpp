@@ -66,13 +66,13 @@ TEST_F(AdpConnTest, ReplayWindowBasics) {
 TEST_F(AdpConnTest, ReplayWindowStrictRejectsFarGap) {
   pp::adp::ReplayWindow w(8, /*slide_on_gap=*/false);
   EXPECT_TRUE(w.Accept(1));
-  EXPECT_FALSE(w.Accept(1 + 8 + 1));  // beyond window, no slide
+  EXPECT_FALSE(w.Accept(1 + 8 + 1)); // beyond window, no slide
 }
 
 TEST_F(AdpConnTest, ReplayWindowSlideAcceptsFarGap) {
   pp::adp::ReplayWindow w(8, /*slide_on_gap=*/true);
   EXPECT_TRUE(w.Accept(1));
-  EXPECT_TRUE(w.Accept(1 + 8 + 5));  // beyond window: slide and accept
+  EXPECT_TRUE(w.Accept(1 + 8 + 5)); // beyond window: slide and accept
   EXPECT_EQ(w.LastContiguous(), 1u + 8 + 5);
   EXPECT_TRUE(w.Accept(1 + 8 + 6));
 }
@@ -92,18 +92,15 @@ TEST_F(AdpConnTest, BestEffortDeliver) {
 
   std::vector<std::string> got;
   // Accept path creates conn on B; attach handler after first pump via Find.
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(
-                                                               reinterpret_cast<const uint8_t*>("hi"),
-                                                               2)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("hi"), 2)));
   p.ep_b->Pump();
   auto cb = p.ep_b->Find(Aid());
   ASSERT_NE(cb, nullptr);
-  cb->OnMessage([&](const pp::adp::Message& m) {
-    got.emplace_back(m.payload.begin(), m.payload.end());
-  });
+  cb->OnMessage([&](const pp::adp::Message& m) { got.emplace_back(m.payload.begin(), m.payload.end()); });
   // Message already delivered before handler — send again.
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("yo"), 2)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("yo"), 2)));
   p.ep_b->Pump();
   ASSERT_EQ(got.size(), 1u);
   EXPECT_EQ(got[0], "yo");
@@ -122,8 +119,8 @@ TEST_F(AdpConnTest, BestEffortNoRtxOnDrop) {
   op.peer = p.addr_b;
   auto ca = p.ep_a->Open(op);
   ASSERT_TRUE(ca);
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
   p.ep_b->Pump();
   EXPECT_EQ(p.ep_b->Find(Aid()), nullptr);
   p.clock->Advance(1000);
@@ -191,9 +188,7 @@ TEST_F(AdpConnTest, PathMigrate) {
   ASSERT_TRUE(cb);
 
   std::vector<pp::adp::IpEndpoint> paths;
-  (*cb)->OnPathChange([&](const pp::adp::IpEndpoint&, const pp::adp::IpEndpoint& to) {
-    paths.push_back(to);
-  });
+  (*cb)->OnPathChange([&](const pp::adp::IpEndpoint&, const pp::adp::IpEndpoint& to) { paths.push_back(to); });
 
   // New client path (same assoc) — B should migrate peer endpoint.
   auto addr_c = pp::adp::IpEndpoint::V4(10, 0, 0, 1, 1001);
@@ -203,8 +198,8 @@ TEST_F(AdpConnTest, PathMigrate) {
   opc.peer = p.addr_b;
   auto cc = ep_c->Open(opc);
   ASSERT_TRUE(cc);
-  ASSERT_TRUE((*cc)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("b"), 1)));
+  ASSERT_TRUE(
+      (*cc)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("b"), 1)));
   p.ep_b->Pump();
   ASSERT_FALSE(paths.empty());
   EXPECT_EQ(paths.back(), addr_c);
@@ -231,7 +226,7 @@ TEST_F(AdpConnTest, ReplayedPacketFromANewAddressDoesNotMoveThePath) {
   (*cb)->OnPathChange([&](const pp::adp::IpEndpoint&, const pp::adp::IpEndpoint& to) { paths.push_back(to); });
 
   const auto one = std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("a"), 1);
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort, one));  // seq 1 from A's path
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort, one)); // seq 1 from A's path
   p.ep_b->Pump();
   ASSERT_EQ((*cb)->PeerEndpoint(), p.addr_a);
 
@@ -252,7 +247,7 @@ TEST_F(AdpConnTest, ReplayedPacketFromANewAddressDoesNotMoveThePath) {
   EXPECT_EQ((*cb)->LastAuthRxMs(), rx_before) << "nor count as the peer being alive";
 
   // A fresh seq from the new address (a real rebind) moves it.
-  ASSERT_TRUE((*cc)->Send(pp::adp::QosClass::BestEffort, one));  // seq 2
+  ASSERT_TRUE((*cc)->Send(pp::adp::QosClass::BestEffort, one)); // seq 2
   p.ep_b->Pump();
   EXPECT_EQ((*cb)->PeerEndpoint(), addr_c);
   ASSERT_FALSE(paths.empty());
@@ -301,9 +296,7 @@ TEST_F(AdpConnTest, NatReplyUsesObservedAddr) {
   ASSERT_TRUE(ca);
 
   std::string reply;
-  (*ca)->OnMessage([&](const pp::adp::Message& m) {
-    reply.assign(m.payload.begin(), m.payload.end());
-  });
+  (*ca)->OnMessage([&](const pp::adp::Message& m) { reply.assign(m.payload.begin(), m.payload.end()); });
 
   ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
                           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("ping"), 4)));
@@ -311,8 +304,8 @@ TEST_F(AdpConnTest, NatReplyUsesObservedAddr) {
   auto cb = p.ep_b->Find(Aid());
   ASSERT_NE(cb, nullptr);
   EXPECT_EQ(cb->PeerEndpoint(), p.addr_a);
-  ASSERT_TRUE(cb->Send(pp::adp::QosClass::BestEffort,
-                       std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("pong"), 4)));
+  ASSERT_TRUE(
+      cb->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("pong"), 4)));
   p.ep_a->Pump();
   EXPECT_EQ(reply, "pong");
 }
@@ -331,8 +324,8 @@ TEST_F(AdpConnTest, TimestampSkewReject) {
   auto ca = p.ep_a->Open(op);
   ASSERT_TRUE(ca);
 
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
   p.clock->Advance(120'000); // > kDefaultSkewMs on accept path
   p.ep_b->Pump();
   EXPECT_EQ(p.ep_b->Find(Aid()), nullptr);
@@ -348,8 +341,8 @@ TEST_F(AdpConnTest, SendAfterCloseFails) {
   auto ca = p.ep_a->Open(op);
   ASSERT_TRUE(ca);
   (*ca)->Close();
-  EXPECT_FALSE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
+  EXPECT_FALSE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
 }
 
 TEST_F(AdpConnTest, DemuxMultipleAssocs) {
@@ -369,10 +362,10 @@ TEST_F(AdpConnTest, DemuxMultipleAssocs) {
   auto c2 = open(2);
   ASSERT_TRUE(c1);
   ASSERT_TRUE(c2);
-  ASSERT_TRUE((*c1)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("1"), 1)));
-  ASSERT_TRUE((*c2)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("2"), 1)));
+  ASSERT_TRUE(
+      (*c1)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("1"), 1)));
+  ASSERT_TRUE(
+      (*c2)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("2"), 1)));
   p.ep_b->Pump();
   EXPECT_NE(p.ep_b->Find(Aid(1)), nullptr);
   EXPECT_NE(p.ep_b->Find(Aid(2)), nullptr);

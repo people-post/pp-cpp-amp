@@ -78,8 +78,8 @@ public:
 
   PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
                   PeerLinkConfig config = {});
-  PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
-                  PeerLinkConfig config, std::recursive_mutex& strand_mu);
+  PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id, PeerLinkConfig config,
+                  std::recursive_mutex& strand_mu);
   ~PeerLinkManager();
 
   PeerLinkManager(const PeerLinkManager&) = delete;
@@ -143,11 +143,10 @@ public:
                    ChannelCb on_complete);
   void OpenChannelOnLink(PeerLink& link, const std::string& protocol_id, ChannelPolicy policy, ChannelCb on_complete);
 
-  void EstablishNestedOverCarrier(const std::string& peer_key, std::shared_ptr<ChannelSession> carrier,
-                                  bool initiator, LinkCb on_complete);
+  void EstablishNestedOverCarrier(const std::string& peer_key, std::shared_ptr<ChannelSession> carrier, bool initiator,
+                                  LinkCb on_complete);
 
-  void EnableNestedCarrierAccept(bool enable,
-                                 std::string protocol_id = kAmpCircuitCarrierProtocolId);
+  void EnableNestedCarrierAccept(bool enable, std::string protocol_id = kAmpCircuitCarrierProtocolId);
 
   void SetProtocolHandler(const std::string& protocol_id, ProtocolHandler handler);
   /**
@@ -162,8 +161,7 @@ public:
 
   PeerLinkSnapshot GetLinkSnapshot(const std::string& peer_key) const;
   LinkSnapshotEx GetSnapshotByDialKey(const DialKey& key) const;
-  LinkSnapshotEx GetSnapshotByPeerId(const std::string& peer_id,
-                                     TransportClass prefer = TransportClass::Adp) const;
+  LinkSnapshotEx GetSnapshotByPeerId(const std::string& peer_id, TransportClass prefer = TransportClass::Adp) const;
   bool IsConnected(const std::string& peer_key) const;
   bool IsConnectedToPeerId(const std::string& peer_id) const;
   bool IsReachable(const std::string& peer_id) const;
@@ -209,8 +207,7 @@ public:
    * Bind ChannelSession under strand lock; returns empty if link/mux missing.
    * `peer_key` may be a dial alias or authenticated PeerId.
    */
-  std::shared_ptr<ChannelSession> BindChannel(const DialKey& peer_key, uint32_t channel_id,
-                                              ChannelPolicy policy,
+  std::shared_ptr<ChannelSession> BindChannel(const DialKey& peer_key, uint32_t channel_id, ChannelPolicy policy,
                                               ChannelSession::FrameHandler on_frame,
                                               ChannelSession::ClosedCallback on_closed = {});
   /**
@@ -303,9 +300,7 @@ public:
    */
   std::optional<adp::ConnectionStats> LinkConnectionStats(LinkHandle handle);
 
-  static bool IsAssociationNotReady(const Failure& failure) {
-    return failure.GetCode() == Err::AssociationNotReady;
-  }
+  static bool IsAssociationNotReady(const Failure& failure) { return failure.GetCode() == Err::AssociationNotReady; }
 
   void Tick();
 

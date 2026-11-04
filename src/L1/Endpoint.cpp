@@ -48,7 +48,9 @@ std::shared_ptr<Connection> Endpoint::Find(const AssocId& id) const {
   return it->second;
 }
 
-void Endpoint::Unregister(const AssocId& id) { conns_.erase(id); }
+void Endpoint::Unregister(const AssocId& id) {
+  conns_.erase(id);
+}
 
 Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram) {
   auto sent = io_->SendTo(peer, datagram);
@@ -148,8 +150,7 @@ void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> d
   // Skew check before creating an association.
   const int64_t now = clock_->NowMs();
   const uint32_t now_trunc = static_cast<uint32_t>(static_cast<uint64_t>(now) & 0xffffffffull);
-  const int64_t delta =
-      static_cast<int64_t>(static_cast<int32_t>(now_trunc - decoded->timestamp_ms));
+  const int64_t delta = static_cast<int64_t>(static_cast<int32_t>(now_trunc - decoded->timestamp_ms));
   if (delta > tuning_.skew_ms || delta < -tuning_.skew_ms) {
     return;
   }
