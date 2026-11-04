@@ -48,9 +48,13 @@ pp::adp::AssocId AdpAssoc(const uint8_t fill = 0x11) {
   return id;
 }
 
-pp::amp::ByteVector SessionKey(const uint8_t seed) { return pp::amp::ByteVector(pp::amp::kSessionKeyBytes, seed); }
+pp::amp::ByteVector SessionKey(const uint8_t seed) {
+  return pp::amp::ByteVector(pp::amp::kSessionKeyBytes, seed);
+}
 
-pp::amp::ChannelPolicy BulkPolicy() { return pp::amp::BulkChannelPolicy(); }
+pp::amp::ChannelPolicy BulkPolicy() {
+  return pp::amp::BulkChannelPolicy();
+}
 
 bool RunA1(const int warmup, const int iters) {
   std::printf("\n== A1 WireCodec + HmacBinder ==\n");
@@ -197,9 +201,7 @@ bool RunC2(const int warmup, const int iters) {
       std::fprintf(stderr, "C2 inbound mux missing\n");
       return false;
     }
-    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-      received = std::move(payload);
-    });
+    inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
     std::vector<uint8_t> msg = {'p', 'i', 'n', 'g'};
     if (!h.SendMuxData(HarnessSide::A, "b", *ch, msg) ||
         !h.PumpUntilReceived(received, [&] { return received == msg; })) {
@@ -237,9 +239,8 @@ bool RunC3(const int warmup, const int iters) {
     }
 
     std::vector<uint8_t> received;
-    link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-      received = std::move(payload);
-    });
+    link.responder.mux.SetDataHandler(*ch,
+                                      [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
     std::vector<uint8_t> large(payload_len, 0xAB);
     auto sent = link.initiator.mux.SendData(*ch, large);

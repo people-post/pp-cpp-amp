@@ -24,9 +24,7 @@ struct LinkHandle {
   uint32_t generation = 0;
 
   bool valid() const { return id.valid() && generation != 0; }
-  friend bool operator==(LinkHandle a, LinkHandle b) {
-    return a.id == b.id && a.generation == b.generation;
-  }
+  friend bool operator==(LinkHandle a, LinkHandle b) { return a.id == b.id && a.generation == b.generation; }
   friend bool operator!=(LinkHandle a, LinkHandle b) { return !(a == b); }
 };
 
@@ -70,8 +68,6 @@ struct LinkSnapshotEx {
 namespace std {
 template <>
 struct hash<pp::amp::LinkId> {
-  size_t operator()(pp::amp::LinkId id) const noexcept {
-    return std::hash<uint64_t>{}(id.value);
-  }
+  size_t operator()(pp::amp::LinkId id) const noexcept { return std::hash<uint64_t>{}(id.value); }
 };
 } // namespace std

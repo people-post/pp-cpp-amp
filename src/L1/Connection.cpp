@@ -22,8 +22,12 @@ PacketSpace SpaceOf(const PacketType type) {
 } // namespace
 
 Connection::Connection(Endpoint& endpoint, OpenParams params)
-    : endpoint_(&endpoint), id_(params.id), binder_(params.key), peer_(params.peer),
-      params_(std::move(params)), rx_be_(params_.replay_window, /*slide_on_gap=*/true),
+    : endpoint_(&endpoint),
+      id_(params.id),
+      binder_(params.key),
+      peer_(params.peer),
+      params_(std::move(params)),
+      rx_be_(params_.replay_window, /*slide_on_gap=*/true),
       // Must cover the whole send window: a seq the sender may legitimately
       // have in flight cannot be "too far".
       rx_rel_(std::max(params_.replay_window, params_.reliable_window), /*slide_on_gap=*/false) {
@@ -145,7 +149,7 @@ Connection::Roe<void> Connection::StopKeepalive(const int64_t now_ms) {
 }
 
 Connection::Roe<void> Connection::SendKeepalivePacket(const int64_t now_ms, const uint32_t interval_ms,
-                                                       const uint8_t flags) {
+                                                      const uint8_t flags) {
   if (closed_) {
     return Failure::Of(Err::Closed, "adp: keepalive on closed connection");
   }
@@ -309,7 +313,7 @@ Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std:
 }
 
 Connection::Roe<void> Connection::SendPacketAsFailure(const PacketType type, const uint32_t seq,
-                                          const std::span<const uint8_t> payload, const int64_t now_ms) {
+                                                      const std::span<const uint8_t> payload, const int64_t now_ms) {
   auto sent = SendPacket(type, seq, payload, now_ms);
   if (!sent) {
     return Failure::Of(Err::WireError, sent.error().message);
@@ -361,7 +365,7 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   ++stats_.reliable_sent;
   auto sent = SendPacket(outstanding_.back().type, tx_seq_rel_, payload, now);
   if (!sent && peer_unreachable_) {
-    return sent.error();  // no route: the link layer tears this path down
+    return sent.error(); // no route: the link layer tears this path down
   }
   return {};
 }
@@ -370,7 +374,7 @@ void Connection::NoteRttSample(const int64_t rtt_ms) {
   endpoint_->NoteRttSample(rtt_ms);
   const int64_t sample = rtt_ms < 0 ? 0 : rtt_ms;
   ++stats_.rtt_samples;
-  rto_backoff_ = 0;  // a clean round trip: the timeout comes from it again
+  rto_backoff_ = 0; // a clean round trip: the timeout comes from it again
   stats_.rtt_sum_ms += static_cast<uint64_t>(sample);
   if (stats_.srtt_ms < 0) {
     stats_.srtt_ms = sample;
@@ -417,8 +421,7 @@ void Connection::Tick(int64_t now_ms) {
   }
 }
 
-void Connection::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram,
-                                int64_t now_ms) {
+void Connection::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram, int64_t now_ms) {
   auto type = WireCodec::PeekType(datagram);
   if (!type) {
     endpoint_->NoteRejected();
@@ -506,37 +509,37 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
   bool fresh = false;
   bool ack_reliable = false;
   switch (pkt.type) {
-  case PacketType::DataBestEffort:
-  case PacketType::PlainBestEffort:
-    fresh = fresh_data = rx_be_.Accept(pkt.seq);
-    break;
-  case PacketType::DataReliable:
-  case PacketType::PlainReliable:
-    // Record (and later ACK) only a packet we keep: one ACKed but dropped is
-    // never resent and stalls in-order delivery for good. Duplicates are ACKed
-    // so the sender stops resending; too far ahead, or no room in the hold,
-    // stays unACKed and is resent.
-    switch (rx_rel_.Classify(pkt.seq)) {
-    case ReplayWindow::Verdict::Duplicate:
-      ack_reliable = true;
+    case PacketType::DataBestEffort:
+    case PacketType::PlainBestEffort:
+      fresh = fresh_data = rx_be_.Accept(pkt.seq);
       break;
-    case ReplayWindow::Verdict::TooFar:
-      break;
-    case ReplayWindow::Verdict::Fresh: {
-      const bool room = !on_message_ || rx_rel_hold_.size() < params_.reliable_window ||
-                        pkt.seq == rx_rel_next_deliver_;
-      if (room) {
-        fresh = fresh_data = rx_rel_.Accept(pkt.seq);
-        ack_reliable = fresh_data;
+    case PacketType::DataReliable:
+    case PacketType::PlainReliable:
+      // Record (and later ACK) only a packet we keep: one ACKed but dropped is
+      // never resent and stalls in-order delivery for good. Duplicates are ACKed
+      // so the sender stops resending; too far ahead, or no room in the hold,
+      // stays unACKed and is resent.
+      switch (rx_rel_.Classify(pkt.seq)) {
+        case ReplayWindow::Verdict::Duplicate:
+          ack_reliable = true;
+          break;
+        case ReplayWindow::Verdict::TooFar:
+          break;
+        case ReplayWindow::Verdict::Fresh: {
+          const bool room =
+              !on_message_ || rx_rel_hold_.size() < params_.reliable_window || pkt.seq == rx_rel_next_deliver_;
+          if (room) {
+            fresh = fresh_data = rx_rel_.Accept(pkt.seq);
+            ack_reliable = fresh_data;
+          }
+          break;
+        }
       }
       break;
-    }
-    }
-    break;
-  default:
-    // Serial arithmetic on the 32-bit wire timestamp (it wraps, as in AcceptSkew).
-    fresh = !have_auth_rx_ts_ || static_cast<int32_t>(pkt.timestamp_ms - max_auth_rx_ts_) > 0;
-    break;
+    default:
+      // Serial arithmetic on the 32-bit wire timestamp (it wraps, as in AcceptSkew).
+      fresh = !have_auth_rx_ts_ || static_cast<int32_t>(pkt.timestamp_ms - max_auth_rx_ts_) > 0;
+      break;
   }
   if (!sealed && (!have_auth_rx_ts_ || static_cast<int32_t>(pkt.timestamp_ms - max_auth_rx_ts_) > 0)) {
     max_auth_rx_ts_ = pkt.timestamp_ms;
@@ -548,69 +551,69 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
   }
 
   switch (pkt.type) {
-  case PacketType::Ack: {
-    for (const Outstanding& o : outstanding_) {
-      if (o.seq == pkt.seq && o.attempts == 0) {
-        NoteRttSample(now_ms - o.first_sent_ms);  // Karn: never a retransmitted one
+    case PacketType::Ack: {
+      for (const Outstanding& o : outstanding_) {
+        if (o.seq == pkt.seq && o.attempts == 0) {
+          NoteRttSample(now_ms - o.first_sent_ms); // Karn: never a retransmitted one
+          break;
+        }
+      }
+      outstanding_.erase(std::remove_if(outstanding_.begin(), outstanding_.end(),
+                                        [&](const Outstanding& o) { return o.seq == pkt.seq; }),
+                         outstanding_.end());
+      break;
+    }
+    case PacketType::Close: {
+      // Pre-auth, the binder key is the well-known pre-session key: anyone who sees the association id
+      // can forge this. A dialer still takes it as a refusal (dialer_backoff): like a TCP reset, only an
+      // on-path observer could forge it, and it could drop the handshake as well.
+      if (!authenticated_ && !params_.dialer_backoff) {
         break;
       }
-    }
-    outstanding_.erase(std::remove_if(outstanding_.begin(), outstanding_.end(),
-                                      [&](const Outstanding& o) { return o.seq == pkt.seq; }),
-                       outstanding_.end());
-    break;
-  }
-  case PacketType::Close: {
-    // Pre-auth, the binder key is the well-known pre-session key: anyone who sees the association id
-    // can forge this. A dialer still takes it as a refusal (dialer_backoff): like a TCP reset, only an
-    // on-path observer could forge it, and it could drop the handshake as well.
-    if (!authenticated_ && !params_.dialer_backoff) {
+      peer_closed_ = true;
+      closed_ = true;
+      endpoint_->Unregister(id_);
       break;
     }
-    peer_closed_ = true;
-    closed_ = true;
-    endpoint_->Unregister(id_);
-    break;
-  }
-  case PacketType::Keepalive: {
-    if (!authenticated_) {
+    case PacketType::Keepalive: {
+      if (!authenticated_) {
+        break;
+      }
+      HandleKeepalive(pkt, now_ms);
       break;
     }
-    HandleKeepalive(pkt, now_ms);
-    break;
-  }
-  case PacketType::DataBestEffort:
-  case PacketType::PlainBestEffort: {
-    if (!fresh_data) {
+    case PacketType::DataBestEffort:
+    case PacketType::PlainBestEffort: {
+      if (!fresh_data) {
+        break;
+      }
+      if (on_message_) {
+        Message m;
+        m.assoc = id_;
+        m.seq = pkt.seq;
+        m.qos = QosClass::BestEffort;
+        m.sealed = sealed;
+        m.payload = pkt.payload;
+        on_message_(m);
+      }
       break;
     }
-    if (on_message_) {
-      Message m;
-      m.assoc = id_;
-      m.seq = pkt.seq;
-      m.qos = QosClass::BestEffort;
-      m.sealed = sealed;
-      m.payload = pkt.payload;
-      on_message_(m);
-    }
-    break;
-  }
-  case PacketType::DataReliable:
-  case PacketType::PlainReliable: {
-    if (ack_reliable) {
-      (void)SendPacket(PacketType::Ack, pkt.seq, {}, now_ms);
-    }
-    if (!fresh_data) {
+    case PacketType::DataReliable:
+    case PacketType::PlainReliable: {
+      if (ack_reliable) {
+        (void)SendPacket(PacketType::Ack, pkt.seq, {}, now_ms);
+      }
+      if (!fresh_data) {
+        break;
+      }
+      // The hold is capped to the reliable window (checked above): a forged
+      // out-of-order seq per packet cannot grow it without bound.
+      if (on_message_) {
+        rx_rel_hold_[pkt.seq] = HeldReliable{sealed, pkt.payload};
+        DeliverReliableInOrder();
+      }
       break;
     }
-    // The hold is capped to the reliable window (checked above): a forged
-    // out-of-order seq per packet cannot grow it without bound.
-    if (on_message_) {
-      rx_rel_hold_[pkt.seq] = HeldReliable{sealed, pkt.payload};
-      DeliverReliableInOrder();
-    }
-    break;
-  }
   }
 }
 

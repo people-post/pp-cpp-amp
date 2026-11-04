@@ -18,7 +18,9 @@ MessageReassembly ReassemblyFor(const ChannelPolicy& policy) {
 
 namespace {
 
-int64_t DefaultNowMs() { return 0; }
+int64_t DefaultNowMs() {
+  return 0;
+}
 
 /**
  * Local ceiling for an inbound Open's declared max_message_bytes, by advertised channel class.
@@ -27,8 +29,7 @@ int64_t DefaultNowMs() { return 0; }
  * reassembly buffer per message.
  */
 size_t LocalMaxMessageBytesCeiling(const ChannelClass cls) {
-  return cls == ChannelClass::Bulk ? AmpChannelLimits::kMaxBulkFrameBytes
-                                    : AmpChannelLimits::kMaxChatStreamJsonBytes;
+  return cls == ChannelClass::Bulk ? AmpChannelLimits::kMaxBulkFrameBytes : AmpChannelLimits::kMaxChatStreamJsonBytes;
 }
 
 } // namespace
@@ -38,11 +39,17 @@ ChannelMux::ChannelMux(const bool initiator) : now_ms_(DefaultNowMs) {
   next_dynamic_id_ = initiator ? 1u : 2u;
 }
 
-void ChannelMux::SetTransport(TransportSend send) { transport_ = std::move(send); }
+void ChannelMux::SetTransport(TransportSend send) {
+  transport_ = std::move(send);
+}
 
-void ChannelMux::SetTransportCredits(TransportCredits credits) { transport_credits_ = std::move(credits); }
+void ChannelMux::SetTransportCredits(TransportCredits credits) {
+  transport_credits_ = std::move(credits);
+}
 
-void ChannelMux::SetClock(std::function<int64_t()> now_ms) { now_ms_ = std::move(now_ms); }
+void ChannelMux::SetClock(std::function<int64_t()> now_ms) {
+  now_ms_ = std::move(now_ms);
+}
 
 ChannelMux::ChannelRecord* ChannelMux::ChannelById(const uint32_t channel_id) {
   auto it = channels_.find(channel_id);
@@ -71,7 +78,9 @@ Roe<void> ChannelMux::SendFrame(const ChannelFrame& frame, ChannelRecord& channe
   return SendWire(frame.header.channel_id, QosForClass(channel.policy.cls), std::move(*wire));
 }
 
-bool ChannelMux::HasReliableCredit() const { return !transport_credits_ || transport_credits_() > 0; }
+bool ChannelMux::HasReliableCredit() const {
+  return !transport_credits_ || transport_credits_() > 0;
+}
 
 Roe<void> ChannelMux::Transport(const adp::QosClass qos, const std::vector<uint8_t>& wire) {
   if (!transport_) {
@@ -122,7 +131,7 @@ void ChannelMux::FlushQueued() {
     if (it->second.empty()) {
       send_queues_.erase(it);
     } else {
-      send_order_.push_back(channel_id);  // round-robin: other channels go next
+      send_order_.push_back(channel_id); // round-robin: other channels go next
     }
   }
 }
@@ -188,8 +197,7 @@ Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPo
   frame.open.protocol_id = protocol_id;
   frame.open.channel_class = channels_.at(id).policy.cls;
   const size_t max_bytes = channels_.at(id).policy.max_message_bytes;
-  frame.open.max_message_bytes =
-      max_bytes > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<uint32_t>(max_bytes);
+  frame.open.max_message_bytes = max_bytes > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<uint32_t>(max_bytes);
 
   auto* channel = ChannelById(id);
   if (!channel) {
@@ -220,7 +228,7 @@ Roe<void> ChannelMux::ApplyChannelPolicy(const uint32_t channel_id, ChannelPolic
   }
   channel->policy = std::move(policy);
   channel->reassembly = ReassemblyFor(channel->policy);
-  channel->read_clock_ms = -1;  // a (re)bound reader gets a full read_timeout
+  channel->read_clock_ms = -1; // a (re)bound reader gets a full read_timeout
   return Roe<void>();
 }
 
@@ -248,7 +256,9 @@ void ChannelMux::SetProtocolHandler(const std::string& protocol_id, InboundOpenH
   }
 }
 
-void ChannelMux::ClearProtocolHandlers() { protocol_handlers_.clear(); }
+void ChannelMux::ClearProtocolHandlers() {
+  protocol_handlers_.clear();
+}
 
 std::vector<std::function<void()>> ChannelMux::DetachAllChannels() {
   std::vector<std::function<void()>> notices;
@@ -330,8 +340,7 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
     channels_.at(frame.header.channel_id).on_data = std::move(it->second);
     pending_handlers_.erase(it);
   }
-  if (auto it = pending_terminal_handlers_.find(frame.header.channel_id);
-      it != pending_terminal_handlers_.end()) {
+  if (auto it = pending_terminal_handlers_.find(frame.header.channel_id); it != pending_terminal_handlers_.end()) {
     channels_.at(frame.header.channel_id).on_terminal = std::move(it->second);
     pending_terminal_handlers_.erase(it);
   }
@@ -361,8 +370,8 @@ Roe<void> ChannelMux::HandleOpenAck(ChannelFrame frame) {
   if (frame.open_ack_result != 0) {
     channel->state = ChannelState::Closed;
     pending_open_data_.erase(frame.header.channel_id);
-    NotifyTerminal(*channel, frame.open_ack_result == kOpenAckNoHandler ? "open rejected: no handler"
-                                                                        : "open rejected");
+    NotifyTerminal(*channel,
+                   frame.open_ack_result == kOpenAckNoHandler ? "open rejected: no handler" : "open rejected");
     channels_.erase(frame.header.channel_id);
     return Error("amp mux: open rejected");
   }
@@ -388,68 +397,68 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
   }
 
   switch (frame.header.frame_type) {
-  case ChannelFrameType::Open:
-    return HandleOpen(std::move(frame));
-  case ChannelFrameType::OpenAck:
-    return HandleOpenAck(std::move(frame));
-  case ChannelFrameType::Reset:
-    if (channel) {
-      // The peer reads no more of this channel: what waits for window space would be sent for nothing
-      // (a request it refused early can be megabytes).
-      DropQueued(frame.header.channel_id);
-      channel->state = ChannelState::Closed;
-      NotifyTerminal(*channel, "peer_reset");
-      channels_.erase(frame.header.channel_id);
-    }
-    return Roe<void>();
-  case ChannelFrameType::Close:
-    if (channel) {
-      DropQueued(frame.header.channel_id);  // as for Reset: the channel is gone on both sides
-      channel->state = ChannelState::Closed;
-      NotifyTerminal(*channel, "peer_close");
-      channels_.erase(frame.header.channel_id);
-    }
-    return Roe<void>();
-  case ChannelFrameType::Data:
-    if (!channel || channel->state != ChannelState::Open) {
-      return Error("amp mux: data on closed channel");
-    }
-    if (QosForClass(channel->policy.cls) == adp::QosClass::Reliable) {
-      if (frame.header.channel_seq != channel->rx_seq) {
-        return Error("amp mux: out of order seq");
+    case ChannelFrameType::Open:
+      return HandleOpen(std::move(frame));
+    case ChannelFrameType::OpenAck:
+      return HandleOpenAck(std::move(frame));
+    case ChannelFrameType::Reset:
+      if (channel) {
+        // The peer reads no more of this channel: what waits for window space would be sent for nothing
+        // (a request it refused early can be megabytes).
+        DropQueued(frame.header.channel_id);
+        channel->state = ChannelState::Closed;
+        NotifyTerminal(*channel, "peer_reset");
+        channels_.erase(frame.header.channel_id);
       }
-      channel->rx_seq += 1;
-    }
-    channel->read_clock_ms = -1;
-    return DeliverPayload(*channel, std::move(frame.payload));
-  case ChannelFrameType::Frag: {
-    if (!channel || channel->state != ChannelState::Open) {
-      return Error("amp mux: frag on closed channel");
-    }
-    if (QosForClass(channel->policy.cls) == adp::QosClass::Reliable) {
-      if (frame.header.channel_seq != channel->rx_seq) {
-        return Error("amp mux: out of order frag seq");
-      }
-      channel->rx_seq += 1;
-    }
-    channel->read_clock_ms = -1;
-    auto assembled = channel->reassembly.Push(frame.frag, now_ms_ ? now_ms_() : 0);
-    if (!assembled) {
-      const uint32_t id = channel->id;
-      TerminalHandler handler = channel->on_terminal;  // ResetChannel erases the record
-      (void)ResetChannel(id);
-      if (handler) {
-        handler(id, kBadMessageReason);
-      }
-      return assembled.error();
-    }
-    if (!assembled->has_value()) {
       return Roe<void>();
+    case ChannelFrameType::Close:
+      if (channel) {
+        DropQueued(frame.header.channel_id); // as for Reset: the channel is gone on both sides
+        channel->state = ChannelState::Closed;
+        NotifyTerminal(*channel, "peer_close");
+        channels_.erase(frame.header.channel_id);
+      }
+      return Roe<void>();
+    case ChannelFrameType::Data:
+      if (!channel || channel->state != ChannelState::Open) {
+        return Error("amp mux: data on closed channel");
+      }
+      if (QosForClass(channel->policy.cls) == adp::QosClass::Reliable) {
+        if (frame.header.channel_seq != channel->rx_seq) {
+          return Error("amp mux: out of order seq");
+        }
+        channel->rx_seq += 1;
+      }
+      channel->read_clock_ms = -1;
+      return DeliverPayload(*channel, std::move(frame.payload));
+    case ChannelFrameType::Frag: {
+      if (!channel || channel->state != ChannelState::Open) {
+        return Error("amp mux: frag on closed channel");
+      }
+      if (QosForClass(channel->policy.cls) == adp::QosClass::Reliable) {
+        if (frame.header.channel_seq != channel->rx_seq) {
+          return Error("amp mux: out of order frag seq");
+        }
+        channel->rx_seq += 1;
+      }
+      channel->read_clock_ms = -1;
+      auto assembled = channel->reassembly.Push(frame.frag, now_ms_ ? now_ms_() : 0);
+      if (!assembled) {
+        const uint32_t id = channel->id;
+        TerminalHandler handler = channel->on_terminal; // ResetChannel erases the record
+        (void)ResetChannel(id);
+        if (handler) {
+          handler(id, kBadMessageReason);
+        }
+        return assembled.error();
+      }
+      if (!assembled->has_value()) {
+        return Roe<void>();
+      }
+      return DeliverPayload(*channel, std::move(**assembled));
     }
-    return DeliverPayload(*channel, std::move(**assembled));
-  }
-  default:
-    return Error("amp mux: unhandled frame type");
+    default:
+      return Error("amp mux: unhandled frame type");
   }
 }
 
@@ -545,7 +554,7 @@ Roe<void> ChannelMux::ResetChannel(const uint32_t channel_id, const uint32_t cod
   frame.header.channel_seq = channel->tx_seq++;
   frame.reset_code = code;
   channel->state = ChannelState::Closed;
-  DropQueued(channel_id);  // abort: unsent data is discarded
+  DropQueued(channel_id); // abort: unsent data is discarded
   auto sent = SendFrame(frame, *channel);
   channels_.erase(channel_id);
   return sent;
@@ -657,9 +666,9 @@ void ChannelMux::ExpireIdleReaders(const int64_t now_ms) {
   for (const uint32_t id : expired) {
     auto* channel = ChannelById(id);
     if (!channel) {
-      continue;  // an earlier notice's handler closed it
+      continue; // an earlier notice's handler closed it
     }
-    TerminalHandler handler = channel->on_terminal;  // ResetChannel erases the record
+    TerminalHandler handler = channel->on_terminal; // ResetChannel erases the record
     (void)ResetChannel(id);
     if (handler) {
       handler(id, kReadTimeoutReason);

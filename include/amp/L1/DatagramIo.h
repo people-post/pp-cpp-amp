@@ -2,7 +2,6 @@
 
 #include "amp/L1/Types.h"
 
-
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -18,7 +17,9 @@ namespace pp::adp {
  */
 inline constexpr int32_t kDatagramSendUnreachable = 1;
 
-inline bool IsUnreachableSendError(const Error& error) { return error.code == kDatagramSendUnreachable; }
+inline bool IsUnreachableSendError(const Error& error) {
+  return error.code == kDatagramSendUnreachable;
+}
 
 /** What an OS socket tells about itself (OsUdpDatagramIo::Stats). */
 struct DatagramIoStats {

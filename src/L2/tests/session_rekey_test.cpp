@@ -39,10 +39,10 @@ TEST(SessionRekeyGraceTest, ApplyRekeyAcceptsPreviousEpochWithinGrace) {
   auto established = MshHandshake::Run(alice_id, bob_id);
   ASSERT_TRUE(static_cast<bool>(established));
 
-  auto alice = Session::FromMaterial(established->initiator_material, established->master_ikm,
-                                     established->transcript_hash);
-  auto bob = Session::FromMaterial(established->responder_material, established->master_ikm,
-                                   established->transcript_hash);
+  auto alice =
+      Session::FromMaterial(established->initiator_material, established->master_ikm, established->transcript_hash);
+  auto bob =
+      Session::FromMaterial(established->responder_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(alice));
   ASSERT_TRUE(static_cast<bool>(bob));
 
@@ -63,10 +63,10 @@ TEST(SessionRekeyGraceTest, ApplyRekeyRejectsPreviousEpochAfterGrace) {
   auto established = MshHandshake::Run(alice_id, bob_id);
   ASSERT_TRUE(static_cast<bool>(established));
 
-  auto alice = Session::FromMaterial(established->initiator_material, established->master_ikm,
-                                     established->transcript_hash);
-  auto bob = Session::FromMaterial(established->responder_material, established->master_ikm,
-                                   established->transcript_hash);
+  auto alice =
+      Session::FromMaterial(established->initiator_material, established->master_ikm, established->transcript_hash);
+  auto bob =
+      Session::FromMaterial(established->responder_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(alice));
   ASSERT_TRUE(static_cast<bool>(bob));
 

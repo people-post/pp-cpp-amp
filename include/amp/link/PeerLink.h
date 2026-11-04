@@ -74,12 +74,12 @@ public:
   using LinkRoe = CodedRoe<void, Err>;
   using CompleteCb = std::function<void(LinkRoe)>;
 
-  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound,
-           std::shared_ptr<adp::Connection> connection, MshIdentity local_identity, PeerLinkHostPorts host);
+  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound, std::shared_ptr<adp::Connection> connection,
+           MshIdentity local_identity, PeerLinkHostPorts host);
 
   /** Nested Session over circuit carrier (no ADP Connection). */
-  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound,
-           std::shared_ptr<ChannelSession> carrier, MshIdentity local_identity, PeerLinkHostPorts host);
+  PeerLink(std::string peer_key, std::string remote_peer_id, bool outbound, std::shared_ptr<ChannelSession> carrier,
+           MshIdentity local_identity, PeerLinkHostPorts host);
 
   ~PeerLink();
 
@@ -94,9 +94,7 @@ public:
   PeerLinkPhase Phase() const { return phase_; }
   bool IsOutbound() const { return outbound_; }
   bool IsCarrierBacked() const { return carrier_ != nullptr; }
-  TransportClass Transport() const {
-    return IsCarrierBacked() ? TransportClass::Carrier : TransportClass::Adp;
-  }
+  TransportClass Transport() const { return IsCarrierBacked() ? TransportClass::Carrier : TransportClass::Adp; }
   LinkId Id() const { return link_id_; }
   uint32_t Generation() const { return generation_; }
   LinkHandle Handle() const { return LinkHandle{link_id_, generation_}; }
@@ -113,9 +111,7 @@ public:
   Session* GetSession() { return session_.get(); }
   ChannelSession* Carrier() { return carrier_.get(); }
 
-  const CapabilityPayload* RemoteCapability() const {
-    return remote_capability_ ? &*remote_capability_ : nullptr;
-  }
+  const CapabilityPayload* RemoteCapability() const { return remote_capability_ ? &*remote_capability_ : nullptr; }
 
   void MarkWarm();
   void MarkHot();
@@ -149,7 +145,7 @@ public:
   /** Asked to prove it is alive (PeerLinkManager::VerifyLink): the same probing, its own drop reason. */
   void MarkVerifying(int64_t now_ms) {
     if (suspect_since_ms_ != 0) {
-      return;  // already probing (a network change): that verdict answers this too
+      return; // already probing (a network change): that verdict answers this too
     }
     suspect_since_ms_ = now_ms;
     last_probe_ms_ = 0;
@@ -171,6 +167,15 @@ public:
 
   /** Carrier-backed: resend unacked reliable-lane frames (Tick). */
   void TickCarrierLane(int64_t now_ms);
+  /**
+   * Carrier-backed initiator: resend the last handshake message when no reply came (Tick). A carrier is BestEffort
+   * and nothing below resends: one lost message used to end the handshake at its dial budget (two lossy long legs
+   * through a relay, pp-browser #502).
+   */
+  void TickCarrierHandshake(int64_t now_ms);
+  /** First resend of a carrier handshake message after this; each next one waits twice as long, up to the max. */
+  static constexpr int64_t kCarrierHandshakeResendMs = 500;
+  static constexpr int64_t kCarrierHandshakeResendMaxMs = 1500;
   /** Carrier-backed: a reliable-lane frame ran out of attempts — the path is gone. */
   bool CarrierLaneFailed() const { return lane_ && lane_->Failed(); }
   /** Carrier-backed: the peer speaks the reliable lane (it sent a lane frame). */
@@ -206,7 +211,7 @@ public:
 
   /** Exercises the MshChunk reassembly bound directly, without a live handshake. */
   Roe<std::optional<std::vector<uint8_t>>> PushMshChunkForTest(MshMessageType type, uint16_t index, uint16_t count,
-                                                                std::span<const uint8_t> chunk) {
+                                                               std::span<const uint8_t> chunk) {
     return PushMshChunk(type, index, count, chunk);
   }
 
@@ -221,6 +226,8 @@ private:
   void AttachMuxTransport();
   void AttachCarrierFrameHandler();
   void HandleCarrierFrame(std::span<const uint8_t> payload);
+  /** A carrier handshake resend's piece (MshChunk): kept across resends until its message is whole. */
+  void HandleCarrierMshChunk(std::span<const uint8_t> payload);
   void HandleLaneFrame(AmpAdpPayloadKind kind, std::span<const uint8_t> payload);
   void DeliverSealedCarrierWire(std::span<const uint8_t> wire);
   /** An opened frame to the mux, once Connected (a sealed packet before then is dropped; reliable ones resend). */
@@ -271,6 +278,14 @@ private:
   bool capability_extension_sent_ = false;
 
   std::unique_ptr<MshAdpHandshake> handshake_;
+  /** Carrier-backed initiator: when the last handshake message goes again, and the wait after that. */
+  int64_t carrier_msh_resend_at_ms_ = 0;
+  int64_t carrier_msh_resend_interval_ms_ = 0;
+  /**
+   * Carrier-backed responder, once Connected: its Finished, sent again if the initiator's Finished comes again (ours
+   * was lost). Cleared at the first sealed frame from the peer, which it sends only once it has ours.
+   */
+  std::vector<uint8_t> carrier_final_msh_;
   /** Shared with the connection, which seals and opens with it (adp::IPacketProtection). */
   std::shared_ptr<Session> session_;
   /** Carrier-backed only: inner packet numbers, per space (the nonce's), and their replay windows. */
@@ -291,7 +306,7 @@ private:
   std::function<void(Roe<void>)> rekey_cb_;
   int64_t handshake_started_ms_ = 0;
   Roe<std::optional<std::vector<uint8_t>>> PushMshChunk(MshMessageType type, uint16_t index, uint16_t count,
-                                                         std::span<const uint8_t> chunk);
+                                                        std::span<const uint8_t> chunk);
   bool punched_ = false;
 };
 

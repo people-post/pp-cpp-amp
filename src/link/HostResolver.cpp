@@ -41,13 +41,13 @@ Roe<adp::IpEndpoint> ResolveHostNow(const std::string_view host, const HostFamil
   addrinfo hints{};
   hints.ai_family = family == HostFamily::V4 ? AF_INET : family == HostFamily::V6 ? AF_INET6 : AF_UNSPEC;
   hints.ai_socktype = SOCK_DGRAM;
-  addrinfo *results = nullptr;
+  addrinfo* results = nullptr;
   const std::string name(host);
   if (const int rc = ::getaddrinfo(name.c_str(), nullptr, &hints, &results); rc != 0 || results == nullptr) {
     return Error("amp addr: cannot resolve " + name);
   }
   Roe<adp::IpEndpoint> out = Error("amp addr: " + name + " has no usable address");
-  for (const addrinfo *ai = results; ai != nullptr; ai = ai->ai_next) {
+  for (const addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
     adp::IpEndpoint ep;
     ep.port = port;
     if (ai->ai_family == AF_INET && ai->ai_addrlen >= sizeof(sockaddr_in)) {

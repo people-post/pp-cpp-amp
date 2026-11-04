@@ -98,8 +98,7 @@ void MemoryDatagramHub::Unregister(const IpEndpoint& local) {
   queues_.erase(local);
 }
 
-Roe<void> MemoryDatagramHub::Deliver(const IpEndpoint& from, const IpEndpoint& to,
-                                     std::vector<uint8_t> datagram) {
+Roe<void> MemoryDatagramHub::Deliver(const IpEndpoint& from, const IpEndpoint& to, std::vector<uint8_t> datagram) {
   Enqueue(to, from, std::move(datagram));
   return {};
 }
@@ -109,8 +108,7 @@ void MemoryDatagramHub::Enqueue(const IpEndpoint& to, IpEndpoint from, std::vect
   queues_[to].emplace_back(std::move(from), std::move(datagram));
 }
 
-Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> MemoryDatagramHub::Pop(
-    const IpEndpoint& local) {
+Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> MemoryDatagramHub::Pop(const IpEndpoint& local) {
   std::lock_guard lock(mu_);
   auto it = queues_.find(local);
   if (it == queues_.end() || it->second.empty()) {

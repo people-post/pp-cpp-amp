@@ -138,8 +138,8 @@ TEST_F(AdpEdgeTest, LooksAliveTimeout) {
 
   EXPECT_FALSE((*cb)->LooksAlive(p.clock->NowMs()));
 
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
   p.ep_b->Pump();
   EXPECT_TRUE((*cb)->LooksAlive(p.clock->NowMs()));
 
@@ -248,8 +248,8 @@ TEST_F(AdpEdgeTest, AcceptDisabledDropsInbound) {
   op.peer = p.addr_b;
   auto ca = p.ep_a->Open(op);
   ASSERT_TRUE(ca);
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
   p.ep_b->Pump();
   EXPECT_EQ(p.ep_b->Find(Aid()), nullptr);
 }
@@ -266,8 +266,8 @@ TEST_F(AdpEdgeTest, AcceptWrongKeyDropsInbound) {
   op.peer = p.addr_b;
   auto ca = p.ep_a->Open(op);
   ASSERT_TRUE(ca);
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
   p.ep_b->Pump();
   EXPECT_EQ(p.ep_b->Find(Aid()), nullptr);
 }
@@ -286,8 +286,8 @@ TEST_F(AdpEdgeTest, AcceptHandlerFiresOnce) {
   op.peer = p.addr_b;
   auto ca = p.ep_a->Open(op);
   ASSERT_TRUE(ca);
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
   p.ep_b->Pump();
   EXPECT_EQ(accepts, 1);
   EXPECT_NE(p.ep_b->Find(Aid()), nullptr);

@@ -141,7 +141,9 @@ bool LinkTable::BindDialKey(LinkId id, DialKey key) {
   return true;
 }
 
-void LinkTable::UnbindDialKey(const DialKey& key) { by_dial_key_.erase(key); }
+void LinkTable::UnbindDialKey(const DialKey& key) {
+  by_dial_key_.erase(key);
+}
 
 void LinkTable::SetPresence(const std::string& peer_id, TransportClass transport, LinkId id) {
   if (peer_id.empty() || !id.valid()) {

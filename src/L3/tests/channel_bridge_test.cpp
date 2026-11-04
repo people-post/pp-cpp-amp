@@ -30,12 +30,10 @@ TEST(ChannelBridgeTest, ForwardsBothWaysAndCountsTheBytes) {
 
   std::vector<uint8_t> at_target;
   std::vector<uint8_t> at_dialer;
-  path.TargetMux().SetDataHandler(path.far_channel, [&](uint32_t, std::vector<uint8_t> payload) {
-    at_target = std::move(payload);
-  });
-  path.DialerMux().SetDataHandler(path.near_channel, [&](uint32_t, std::vector<uint8_t> payload) {
-    at_dialer = std::move(payload);
-  });
+  path.TargetMux().SetDataHandler(path.far_channel,
+                                  [&](uint32_t, std::vector<uint8_t> payload) { at_target = std::move(payload); });
+  path.DialerMux().SetDataHandler(path.near_channel,
+                                  [&](uint32_t, std::vector<uint8_t> payload) { at_dialer = std::move(payload); });
 
   std::string target_closed;
   path.TargetMux().SetTerminalHandler(path.far_channel, [&](uint32_t, const char* why) { target_closed = why; });
@@ -46,7 +44,8 @@ TEST(ChannelBridgeTest, ForwardsBothWaysAndCountsTheBytes) {
   const std::vector<uint8_t> hello = {'h', 'e', 'l', 'l', 'o'};
   ASSERT_TRUE(static_cast<bool>(path.DialerMux().SendData(path.near_channel, hello)));
   EXPECT_EQ(at_target, hello);
-  ASSERT_EQ(path.TargetMux().State(path.far_channel), ChannelState::Open) << "target far channel closed: " << target_closed;
+  ASSERT_EQ(path.TargetMux().State(path.far_channel), ChannelState::Open)
+      << "target far channel closed: " << target_closed;
   ASSERT_EQ(path.DialerMux().State(path.near_channel), ChannelState::Open) << "dialer near channel";
   const std::vector<uint8_t> back = {'o', 'k'};
   auto sent_back = path.TargetMux().SendData(path.far_channel, back);

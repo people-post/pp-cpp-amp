@@ -160,13 +160,11 @@ public:
   /** Remaining duration from Amp clock now → absolute deadline for WhenChannelOpen. */
   void WhenChannelOpenIn(const DialKey& peer_key, uint32_t channel_id, std::chrono::milliseconds remaining,
                          std::function<void(bool ok)> done);
-  std::shared_ptr<ChannelSession> BindChannel(const DialKey& peer_key, uint32_t channel_id,
-                                              ChannelPolicy policy,
+  std::shared_ptr<ChannelSession> BindChannel(const DialKey& peer_key, uint32_t channel_id, ChannelPolicy policy,
                                               ChannelSession::FrameHandler on_frame,
                                               ChannelSession::ClosedCallback on_closed = {});
   LinkSnapshotEx SnapshotByDialKey(const DialKey& key) const;
-  LinkSnapshotEx SnapshotByPeerId(const std::string& peer_id,
-                                  TransportClass prefer = TransportClass::Adp) const;
+  LinkSnapshotEx SnapshotByPeerId(const std::string& peer_id, TransportClass prefer = TransportClass::Adp) const;
   PeerLinkSnapshot GetLinkSnapshot(const DialKey& peer_key) const;
   bool IsConnected(const DialKey& peer_key) const;
   bool IsConnectedToPeerId(const std::string& peer_id) const;
@@ -204,11 +202,10 @@ public:
    * Abort losers + on_done settle via PostDeferred. Prefer calling from PostToIo /
    * SM work already off the mux stack — do not start under ChannelMux delivery.
    */
-  void BurstDial(const std::vector<std::string>& multiaddrs, std::chrono::milliseconds window,
-                 BurstDialCb on_done);
+  void BurstDial(const std::vector<std::string>& multiaddrs, std::chrono::milliseconds window, BurstDialCb on_done);
 
-  void EstablishNestedOverCarrier(const DialKey& peer_key, std::shared_ptr<ChannelSession> carrier,
-                                  bool initiator, PeerLinkManager::LinkCb on_complete);
+  void EstablishNestedOverCarrier(const DialKey& peer_key, std::shared_ptr<ChannelSession> carrier, bool initiator,
+                                  PeerLinkManager::LinkCb on_complete);
   void EnableNestedCarrierAccept(bool enable, std::string protocol_id = kAmpCircuitCarrierProtocolId);
 
   template <typename Fn>

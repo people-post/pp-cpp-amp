@@ -49,8 +49,7 @@ public:
 
   Roe<std::shared_ptr<Connection>> Open(OpenParams params);
 
-  Roe<std::shared_ptr<Connection>> AcceptOrCreate(const AssocId& id, const PeerKey& key,
-                                                   const IpEndpoint& peer);
+  Roe<std::shared_ptr<Connection>> AcceptOrCreate(const AssocId& id, const PeerKey& key, const IpEndpoint& peer);
 
   std::shared_ptr<Connection> Find(const AssocId& id) const;
 

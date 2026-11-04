@@ -22,8 +22,8 @@ public:
   static Roe<ByteVector> Decrypt(const ByteVector& session_key, std::span<const uint8_t> nonce,
                                  std::span<const uint8_t> ciphertext, std::span<const uint8_t> aad);
 
-  static Roe<AeadBlob> Encrypt(const ByteVector& session_key, const ByteVector& plaintext,
-                               const ByteVector& aad, const ByteVector& nonce);
+  static Roe<AeadBlob> Encrypt(const ByteVector& session_key, const ByteVector& plaintext, const ByteVector& aad,
+                               const ByteVector& nonce);
   static Roe<ByteVector> Decrypt(const ByteVector& session_key, const AeadBlob& blob, const ByteVector& aad);
   static Roe<ByteVector> GenerateNonce();
 };

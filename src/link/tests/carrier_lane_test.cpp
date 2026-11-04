@@ -8,7 +8,9 @@
 namespace pp::amp {
 namespace {
 
-std::vector<uint8_t> Bytes(const std::string& s) { return {s.begin(), s.end()}; }
+std::vector<uint8_t> Bytes(const std::string& s) {
+  return {s.begin(), s.end()};
+}
 
 /** Seq + inner of a LaneData wire. */
 std::pair<uint32_t, std::vector<uint8_t>> Unwrap(const std::vector<uint8_t>& wire) {

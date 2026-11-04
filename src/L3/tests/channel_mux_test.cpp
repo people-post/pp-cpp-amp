@@ -40,9 +40,8 @@ TEST(ChannelMuxTest, OpenAndDataRoundTrip) {
   ASSERT_TRUE(static_cast<bool>(ch));
   EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Open);
 
-  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link.responder.mux.SetDataHandler(*ch,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   const std::vector<uint8_t> msg = {'h', 'i'};
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, msg)));
@@ -71,9 +70,8 @@ TEST(ChannelMuxTest, ResetDoesNotKillSiblingChannel) {
   ASSERT_TRUE(static_cast<bool>(ch2));
 
   std::vector<uint8_t> received;
-  link.responder.mux.SetDataHandler(*ch2, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link.responder.mux.SetDataHandler(*ch2,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch1)));
   EXPECT_EQ(link.initiator.mux.State(*ch1), ChannelState::Closed);
@@ -138,9 +136,8 @@ TEST(ChannelMuxTest, LargePayloadFragments) {
   ASSERT_TRUE(static_cast<bool>(ch));
 
   std::vector<uint8_t> received;
-  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link.responder.mux.SetDataHandler(*ch,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   std::vector<uint8_t> large(2500, 0xAB);
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, large)));
@@ -156,9 +153,8 @@ TEST(ChannelMuxTest, OpenCarriesMaxMessageBytesForBlob) {
   ASSERT_TRUE(static_cast<bool>(ch));
 
   std::vector<uint8_t> received;
-  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link.responder.mux.SetDataHandler(*ch,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   // Ledger-sized (512 KiB) and beyond the prior responder default (256 KiB).
   std::vector<uint8_t> large(512 * 1024, 0xCD);
@@ -188,9 +184,8 @@ TEST(ChannelMuxTest, InboundOpenClampsOfferedBytesToLocalClassCeiling) {
   EXPECT_FALSE(static_cast<bool>(link.responder.mux.SendData(*ch, mid)));
 
   std::vector<uint8_t> received;
-  link.initiator.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link.initiator.mux.SetDataHandler(*ch,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
   std::vector<uint8_t> small(1024, 0xAA);
   ASSERT_TRUE(static_cast<bool>(link.responder.mux.SendData(*ch, small)));
   EXPECT_EQ(received, small);
@@ -208,9 +203,8 @@ TEST(ChannelMuxTest, ApplyChannelPolicyRaisesReassemblyBudget) {
   ASSERT_TRUE(static_cast<bool>(link.responder.mux.ApplyChannelPolicy(*ch, BulkChannelPolicy())));
 
   std::vector<uint8_t> received;
-  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link.responder.mux.SetDataHandler(*ch,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   std::vector<uint8_t> large(512 * 1024, 0xEE);
   // Initiator still limited by ControlJson until Apply on initiator too.
@@ -268,8 +262,9 @@ TEST(ChannelMuxTest, RemoteResetNotifiesChannelSession) {
 
   std::string terminal_reason;
   ChannelSession session;
-  session.Bind(link.responder.mux, *ch1, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; },
-                 [&](const char* reason) { terminal_reason = reason ? reason : ""; });
+  session.Bind(
+      link.responder.mux, *ch1, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; },
+      [&](const char* reason) { terminal_reason = reason ? reason : ""; });
 
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch1)));
   EXPECT_EQ(terminal_reason, "peer_reset");
@@ -303,8 +298,8 @@ TEST(ChannelSessionTest, ReadOnceClosesAfterFirstFrame) {
 // such session alive for the process's lifetime (pp-browser servers leaked one per request).
 TEST(ChannelSessionTest, ClosedSessionDropsHandlersThatOwnIt) {
   enum class Route { LocalClose, CloseQuiet, LocalReset, PeerClose, PeerReset, ReadOnce };
-  for (const Route route : {Route::LocalClose, Route::CloseQuiet, Route::LocalReset, Route::PeerClose,
-                            Route::PeerReset, Route::ReadOnce}) {
+  for (const Route route :
+       {Route::LocalClose, Route::CloseQuiet, Route::LocalReset, Route::PeerClose, Route::PeerReset, Route::ReadOnce}) {
     auto link_result = test::AmpTestLink::Create();
     ASSERT_TRUE(static_cast<bool>(link_result));
     auto& link = **link_result;
@@ -320,18 +315,30 @@ TEST(ChannelSessionTest, ClosedSessionDropsHandlersThatOwnIt) {
       policy.read_once = route == Route::ReadOnce;
       (*holder)->Bind(
           link.responder.mux, *ch, policy,
-          [holder](Roe<std::vector<uint8_t>>) { return holder != nullptr; },  // owns the session
+          [holder](Roe<std::vector<uint8_t>>) { return holder != nullptr; }, // owns the session
           [holder, &closed_reason](const char* reason) { closed_reason = reason ? reason : ""; });
     }
     ASSERT_FALSE(watch.expired()) << "the handlers own it while open";
 
     switch (route) {
-      case Route::LocalClose: watch.lock()->Close(); break;
-      case Route::CloseQuiet: watch.lock()->CloseQuiet(); break;
-      case Route::LocalReset: watch.lock()->Reset(); break;
-      case Route::PeerClose: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*ch))); break;
-      case Route::PeerReset: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch))); break;
-      case Route::ReadOnce: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, {'a'}))); break;
+      case Route::LocalClose:
+        watch.lock()->Close();
+        break;
+      case Route::CloseQuiet:
+        watch.lock()->CloseQuiet();
+        break;
+      case Route::LocalReset:
+        watch.lock()->Reset();
+        break;
+      case Route::PeerClose:
+        ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*ch)));
+        break;
+      case Route::PeerReset:
+        ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch)));
+        break;
+      case Route::ReadOnce:
+        ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, {'a'})));
+        break;
     }
     EXPECT_TRUE(watch.expired()) << "route " << static_cast<int>(route) << " kept the session alive";
     if (route != Route::CloseQuiet) {
@@ -345,8 +352,8 @@ TEST(ChannelSessionTest, ClosedSessionDropsHandlersThatOwnIt) {
 // mux (pp-node crashed when a dial-back timer released a probe's session after the link dropped).
 TEST(ChannelSessionTest, ClosedSessionForgetsItsMuxAndOutlivesIt) {
   enum class Route { LocalClose, CloseQuiet, LocalReset, PeerClose, PeerReset };
-  for (const Route route : {Route::LocalClose, Route::CloseQuiet, Route::LocalReset, Route::PeerClose,
-                            Route::PeerReset}) {
+  for (const Route route :
+       {Route::LocalClose, Route::CloseQuiet, Route::LocalReset, Route::PeerClose, Route::PeerReset}) {
     std::shared_ptr<ChannelSession> session = std::make_shared<ChannelSession>();
     {
       auto link_result = test::AmpTestLink::Create();
@@ -354,18 +361,29 @@ TEST(ChannelSessionTest, ClosedSessionForgetsItsMuxAndOutlivesIt) {
       auto& link = **link_result;
       auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
       ASSERT_TRUE(static_cast<bool>(ch));
-      session->Bind(link.responder.mux, *ch, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; });
+      session->Bind(link.responder.mux, *ch, ControlJsonChannelPolicy(),
+                    [](Roe<std::vector<uint8_t>>) { return true; });
       switch (route) {
-        case Route::LocalClose: session->Close(); break;
-        case Route::CloseQuiet: session->CloseQuiet(); break;
-        case Route::LocalReset: session->Reset(); break;
-        case Route::PeerClose: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*ch))); break;
-        case Route::PeerReset: ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch))); break;
+        case Route::LocalClose:
+          session->Close();
+          break;
+        case Route::CloseQuiet:
+          session->CloseQuiet();
+          break;
+        case Route::LocalReset:
+          session->Reset();
+          break;
+        case Route::PeerClose:
+          ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*ch)));
+          break;
+        case Route::PeerReset:
+          ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch)));
+          break;
       }
       EXPECT_TRUE(session->IsClosed());
       EXPECT_EQ(session->Mux(), nullptr) << "route " << static_cast<int>(route);
-    }  // the link and its muxes go first
-    session.reset();  // must not call into the freed mux
+    }                // the link and its muxes go first
+    session.reset(); // must not call into the freed mux
   }
 }
 
@@ -498,9 +516,8 @@ TEST(ChannelMuxTest, FragWaitsForWindowThenDeliversWholeMessage) {
   transport.Attach(link);
 
   std::vector<uint8_t> received;
-  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link.responder.mux.SetDataHandler(*ch,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
   const std::vector<uint8_t> large(2500, 0xAB);
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, large)));
   EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 2u);
@@ -524,9 +541,8 @@ TEST(ChannelMuxTest, MessageLargerThanWholeWindowIsDelivered) {
   transport.Attach(link);
 
   std::vector<uint8_t> received;
-  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link.responder.mux.SetDataHandler(*ch,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
   std::vector<uint8_t> large(20 * 900 + 7);
   for (size_t i = 0; i < large.size(); ++i) {
     large[i] = static_cast<uint8_t>(i * 31);
@@ -550,12 +566,10 @@ TEST(ChannelMuxTest, CloseWaitsBehindQueuedData) {
   transport.Attach(link);
 
   std::vector<std::string> events;
-  link.responder.mux.SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    events.push_back("data:" + std::to_string(payload.size()));
-  });
-  link.responder.mux.SetTerminalHandler(*ch, [&](uint32_t, const char* reason) {
-    events.push_back(std::string("terminal:") + (reason ? reason : ""));
-  });
+  link.responder.mux.SetDataHandler(
+      *ch, [&](uint32_t, std::vector<uint8_t> payload) { events.push_back("data:" + std::to_string(payload.size())); });
+  link.responder.mux.SetTerminalHandler(
+      *ch, [&](uint32_t, const char* reason) { events.push_back(std::string("terminal:") + (reason ? reason : "")); });
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(2500, 1))));
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.CloseChannel(*ch)));
   EXPECT_TRUE(events.empty());
@@ -577,7 +591,7 @@ TEST(ChannelMuxTest, QueuedChannelsShareWindowRoundRobin) {
   auto small = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
   ASSERT_TRUE(static_cast<bool>(big) && static_cast<bool>(small));
   WindowedTransport transport;
-  transport.window = 0;  // window full while both are queued
+  transport.window = 0; // window full while both are queued
   transport.Attach(link);
 
   bool bigDone = false;
@@ -587,7 +601,7 @@ TEST(ChannelMuxTest, QueuedChannelsShareWindowRoundRobin) {
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*big, std::vector<uint8_t>(10 * 900, 2))));
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*small, {'h', 'i'})));
 
-  transport.window = 1;  // one frame per tick
+  transport.window = 1; // one frame per tick
   transport.AckAndTick(link);
   transport.AckAndTick(link);
   EXPECT_TRUE(smallDone);
@@ -681,7 +695,7 @@ namespace {
 
 ChannelPolicy ReplyChannelPolicy(std::chrono::milliseconds read_timeout) {
   auto policy = ControlJsonChannelPolicy(read_timeout);
-  policy.read_once = false;  // server side: stays open until it replies
+  policy.read_once = false; // server side: stays open until it replies
   return policy;
 }
 
@@ -697,18 +711,18 @@ TEST(ChannelMuxTest, SilentChannelIsResetAfterReadTimeout) {
 
   std::string reason;
   ChannelSession session;
-  session.Bind(link.responder.mux, *ch, ReplyChannelPolicy(std::chrono::milliseconds{1000}),
-               [](Roe<std::vector<uint8_t>>) { return true; },
-               [&](const char* r) { reason = r ? r : ""; });
+  session.Bind(
+      link.responder.mux, *ch, ReplyChannelPolicy(std::chrono::milliseconds{1000}),
+      [](Roe<std::vector<uint8_t>>) { return true; }, [&](const char* r) { reason = r ? r : ""; });
 
-  link.responder.mux.Tick(5000);  // arms the clock
+  link.responder.mux.Tick(5000); // arms the clock
   link.responder.mux.Tick(5999);
   EXPECT_FALSE(session.IsClosed());
   link.responder.mux.Tick(6000);
   EXPECT_TRUE(session.IsClosed());
   EXPECT_EQ(reason, ChannelMux::kReadTimeoutReason);
   EXPECT_EQ(link.responder.mux.State(*ch), ChannelState::Closed);
-  EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Closed);  // the peer got a RESET
+  EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Closed); // the peer got a RESET
 }
 
 TEST(ChannelMuxTest, MessageOverTheReadersLimitResetsTheChannel) {
@@ -723,8 +737,9 @@ TEST(ChannelMuxTest, MessageOverTheReadersLimitResetsTheChannel) {
   std::string reason;
   bool delivered = false;
   ChannelSession session;
-  session.Bind(link.responder.mux, *ch, small, [&](Roe<std::vector<uint8_t>>) { return delivered = true; },
-               [&](const char* r) { reason = r ? r : ""; });
+  session.Bind(
+      link.responder.mux, *ch, small, [&](Roe<std::vector<uint8_t>>) { return delivered = true; },
+      [&](const char* r) { reason = r ? r : ""; });
   std::string sender_reason;
   link.initiator.mux.SetTerminalHandler(*ch, [&](uint32_t, const char* r) { sender_reason = r ? r : ""; });
 
@@ -752,7 +767,7 @@ TEST(ChannelMuxTest, InboundDataRestartsReadClock) {
   link.responder.mux.Tick(0);
   link.responder.mux.Tick(800);
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, {'a'})));
-  link.responder.mux.Tick(900);  // restarts here
+  link.responder.mux.Tick(900); // restarts here
   link.responder.mux.Tick(1800);
   EXPECT_FALSE(session.IsClosed());
   link.responder.mux.Tick(1900);
@@ -782,12 +797,12 @@ TEST(MessageReassemblyTest, AssemblyTimeoutIsTunable) {
   frag.total_len = 4;
   frag.chunk = {1, 2};
   ASSERT_TRUE(static_cast<bool>(reassembly.Push(frag, /*now_ms=*/1000)));
-  reassembly.SweepExpired(/*now_ms=*/1600, /*timeout_ms=*/500);  // expired: dropped
+  reassembly.SweepExpired(/*now_ms=*/1600, /*timeout_ms=*/500); // expired: dropped
   frag.frag_index = 1;
   frag.chunk = {3, 4};
   auto completed = reassembly.Push(frag, 1700);
   ASSERT_TRUE(static_cast<bool>(completed));
-  EXPECT_FALSE(completed->has_value());  // the first half was swept
+  EXPECT_FALSE(completed->has_value()); // the first half was swept
 }
 
 // Regression: an Open whose channel id has the *same* parity as the receiver's own dynamic ids

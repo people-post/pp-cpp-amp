@@ -25,10 +25,10 @@ TEST(MshHandshakeTest, RunEstablishesComplementarySessions) {
   auto established = MshHandshake::Run(alice_id, bob_id);
   ASSERT_TRUE(static_cast<bool>(established));
 
-  auto alice = Session::FromMaterial(established->initiator_material, established->master_ikm,
-                                     established->transcript_hash);
-  auto bob = Session::FromMaterial(established->responder_material, established->master_ikm,
-                                   established->transcript_hash);
+  auto alice =
+      Session::FromMaterial(established->initiator_material, established->master_ikm, established->transcript_hash);
+  auto bob =
+      Session::FromMaterial(established->responder_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(alice));
   ASSERT_TRUE(static_cast<bool>(bob));
 
@@ -62,8 +62,8 @@ TEST(SessionTest, RekeyRotatesSendRecv) {
   auto bob_id = MakeIdentity();
   auto established = MshHandshake::Run(alice_id, bob_id);
   ASSERT_TRUE(static_cast<bool>(established));
-  auto session = Session::FromMaterial(established->initiator_material, established->master_ikm,
-                                       established->transcript_hash);
+  auto session =
+      Session::FromMaterial(established->initiator_material, established->master_ikm, established->transcript_hash);
   ASSERT_TRUE(static_cast<bool>(session));
   const auto send_before = session->Material().k_send;
   ASSERT_TRUE(static_cast<bool>(session->Rekey()));

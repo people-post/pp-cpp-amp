@@ -8,7 +8,9 @@
 
 namespace {
 
-std::vector<uint8_t> Byte(uint8_t v) { return {v}; }
+std::vector<uint8_t> Byte(uint8_t v) {
+  return {v};
+}
 
 TEST(MemoryDatagramIoTest, ReorderWindowDeliversAllAndCanPermute) {
   auto hub = pp::adp::MemoryDatagramIo::MakeHub();

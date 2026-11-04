@@ -91,8 +91,8 @@ TEST_F(AdpReliableTest, DeliverUnderLoss) {
     }
   });
 
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("rel"), 3)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("rel"), 3)));
   // First send dropped.
   PumpBoth(p);
   EXPECT_TRUE(got.empty());
@@ -133,8 +133,8 @@ TEST_F(AdpReliableTest, DeliverUnderDup) {
     }
   });
 
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("dup"), 3)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("dup"), 3)));
   PumpBoth(p);
   ASSERT_EQ(got.size(), 1u);
   EXPECT_EQ(got[0], "dup");
@@ -168,14 +168,14 @@ TEST_F(AdpReliableTest, DeliverUnderReorder) {
     }
   });
 
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r0"), 2)));
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r1"), 2)));
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r2"), 2)));
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r3"), 2)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r0"), 2)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r1"), 2)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r2"), 2)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r3"), 2)));
   p.io_a->FlushReorder();
   PumpBoth(p);
   p.clock->Advance(10);
@@ -216,10 +216,10 @@ TEST_F(AdpReliableTest, DeliverInOrderAfterGap) {
 
   // Drop the first datagram so seq 2 can land before seq 1.
   p.io_a->DropNext(1);
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("a"), 1)));
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("b"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("a"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("b"), 1)));
   PumpBoth(p);
   EXPECT_TRUE(got.empty()) << "OOO Reliable must not deliver past a gap";
 
@@ -262,8 +262,8 @@ TEST_F(AdpReliableTest, DeliverUnderDropRate) {
   constexpr int kCount = 32;
   for (int i = 0; i < kCount; ++i) {
     const char c = static_cast<char>('A' + (i % 26));
-    ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)));
+    ASSERT_TRUE(
+        (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)));
   }
   for (int round = 0; round < 200 && static_cast<int>(got.size()) < kCount; ++round) {
     PumpBoth(p);
@@ -312,8 +312,8 @@ TEST_F(AdpReliableTest, DeliverUnderMultiRateDropSoak) {
 
       for (int i = 0; i < kCount; ++i) {
         const char c = static_cast<char>('0' + (i % 10));
-        ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                                std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)))
+        ASSERT_TRUE(
+            (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&c), 1)))
             << "rate=" << rate << " seed=" << seed << " i=" << i;
       }
       for (int round = 0; round < 400 && static_cast<int>(got.size()) < kCount; ++round) {
@@ -348,8 +348,8 @@ TEST_F(AdpReliableTest, AckStopsRetransmit) {
   size_t msg_count = 0;
   (*cb)->OnMessage([&](const pp::adp::Message&) { ++msg_count; });
 
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("m"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("m"), 1)));
   PumpBoth(p);
   EXPECT_EQ(msg_count, 1u);
   // Further ticks should not redeliver.
@@ -378,10 +378,10 @@ TEST_F(AdpReliableTest, QosIsolation) {
   (*cb)->OnMessage([&](const pp::adp::Message& m) { order.push_back(m.qos); });
 
   p.io_a->DropNext(1); // drop best-effort
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("b"), 1)));
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::BestEffort, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("b"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("r"), 1)));
   PumpBoth(p);
   ASSERT_EQ(order.size(), 1u);
   EXPECT_EQ(order[0], pp::adp::QosClass::Reliable);
@@ -403,8 +403,8 @@ TEST_F(AdpReliableTest, ShutdownClose) {
   (*ca)->Close();
   PumpBoth(p);
   EXPECT_TRUE((*cb)->IsClosed());
-  EXPECT_FALSE((*ca)->Send(pp::adp::QosClass::Reliable,
-                           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
+  EXPECT_FALSE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("x"), 1)));
 }
 
 TEST_F(AdpReliableTest, SpuriousAckIgnored) {
@@ -422,8 +422,8 @@ TEST_F(AdpReliableTest, SpuriousAckIgnored) {
   ASSERT_TRUE(cb);
   // Send ACK from B without data — should not create issues.
   // Use reliable send then normal path; inject nothing else.
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
   PumpBoth(p);
   SUCCEED();
 }
@@ -440,8 +440,8 @@ TEST_F(AdpReliableTest, GiveUpAfterMaxRtx) {
   op.max_rtx = 3;
   auto ca = p.ep_a->Open(op);
   ASSERT_TRUE(ca);
-  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::Reliable,
-                          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("z"), 1)));
   for (int i = 0; i < 10; ++i) {
     p.clock->Advance(5);
     p.ep_a->Tick();
@@ -488,9 +488,9 @@ TEST_F(AdpReliableTest, StatsCountTrafficAndARoundTrip) {
   std::vector<int64_t> samples;
   o.p.ep_a->SetRttObserver([&](int64_t rtt_ms) { samples.push_back(rtt_ms); });
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("stats")));
-  o.p.ep_b->Pump();  // B takes it and acks
+  o.p.ep_b->Pump(); // B takes it and acks
   o.p.clock->Advance(7);
-  o.p.ep_a->Pump();  // A sees the ack 7 ms after the send
+  o.p.ep_a->Pump(); // A sees the ack 7 ms after the send
 
   const auto a = o.p.ep_a->Stats();
   const auto b = o.p.ep_b->Stats();
@@ -522,7 +522,7 @@ TEST_F(AdpReliableTest, PacketGivenUpAfterTheRetransmitCapCountsAsLost) {
   auto o = OpenBoth(/*max_rtx=*/2);
   o.p.io_a->DropNext(100);
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("lost")));
-  for (int i = 0; i < 8; ++i) {  // resends at 10 and 30 ms (backing off), given up at 70
+  for (int i = 0; i < 8; ++i) { // resends at 10 and 30 ms (backing off), given up at 70
     PumpBoth(o.p);
     o.p.clock->Advance(10);
   }
@@ -538,7 +538,7 @@ TEST_F(AdpReliableTest, ConnectionStatsTrackItsOwnTrafficAndSmoothedRoundTrip) {
   o.p.ep_b->Pump();
   o.p.clock->Advance(80);
   o.p.ep_a->Pump();
-  EXPECT_EQ(o.a->Stats().srtt_ms, 80);  // the first sample seeds it
+  EXPECT_EQ(o.a->Stats().srtt_ms, 80); // the first sample seeds it
 
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("two")));
   o.p.ep_b->Pump();
@@ -550,8 +550,8 @@ TEST_F(AdpReliableTest, ConnectionStatsTrackItsOwnTrafficAndSmoothedRoundTrip) {
   EXPECT_EQ(a.retransmits, 0u);
   EXPECT_EQ(a.rtt_samples, 2u);
   EXPECT_EQ(a.rtt_sum_ms, 240u);
-  EXPECT_EQ(a.srtt_ms, 90);  // 80 + (160 - 80) / 8
-  EXPECT_EQ(a.rttvar_ms, 50);  // 80 / 2, then 40 + (|160 - 80| - 40) / 4
+  EXPECT_EQ(a.srtt_ms, 90);   // 80 + (160 - 80) / 8
+  EXPECT_EQ(a.rttvar_ms, 50); // 80 / 2, then 40 + (|160 - 80| - 40) / 4
   EXPECT_EQ(o.b->Stats().reliable_sent, 0u) << "only the acks went back";
 
   // A lost packet is resent after this path's round trip (90 + 4 × 50 ms), not rtx_interval_ms (10).
@@ -570,7 +570,7 @@ TEST_F(AdpReliableTest, ConnectionStatsTrackItsOwnTrafficAndSmoothedRoundTrip) {
 // Each resend of the same packet waits twice as long as the one before (RFC 6298 §5.5): a path that
 // stopped answering is not flooded with copies.
 TEST_F(AdpReliableTest, ResendOfTheSamePacketBacksOff) {
-  auto o = OpenBoth();  // rtx_interval_ms 10, no round trip measured yet
+  auto o = OpenBoth(); // rtx_interval_ms 10, no round trip measured yet
   o.p.io_a->DropNext(3);
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("x")));
   PumpBoth(o.p);
@@ -595,7 +595,7 @@ TEST_F(AdpReliableTest, ResendOfTheSamePacketBacksOff) {
 // ack, so Karn never takes a sample from it. A new packet starts from the backed-off timeout (RFC 6298
 // §5.7) until one is acked unresent; the link then learns its round trip and stops resending.
 TEST_F(AdpReliableTest, SlowPathLearnsItsRoundTripFromTheBackedOffTimeout) {
-  auto o = OpenBoth(/*max_rtx=*/20);  // rtx_interval_ms 10
+  auto o = OpenBoth(/*max_rtx=*/20); // rtx_interval_ms 10
   constexpr int64_t kRoundTripMs = 250;
   auto send_over_slow_path = [&](const char* text) {
     ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes(text)));
@@ -603,12 +603,12 @@ TEST_F(AdpReliableTest, SlowPathLearnsItsRoundTripFromTheBackedOffTimeout) {
       o.p.clock->Advance(10);
       o.p.ep_a->Tick();
     }
-    o.p.ep_b->Pump();  // B takes every copy and acks
-    o.p.ep_a->Pump();  // A sees the ack a round trip after the first send
+    o.p.ep_b->Pump(); // B takes every copy and acks
+    o.p.ep_a->Pump(); // A sees the ack a round trip after the first send
   };
-  send_over_slow_path("one");    // resent at 10, 30, 70, 150 ms: backed off 4 times
-  send_over_slow_path("two");    // starts from 10 << 4: resent once at 160 ms
-  send_over_slow_path("three");  // starts from 10 << 5 = 320 ms: acked first, a clean sample
+  send_over_slow_path("one");   // resent at 10, 30, 70, 150 ms: backed off 4 times
+  send_over_slow_path("two");   // starts from 10 << 4: resent once at 160 ms
+  send_over_slow_path("three"); // starts from 10 << 5 = 320 ms: acked first, a clean sample
   EXPECT_EQ(o.a->Stats().retransmits, 5u);
   EXPECT_EQ(o.a->Stats().rtt_samples, 1u);
   EXPECT_EQ(o.a->Stats().srtt_ms, kRoundTripMs);
@@ -626,13 +626,13 @@ TEST_F(AdpReliableTest, CleanRoundTripClearsTheBackoff) {
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("one")));
   o.p.ep_b->Pump();
   o.p.clock->Advance(20);
-  o.p.ep_a->Pump();  // srtt 20, rttvar 10: timeout 20 + 40 = 60 ms
+  o.p.ep_a->Pump(); // srtt 20, rttvar 10: timeout 20 + 40 = 60 ms
   ASSERT_EQ(o.a->Stats().srtt_ms, 20);
 
   o.p.io_a->DropNext(1);
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("lost")));
   o.p.clock->Advance(60);
-  o.p.ep_a->Tick();  // resent: backed off once
+  o.p.ep_a->Tick(); // resent: backed off once
   ASSERT_EQ(o.a->Stats().retransmits, 1u);
   o.p.ep_b->Pump();
   o.p.ep_a->Pump();
@@ -651,7 +651,7 @@ TEST_F(AdpReliableTest, CleanRoundTripClearsTheBackoff) {
   ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("clean")));
   o.p.ep_b->Pump();
   o.p.clock->Advance(20);
-  o.p.ep_a->Pump();  // acked unresent: the backoff is cleared
+  o.p.ep_a->Pump(); // acked unresent: the backoff is cleared
   ASSERT_EQ(o.a->Stats().rtt_samples, 2u);
 
   o.p.io_a->DropNext(1);
@@ -744,7 +744,7 @@ TEST_F(AdpReliableTest, SustainedStreamDeliveredInOrderAfterEarlyLoss) {
   uint32_t next = 1;
   for (int step = 0; step < 400 && w.got.size() < kTotal; ++step) {
     while (next <= kTotal && w.Send(next)) {
-      ++next;  // fill the window; Send fails with WindowFull when it is
+      ++next; // fill the window; Send fails with WindowFull when it is
     }
     w.Step();
   }
@@ -762,7 +762,7 @@ TEST_F(AdpReliableTest, TransientSendFailureIsRetransmitted) {
   WindowPair w;
   w.Open();
   w.p.io_a->FailNextSends(1);
-  EXPECT_TRUE(w.Send(1));  // queued for retransmission, not lost
+  EXPECT_TRUE(w.Send(1)); // queued for retransmission, not lost
   EXPECT_TRUE(w.Send(2));
   for (int step = 0; step < 10 && w.got.size() < 2; ++step) {
     w.Step();

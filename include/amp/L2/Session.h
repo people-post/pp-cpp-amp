@@ -6,7 +6,6 @@
 #include "amp/L2/SessionKeys.h"
 #include "amp/L2/Types.h"
 
-
 #include <cstdint>
 #include <optional>
 #include <span>

@@ -16,16 +16,16 @@ Roe<uint32_t> ReadU32Le(std::span<const uint8_t> wire, size_t& consumed) {
     return Error("amp session control: truncated u32");
   }
   consumed = 4;
-  return static_cast<uint32_t>(wire[0]) | (static_cast<uint32_t>(wire[1]) << 8)
-         | (static_cast<uint32_t>(wire[2]) << 16) | (static_cast<uint32_t>(wire[3]) << 24);
+  return static_cast<uint32_t>(wire[0]) | (static_cast<uint32_t>(wire[1]) << 8) |
+         (static_cast<uint32_t>(wire[2]) << 16) | (static_cast<uint32_t>(wire[3]) << 24);
 }
 
 } // namespace
 
 bool SessionControlCodec::LooksLike(const std::span<const uint8_t> wire) {
-  return wire.size() >= 6 && wire[0] == kSessionControlWireVersion
-         && (wire[1] == static_cast<uint8_t>(SessionControlKind::RekeyRequest)
-             || wire[1] == static_cast<uint8_t>(SessionControlKind::RekeyAck));
+  return wire.size() >= 6 && wire[0] == kSessionControlWireVersion &&
+         (wire[1] == static_cast<uint8_t>(SessionControlKind::RekeyRequest) ||
+          wire[1] == static_cast<uint8_t>(SessionControlKind::RekeyAck));
 }
 
 Roe<std::vector<uint8_t>> SessionControlCodec::Encode(const SessionRekeyMessage& message) {

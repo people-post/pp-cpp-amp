@@ -3,7 +3,6 @@
 #include "amp/L3/ChannelWire.h"
 #include "amp/L3/Types.h"
 
-
 #include <cstdint>
 #include <map>
 #include <optional>

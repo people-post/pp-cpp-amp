@@ -14,8 +14,8 @@ namespace pp::amp::test {
  * splices (e.g. with ChannelBridge). The dialer and target use their muxes directly.
  */
 struct AmpTestRelayPath {
-  std::unique_ptr<AmpTestLink> near;  // dialer = initiator, relay = responder
-  std::unique_ptr<AmpTestLink> far;   // relay = initiator, target = responder
+  std::unique_ptr<AmpTestLink> near; // dialer = initiator, relay = responder
+  std::unique_ptr<AmpTestLink> far;  // relay = initiator, target = responder
   uint32_t near_channel = 0;
   uint32_t far_channel = 0;
   std::shared_ptr<ChannelSession> relay_near = std::make_shared<ChannelSession>();

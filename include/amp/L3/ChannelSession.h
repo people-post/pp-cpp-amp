@@ -3,7 +3,6 @@
 #include "amp/L3/ChannelMux.h"
 #include "amp/L3/ChannelPolicy.h"
 
-
 #include <cstddef>
 #include <deque>
 #include <functional>

@@ -60,8 +60,8 @@ Roe<ByteVector> SessionAead::Decrypt(const ByteVector& session_key, const std::s
   return plaintext;
 }
 
-Roe<AeadBlob> SessionAead::Encrypt(const ByteVector& session_key, const ByteVector& plaintext,
-                                   const ByteVector& aad, const ByteVector& nonce) {
+Roe<AeadBlob> SessionAead::Encrypt(const ByteVector& session_key, const ByteVector& plaintext, const ByteVector& aad,
+                                   const ByteVector& nonce) {
   AeadBlob blob;
   blob.nonce = nonce;
   blob.ciphertext.resize(plaintext.size() + crypto_aead_xchacha20poly1305_ietf_abytes());

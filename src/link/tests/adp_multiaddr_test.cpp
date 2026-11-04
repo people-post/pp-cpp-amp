@@ -101,13 +101,12 @@ TEST(AdpMultiaddrTest, ParsesHostnamesWithoutResolvingThem) {
   EXPECT_EQ(any->host_family, HostFamily::Any);
   EXPECT_FALSE(ParseAdpMultiaddr("/ip4/10.0.0.1/udp/1/adp/1.0.0/p2p/QmX")->IsHostname());
 
-  for (const char *bad : {"/dns4/-bad/udp/1/adp/1.0.0/p2p/QmX", "/dns4/a..b/udp/1/adp/1.0.0/p2p/QmX",
+  for (const char* bad : {"/dns4/-bad/udp/1/adp/1.0.0/p2p/QmX", "/dns4/a..b/udp/1/adp/1.0.0/p2p/QmX",
                           "/dns4/under_score/udp/1/adp/1.0.0/p2p/QmX", "/dns4/host/udp/0/adp/1.0.0/p2p/QmX",
                           "/dns4/host/udp/1/adp/1.0.0/p2p/", "/dnsaddr/host/udp/1/adp/1.0.0/p2p/QmX"}) {
     EXPECT_FALSE(static_cast<bool>(ParseAdpMultiaddr(bad))) << bad;
   }
-  EXPECT_FALSE(static_cast<bool>(
-      ParseAdpMultiaddr("/dns4/" + std::string(254, 'a') + "/udp/1/adp/1.0.0/p2p/QmX")));
+  EXPECT_FALSE(static_cast<bool>(ParseAdpMultiaddr("/dns4/" + std::string(254, 'a') + "/udp/1/adp/1.0.0/p2p/QmX")));
 }
 
 TEST(HostResolverTest, ResolvesLocalhost) {
@@ -130,7 +129,7 @@ TEST(HostResolverTest, DeliversThroughItsPosterAndNothingOnceGone) {
   };
   std::promise<void> release;
   auto released = release.get_future().share();
-  auto lookup = [released](const std::string &host, HostFamily, uint16_t port) -> Roe<adp::IpEndpoint> {
+  auto lookup = [released](const std::string& host, HostFamily, uint16_t port) -> Roe<adp::IpEndpoint> {
     if (host == "slow") {
       released.wait();
     }
@@ -147,7 +146,8 @@ TEST(HostResolverTest, DeliversThroughItsPosterAndNothingOnceGone) {
     posted.front()();
     ASSERT_TRUE(got.has_value() && got->isOk());
     EXPECT_EQ(got->value().port, 9u);
-    resolver.Resolve("slow", HostFamily::V4, 9, [](Roe<adp::IpEndpoint>) { FAIL() << "delivered after the resolver went"; });
+    resolver.Resolve("slow", HostFamily::V4, 9,
+                     [](Roe<adp::IpEndpoint>) { FAIL() << "delivered after the resolver went"; });
   } // gone while "slow" is still looking up
   release.set_value();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));

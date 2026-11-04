@@ -41,16 +41,15 @@ TEST_F(AmpIntegrationTest, ChannelResetSiblingSurvives) {
 
   h.PumpUntil([&] {
     auto* link = h.mgr_a().FindLink("b");
-    return link && link->Mux() && link->Mux()->State(*ch_chat) == pp::amp::ChannelState::Open
-           && link->Mux()->State(*ch_hist) == pp::amp::ChannelState::Open;
+    return link && link->Mux() && link->Mux()->State(*ch_chat) == pp::amp::ChannelState::Open &&
+           link->Mux()->State(*ch_hist) == pp::amp::ChannelState::Open;
   });
 
   std::vector<uint8_t> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch_hist, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch_hist,
+                                 [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   auto* outbound = h.mgr_a().FindLink("b");
   ASSERT_NE(outbound, nullptr);
@@ -77,9 +76,7 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesLoss) {
   std::vector<uint8_t> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   h.ConfigureLoss(HarnessSide::A, 3);
   const std::vector<uint8_t> msg = {'l', 'o', 's', 's'};
@@ -103,9 +100,8 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesReorder) {
   std::vector<std::vector<uint8_t>> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received.push_back(std::move(payload));
-  });
+  inbound->Mux()->SetDataHandler(
+      *ch, [&](uint32_t, std::vector<uint8_t> payload) { received.push_back(std::move(payload)); });
 
   // Small window forces random release (true permute); L1 resequences before L3.
   h.ConfigureReorder(HarnessSide::A, /*window=*/2, /*seed=*/7);
@@ -136,9 +132,7 @@ TEST_F(AmpIntegrationTest, BulkFragSurvivesReorder) {
   std::vector<uint8_t> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   h.ConfigureReorder(HarnessSide::A, /*window=*/2, /*seed=*/11);
   std::vector<uint8_t> large(2500, 0xCD);
@@ -165,9 +159,7 @@ TEST_F(AmpIntegrationTest, BulkFragSurvivesLoss) {
   std::vector<uint8_t> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   h.ConfigureLoss(HarnessSide::A, 1);
   std::vector<uint8_t> large(2500, 0xAB);
@@ -192,9 +184,8 @@ TEST_F(AmpIntegrationTest, ReliableDataSurvivesDup) {
   std::vector<std::vector<uint8_t>> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received.push_back(std::move(payload));
-  });
+  inbound->Mux()->SetDataHandler(
+      *ch, [&](uint32_t, std::vector<uint8_t> payload) { received.push_back(std::move(payload)); });
 
   h.ConfigureDup(HarnessSide::A, /*rate=*/1.0, /*seed=*/3);
   const std::vector<uint8_t> msg = {'d', 'u', 'p'};
@@ -224,12 +215,10 @@ TEST_F(AmpIntegrationTest, ReliableAndBulkSurviveLossPlusReorder) {
   std::vector<uint8_t> got_bulk;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch_ctrl, [&](uint32_t, std::vector<uint8_t> payload) {
-    got_ctrl = std::move(payload);
-  });
-  inbound->Mux()->SetDataHandler(*ch_bulk, [&](uint32_t, std::vector<uint8_t> payload) {
-    got_bulk = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch_ctrl,
+                                 [&](uint32_t, std::vector<uint8_t> payload) { got_ctrl = std::move(payload); });
+  inbound->Mux()->SetDataHandler(*ch_bulk,
+                                 [&](uint32_t, std::vector<uint8_t> payload) { got_bulk = std::move(payload); });
 
   h.ConfigureReorder(HarnessSide::A, /*window=*/2, /*seed=*/19);
   h.ConfigureLoss(HarnessSide::A, 2);
@@ -260,9 +249,7 @@ TEST_F(AmpIntegrationTest, DualDialChannelsWorkAfterElection) {
   std::vector<uint8_t> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   const std::vector<uint8_t> msg = {'d', 'u', 'a', 'l'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
@@ -349,9 +336,7 @@ TEST_F(AmpIntegrationTest, PathMigrateMidSession) {
   ASSERT_NE(inbound, nullptr);
   auto* inbound_conn = inbound->ConnectionOrNull();
   ASSERT_NE(inbound_conn, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   const std::vector<uint8_t> msg1 = {'a'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg1));
@@ -397,9 +382,7 @@ TEST_F(AmpIntegrationTest, LargeFragRoundTripThroughStack) {
   std::vector<uint8_t> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   std::vector<uint8_t> large(2500, 0xAB);
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, large));
@@ -449,9 +432,7 @@ TEST_F(AmpIntegrationTest, WireRekeyWithGraceWindow) {
 
   const std::vector<uint8_t> msg = {'n', 'e', 'w'};
   std::vector<uint8_t> received;
-  link_b->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link_b->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
   ASSERT_TRUE(h.PumpUntilReceived(received, [&] { return received == msg; }));
 }
@@ -490,9 +471,7 @@ TEST_F(AmpIntegrationTest, PostGraceStaleEpochDropped) {
 
   const std::vector<uint8_t> msg = {'f', 'r', 'e', 's', 'h'};
   std::vector<uint8_t> received;
-  link_b->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link_b->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
   ASSERT_TRUE(h.PumpUntilReceived(received, [&] { return received == msg; }));
 }
@@ -533,9 +512,7 @@ TEST_F(AmpIntegrationTest, RekeySurvivesLoss) {
   h.ClearFaultInjection(HarnessSide::A);
   h.ConfigureLoss(HarnessSide::A, 2);
   std::vector<uint8_t> received;
-  link_b->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  link_b->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
   const std::vector<uint8_t> msg = {'r', 'k'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
   // The rekey's three resends backed the timeout off (RFC 6298 §5.7) and nothing was acked unresent since:
@@ -562,9 +539,7 @@ TEST_F(AmpIntegrationTest, PathMigrateSurvivesLoss) {
   ASSERT_NE(inbound, nullptr);
   auto* inbound_conn = inbound->ConnectionOrNull();
   ASSERT_NE(inbound_conn, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   const std::vector<uint8_t> msg1 = {'a'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg1));
@@ -781,9 +756,7 @@ TEST_F(AmpIntegrationTest, AdversarialSealedGarbageFloodAdv06) {
   std::vector<uint8_t> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   const std::vector<uint8_t> msg = {'f', 'l', 'o', 'o', 'd'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
@@ -800,8 +773,8 @@ TEST_F(AmpIntegrationTest, AdversarialFragPartialBombAdv08) {
   ASSERT_TRUE(ch.has_value());
 
   for (uint64_t msg_id = 1; msg_id <= 25; ++msg_id) {
-    ASSERT_TRUE(h.InjectPartialFrag(HarnessSide::A, "b", *ch, 1, msg_id, 0, 50, 50'000,
-                                    std::vector<uint8_t>(500, 0xBB)));
+    ASSERT_TRUE(
+        h.InjectPartialFrag(HarnessSide::A, "b", *ch, 1, msg_id, 0, 50, 50'000, std::vector<uint8_t>(500, 0xBB)));
   }
   h.PumpBudget(10);
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
@@ -809,9 +782,7 @@ TEST_F(AmpIntegrationTest, AdversarialFragPartialBombAdv08) {
   std::vector<uint8_t> received;
   auto* inbound = h.mgr_b().FindLinkByPeerId(h.peer_id_a);
   ASSERT_NE(inbound, nullptr);
-  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) {
-    received = std::move(payload);
-  });
+  inbound->Mux()->SetDataHandler(*ch, [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
 
   const std::vector<uint8_t> msg = {'b', 'o', 'm', 'b'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
@@ -885,7 +856,7 @@ TEST_F(AmpIntegrationTest, HotDialerKeepsColdInboundAlive) {
   auto& h = **created;
   ASSERT_TRUE(h.Associate());
   h.mgr_a().MarkHot("b");
-  for (int i = 0; i < 120; ++i) {  // 60 s idle in 500 ms steps
+  for (int i = 0; i < 120; ++i) { // 60 s idle in 500 ms steps
     h.AdvanceMs(500);
     h.PumpBudget(2);
   }
@@ -911,7 +882,7 @@ TEST_F(AmpIntegrationTest, HotLinkEvictedWhenPeerGoesSilent) {
       dropped.push_back(event);
     }
   });
-  h.io_b->SetDropRate(1.0);  // B's sends (echoes) vanish
+  h.io_b->SetDropRate(1.0); // B's sends (echoes) vanish
   const int64_t window = h.mgr_a().FindLink("b")->ConnectionOrNull()->LivenessWindowMs();
   ASSERT_GT(window, pp::adp::kAliveTimeoutMs);
   for (int64_t t = 0; t <= window + 2'000 && h.mgr_a().IsConnected("b"); t += 500) {
@@ -942,7 +913,6 @@ TEST_F(AmpIntegrationTest, OutboundWarmKeepaliveRefreshesAssociation) {
   EXPECT_TRUE(conn->LooksAlive(h.clock->NowMs()));
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
 }
-
 
 } // namespace
 } // namespace pbr::test

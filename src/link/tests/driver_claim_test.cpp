@@ -38,7 +38,11 @@ TEST(DriverClaimTest, AClaimedRuntimeRefusesASecondDriver) {
   runtime.ClaimDriver();
   std::atomic<int> ran{0};
   runtime.PostToIo([&]() { ++ran; });
-  std::thread other([&]() { runtime.Drive(); runtime.Pump(); runtime.Tick(); });
+  std::thread other([&]() {
+    runtime.Drive();
+    runtime.Pump();
+    runtime.Tick();
+  });
   other.join();
   EXPECT_EQ(ran.load(), 0) << "the second driver did nothing";
   EXPECT_EQ(runtime.RefusedDrives(), 3u);
@@ -76,7 +80,10 @@ TEST(DriverClaimTest, StopReleasesTheClaim) {
   runtime.Stop();
   EXPECT_FALSE(runtime.OnDriverThread());
   runtime.Start();
-  std::thread other([&]() { runtime.ClaimDriver(); runtime.Drive(); });
+  std::thread other([&]() {
+    runtime.ClaimDriver();
+    runtime.Drive();
+  });
   other.join();
   EXPECT_EQ(runtime.RefusedDrives(), 0u) << "a restarted runtime is claimed afresh";
 }

@@ -1,0 +1,17 @@
+# pp-cpp-amp's C++ style (the same as pp-browser's). Format new and touched code with it (clang-format 14+).
+BasedOnStyle: Google
+ColumnLimit: 120
+IndentWidth: 2
+AccessModifierOffset: -2
+NamespaceIndentation: None
+FixNamespaceComments: true
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+IncludeBlocks: Preserve
+SortIncludes: Never
+SpacesBeforeTrailingComments: 1
+ReflowComments: false

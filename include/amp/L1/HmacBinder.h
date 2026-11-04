@@ -2,7 +2,6 @@
 
 #include "amp/L1/Types.h"
 
-
 #include <array>
 #include <span>
 #include <vector>
@@ -21,8 +20,7 @@ public:
   void SetKey(PeerKey key) { key_ = key; }
   const PeerKey& Key() const { return key_; }
 
-  static std::array<uint8_t, kHmacBytes> ComputeTag(const PeerKey& key,
-                                                    std::span<const uint8_t> mac_input);
+  static std::array<uint8_t, kHmacBytes> ComputeTag(const PeerKey& key, std::span<const uint8_t> mac_input);
 
 private:
   PeerKey key_;

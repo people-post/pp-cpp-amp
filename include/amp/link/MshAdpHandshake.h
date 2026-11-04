@@ -3,7 +3,6 @@
 #include "amp/L2/MshHandshake.h"
 #include "amp/L2/Types.h"
 
-
 #include <functional>
 #include <optional>
 #include <span>
@@ -41,6 +40,19 @@ public:
 
   bool IsComplete() const { return complete_; }
 
+  /**
+   * Over a carrier (chunked_wire false) nothing below resends a lost message: the initiator resends its last one
+   * on a timer (PeerLink::TickCarrierHandshake), and the responder answers a repeat of the message it last
+   * answered by resending its reply (HandleMsh). A first send is one frame, as it always was (the outer link
+   * fragments it); a resend goes as MshChunk pieces that each fit one outer frame, which the receiver keeps
+   * across resends: a lost fragment no longer loses the whole message on every try. A peer from before this
+   * ignores the pieces, as it got no resend before. LastChunks is the last message in pieces; LastWire is it
+   * whole (the responder's Finished once complete, for a repeated Finished that arrives after it).
+   */
+  Roe<void> Resend();
+  Roe<std::vector<std::vector<uint8_t>>> LastChunks() const;
+  const std::vector<uint8_t>& LastWire() const { return last_wire_; }
+
 private:
   struct KemState {
     ByteVector ephemeral_secret;
@@ -49,10 +61,13 @@ private:
 
   Roe<KemState> NewEphemeralKem();
   Roe<std::vector<uint8_t>> EncodeHello(MshMessageType type, const KemState& kem);
-  Roe<MshPayload> BuildLocalPayload(const KemState& kem, const ByteVector& remote_kem_pk, ByteVector& shared_secret_out);
+  Roe<MshPayload> BuildLocalPayload(const KemState& kem, const ByteVector& remote_kem_pk,
+                                    ByteVector& shared_secret_out);
   Roe<void> SendMessage(MshMessageType type, std::span<const uint8_t> body);
   Roe<void> Fail(std::string message);
   Roe<void> MaybeComplete();
+  /** Responder: `type` / `body` is the message it last answered, sent again (its reply was lost). */
+  bool IsRepeatOfLastAnswered(MshMessageType type, std::span<const uint8_t> body) const;
 
   Role role_;
   MshIdentity identity_;
@@ -68,6 +83,13 @@ private:
   std::vector<ByteVector> transcript_;
   ByteVector client_ss_;
   ByteVector master_ikm_;
+  /** Over a carrier only: the last message sent, as it went on the wire, and its type and body. */
+  std::vector<uint8_t> last_wire_;
+  MshMessageType last_type_{};
+  ByteVector last_body_;
+  /** Responder: the last message it answered. */
+  std::optional<MshMessageType> answered_type_;
+  ByteVector answered_body_;
 };
 
 } // namespace pp::amp

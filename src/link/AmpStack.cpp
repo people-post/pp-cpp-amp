@@ -2,8 +2,8 @@
 
 namespace pp::amp {
 
-Roe<std::unique_ptr<AmpStack>> AmpStack::Create(std::shared_ptr<adp::DatagramIo> io,
-                                                std::shared_ptr<adp::Clock> clock, Config config) {
+Roe<std::unique_ptr<AmpStack>> AmpStack::Create(std::shared_ptr<adp::DatagramIo> io, std::shared_ptr<adp::Clock> clock,
+                                                Config config) {
   if (!io || !clock) {
     return Error("amp stack: io and clock required");
   }
@@ -18,8 +18,8 @@ Roe<std::unique_ptr<AmpStack>> AmpStack::Create(std::shared_ptr<adp::DatagramIo>
   stack->clock_ = std::move(clock);
   stack->local_peer_id_ = std::move(config.local_peer_id);
   stack->endpoint_ = std::make_unique<adp::Endpoint>(stack->io_, stack->clock_);
-  stack->runtime_ = std::make_unique<MeshRuntime>(*stack->endpoint_, std::move(config.identity),
-                                                  stack->local_peer_id_, std::move(config.link_config));
+  stack->runtime_ = std::make_unique<MeshRuntime>(*stack->endpoint_, std::move(config.identity), stack->local_peer_id_,
+                                                  std::move(config.link_config));
   return stack;
 }
 

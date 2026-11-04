@@ -25,9 +25,7 @@ enum class HarnessSide { A, B };
 
 /** Helpers for AMP L1–L3 integration tests (Track A). */
 struct AmpIntegrationHarness : AmpMeshHarness {
-  pp::amp::PeerLinkManager& Mgr(const HarnessSide side) {
-    return side == HarnessSide::A ? mgr_a() : mgr_b();
-  }
+  pp::amp::PeerLinkManager& Mgr(const HarnessSide side) { return side == HarnessSide::A ? mgr_a() : mgr_b(); }
 
   pp::adp::Endpoint& Ep(const HarnessSide side) { return side == HarnessSide::A ? *ep_a : *ep_b; }
 
@@ -56,8 +54,8 @@ struct AmpIntegrationHarness : AmpMeshHarness {
     bool ready = false;
     PumpUntil([&] {
       auto* link = mgr_a().FindLink(alias_a);
-      ready = link && link->Mux() && link->Mux()->State(pp::amp::kCapabilityChannelId) == pp::amp::ChannelState::Open
-              && link->RemoteCapability() != nullptr;
+      ready = link && link->Mux() && link->Mux()->State(pp::amp::kCapabilityChannelId) == pp::amp::ChannelState::Open &&
+              link->RemoteCapability() != nullptr;
       return ready;
     });
     return ready;
@@ -85,14 +83,14 @@ struct AmpIntegrationHarness : AmpMeshHarness {
       done_b = true;
     });
     PumpUntil([&] {
-      return done_a && done_b && mgr_a().CountConnectedLinksForPeerId(peer_id_b) == 1
-             && mgr_b().CountConnectedLinksForPeerId(peer_id_a) == 1;
+      return done_a && done_b && mgr_a().CountConnectedLinksForPeerId(peer_id_b) == 1 &&
+             mgr_b().CountConnectedLinksForPeerId(peer_id_a) == 1;
     });
     return ok_a && ok_b;
   }
 
   std::optional<uint32_t> OpenChannel(const HarnessSide side, const std::string& alias, const std::string& protocol_id,
-                                    pp::amp::ChannelPolicy policy) {
+                                      pp::amp::ChannelPolicy policy) {
     bool done = false;
     std::optional<uint32_t> channel_id;
     Mgr(side).OpenChannel(alias, protocol_id, policy, [&](pp::amp::PeerLinkManager::ChannelRoe ch) {
@@ -118,7 +116,8 @@ struct AmpIntegrationHarness : AmpMeshHarness {
     bool ch0_open = false;
     PumpUntil([&] {
       auto* link = Mgr(side).FindLink(alias);
-      ch0_open = link && link->Mux() && link->Mux()->State(pp::amp::kCapabilityChannelId) == pp::amp::ChannelState::Open;
+      ch0_open =
+          link && link->Mux() && link->Mux()->State(pp::amp::kCapabilityChannelId) == pp::amp::ChannelState::Open;
       return ch0_open;
     });
     return ch0_open;
@@ -148,9 +147,7 @@ struct AmpIntegrationHarness : AmpMeshHarness {
     return try_read();
   }
 
-  void ConfigureLoss(const HarnessSide side, const size_t drop_next) {
-    Io(side)->DropNext(drop_next);
-  }
+  void ConfigureLoss(const HarnessSide side, const size_t drop_next) { Io(side)->DropNext(drop_next); }
 
   /** Hold/permute outbound datagrams (seeded). Call FlushReorder before final asserts. */
   void ConfigureReorder(const HarnessSide side, const size_t window, const uint32_t seed = 1) {

@@ -3,7 +3,6 @@
 #include "amp/L2/MshMessages.h"
 #include "amp/L2/Types.h"
 
-
 #include <vector>
 
 namespace pp::amp {

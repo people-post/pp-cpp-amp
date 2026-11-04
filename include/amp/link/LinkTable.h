@@ -30,8 +30,7 @@ public:
 
   /** Prefer Connected ADP, else Connected carrier, for PeerId. */
   PeerLink* FindByPeerId(const std::string& peer_id, TransportClass prefer = TransportClass::Adp);
-  const PeerLink* FindByPeerId(const std::string& peer_id,
-                               TransportClass prefer = TransportClass::Adp) const;
+  const PeerLink* FindByPeerId(const std::string& peer_id, TransportClass prefer = TransportClass::Adp) const;
 
   bool ContainsDialKey(const DialKey& key) const { return by_dial_key_.contains(key); }
 

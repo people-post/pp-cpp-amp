@@ -316,9 +316,7 @@ TEST(MeshLinkTest, EnsureAssociationOverMemoryIo) {
     }
   });
 
-  fixture->PumpUntil([&] {
-    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
-  });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
 
   EXPECT_TRUE(associated) << assoc_error;
   EXPECT_TRUE(fixture->mgr_a->IsConnected("bob"));
@@ -358,8 +356,8 @@ TEST(MeshLinkTest, AHostnameCandidateIsResolvedThenDialed) {
   ASSERT_TRUE(static_cast<bool>(fixture));
   ManualResolver resolver;
   fixture->mgr_a->SetHostResolver(resolver.fn());
-  ASSERT_TRUE(static_cast<bool>(
-      fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+  ASSERT_TRUE(
+      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/1.0.0/p2p/QmBob")));
 
   int answered = 0;
   bool associated = false;
@@ -394,8 +392,8 @@ TEST(MeshLinkTest, AHostnameThatDoesNotResolveFailsLikeADial) {
   ASSERT_TRUE(static_cast<bool>(fixture));
   ManualResolver resolver;
   fixture->mgr_a->SetHostResolver(resolver.fn());
-  ASSERT_TRUE(static_cast<bool>(
-      fixture->mgr_a->RegisterEndpoint("bob", "/dns4/gone.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+  ASSERT_TRUE(
+      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/gone.test/udp/2000/adp/1.0.0/p2p/QmBob")));
   std::optional<PeerLinkManager::LinkRoe> outcome;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { outcome = std::move(r); });
   resolver.answer(Error("amp addr: cannot resolve gone.test"));
@@ -415,12 +413,13 @@ TEST(MeshLinkTest, AHostnameThatDoesNotResolveFailsLikeADial) {
 // dial asks the resolver again rather than reusing it until the TTL ends.
 TEST(MeshLinkTest, AFailedDialResolvesTheHostnameAgain) {
   ASSERT_GE(sodium_init(), 0);
-  auto fixture = MeshLinkFixture::Create(false, [](PeerLinkConfig& c) { c.dial_failure_backoff = std::chrono::milliseconds(0); });
+  auto fixture =
+      MeshLinkFixture::Create(false, [](PeerLinkConfig& c) { c.dial_failure_backoff = std::chrono::milliseconds(0); });
   ASSERT_TRUE(static_cast<bool>(fixture));
   ManualResolver resolver;
   fixture->mgr_a->SetHostResolver(resolver.fn());
-  ASSERT_TRUE(static_cast<bool>(
-      fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+  ASSERT_TRUE(
+      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/1.0.0/p2p/QmBob")));
   std::optional<PeerLinkManager::LinkRoe> first;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { first = std::move(r); });
   resolver.answer(adp::IpEndpoint::V4(10, 0, 0, 9, 2000)); // where bob was: nobody answers
@@ -476,8 +475,8 @@ TEST(MeshLinkTest, AFullTableRefusesADialerAtOnce) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create(false, {}, [](PeerLinkConfig& c) { c.max_links = 0; });
   ASSERT_TRUE(static_cast<bool>(fixture));
-  ASSERT_TRUE(static_cast<bool>(
-      fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
+  ASSERT_TRUE(
+      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
   std::optional<PeerLinkManager::LinkRoe> result;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { result = std::move(r); });
   const int64_t took = fixture->PumpTimed([&] { return result.has_value(); }, 9000);
@@ -541,8 +540,8 @@ TEST(MeshLinkTest, TheDialerResendsItsHelloOnADoublingInterval) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
   ASSERT_TRUE(static_cast<bool>(fixture));
-  ASSERT_TRUE(static_cast<bool>(
-      fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
+  ASSERT_TRUE(
+      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
   fixture->lossy_a->DropNext(8); // the dial's first sends: the old cap (two resends, 50 ms apart) gave up
   std::optional<PeerLinkManager::LinkRoe> result;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { result = std::move(r); });
@@ -557,8 +556,8 @@ TEST(MeshLinkTest, AFullBacklogDropsTheHelloSilently) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create(false, {}, [](PeerLinkConfig& c) { c.max_pending_inbound = 0; });
   ASSERT_TRUE(static_cast<bool>(fixture));
-  ASSERT_TRUE(static_cast<bool>(
-      fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
+  ASSERT_TRUE(
+      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
   std::optional<PeerLinkManager::LinkRoe> result;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { result = std::move(r); });
   fixture->PumpTimed([&] { return result.has_value(); }, 2000);
@@ -632,10 +631,9 @@ TEST(MeshLinkTest, OpenChannelDataRoundTrip) {
   });
 
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
-  fixture->PumpUntil([&] {
-    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
-  });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
 
   uint32_t channel_id = 0;
@@ -679,7 +677,8 @@ TEST(MeshLinkTest, UnservedProtocolOpenIsRefusedPromptly) {
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   fixture->mgr_b->SetRefuseUnhandledOpens(true);
   bool served_called = false;
-  fixture->mgr_b->SetProtocolHandler("/served/1", [&](LinkHandle, const std::string&, uint32_t) { served_called = true; });
+  fixture->mgr_b->SetProtocolHandler("/served/1",
+                                     [&](LinkHandle, const std::string&, uint32_t) { served_called = true; });
 
   const auto open_and_wait = [&](const std::string& protocol) -> std::optional<bool> {
     std::optional<uint32_t> id;
@@ -776,10 +775,9 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
 
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
-  fixture->PumpUntil([&] {
-    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
-  });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
 
   std::optional<uint32_t> channel_id;
@@ -791,8 +789,7 @@ TEST(MeshLinkTest, NestedCarrierResetDuringHandshakeDefersDrop) {
                               });
   fixture->PumpUntil([&] {
     auto* outbound = fixture->mgr_a->FindLink("bob");
-    return channel_id && outbound && outbound->Mux() &&
-           outbound->Mux()->State(*channel_id) == ChannelState::Open;
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
   });
   ASSERT_TRUE(channel_id.has_value());
 
@@ -848,10 +845,9 @@ TEST(MeshLinkTest, LinkConnectionStatsFollowACarrierDownToItsAssociation) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
-  fixture->PumpUntil([&] {
-    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
-  });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
 
   auto* outbound = fixture->mgr_a->FindLink("bob");
@@ -903,10 +899,9 @@ TEST(MeshLinkTest, NestedHandshakeTimesOutWhenPeerNeverAnswers) {
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
 
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
-  fixture->PumpUntil([&] {
-    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
-  });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
 
   std::optional<uint32_t> channel_id;
@@ -918,8 +913,7 @@ TEST(MeshLinkTest, NestedHandshakeTimesOutWhenPeerNeverAnswers) {
                               });
   fixture->PumpUntil([&] {
     auto* outbound = fixture->mgr_a->FindLink("bob");
-    return channel_id && outbound && outbound->Mux() &&
-           outbound->Mux()->State(*channel_id) == ChannelState::Open;
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
   });
   ASSERT_TRUE(channel_id.has_value());
 
@@ -959,7 +953,8 @@ TEST(MeshLinkTest, NestedHandshakeKeepsTheFullDialBudgetWhenThePeerHasUntriedAdd
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
   std::optional<uint32_t> channel_id;
@@ -998,7 +993,7 @@ TEST(MeshLinkTest, NestedHandshakeKeepsTheFullDialBudgetWhenThePeerHasUntriedAdd
   fixture->pump_a->Tick();
   EXPECT_FALSE(nested.has_value()) << "past the per-candidate budget: a nested handshake is not a candidate";
 
-  fixture->clock->Advance(8'100);  // past the full dial_timeout (8 s)
+  fixture->clock->Advance(8'100); // past the full dial_timeout (8 s)
   fixture->pump_a->Tick();
   ASSERT_TRUE(nested.has_value());
   EXPECT_FALSE(nested->isOk());
@@ -1015,7 +1010,8 @@ TEST(MeshLinkTest, ScheduledDropHitsTheFailedLinkNotItsReplacement) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
   const LinkHandle outer_b = fixture->mgr_b->FindConnectedInboundLink()->Handle();
@@ -1051,9 +1047,8 @@ TEST(MeshLinkTest, ScheduledDropHitsTheFailedLinkNotItsReplacement) {
   fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", first_carrier, true, [](PeerLinkManager::LinkRoe) {});
   first_carrier.reset();
   const LinkHandle first = fixture->mgr_a->FindLink("nested:bob")->Handle();
-  ASSERT_TRUE(fixture->mgr_b->WithLiveLink(outer_b, [&](PeerLink& link) {
-    (void)link.Mux()->ResetChannel(first_channel);
-  }));
+  ASSERT_TRUE(
+      fixture->mgr_b->WithLiveLink(outer_b, [&](PeerLink& link) { (void)link.Mux()->ResetChannel(first_channel); }));
   fixture->pump_b->Pump();
   fixture->pump_a->Pump();
 
@@ -1085,7 +1080,8 @@ TEST(MeshLinkTest, FailedAdpDialUnderASharedKeyLeavesTheNestedLinkAlone) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated; });
   ASSERT_TRUE(associated);
 
@@ -1099,7 +1095,7 @@ TEST(MeshLinkTest, FailedAdpDialUnderASharedKeyLeavesTheNestedLinkAlone) {
   auto* adp_link = fixture->mgr_a->FindLink(key);
   ASSERT_NE(adp_link, nullptr);
   const LinkHandle adp_handle = adp_link->Handle();
-  fixture->mgr_a->AbortInflightDial(key);  // failed; its drop waits for Tick
+  fixture->mgr_a->AbortInflightDial(key); // failed; its drop waits for Tick
   ASSERT_TRUE(fixture->mgr_a->WithLiveLink(adp_handle, [](PeerLink&) {}));
 
   // … and, meanwhile, the nested link over a carrier under the same key.
@@ -1114,7 +1110,7 @@ TEST(MeshLinkTest, FailedAdpDialUnderASharedKeyLeavesTheNestedLinkAlone) {
     auto* outbound = fixture->mgr_a->FindLink("bob");
     return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
   };
-  for (int i = 0; i < 40 && !carrier_open(); ++i) {  // Pump only: a Tick would drain the ADP drop now
+  for (int i = 0; i < 40 && !carrier_open(); ++i) { // Pump only: a Tick would drain the ADP drop now
     fixture->pump_a->Pump();
     fixture->pump_b->Pump();
   }
@@ -1124,15 +1120,15 @@ TEST(MeshLinkTest, FailedAdpDialUnderASharedKeyLeavesTheNestedLinkAlone) {
   carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
                 [](Roe<std::vector<uint8_t>>) { return true; });
   bool nested_ok = false;
-  fixture->mgr_a->EstablishNestedOverCarrier(key, carrier, true,
-                                             [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
+  fixture->mgr_a->EstablishNestedOverCarrier(
+      key, carrier, true, [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
   auto* nested_link = fixture->mgr_a->FindLink(key);
   ASSERT_NE(nested_link, nullptr);
   ASSERT_TRUE(nested_link->IsCarrierBacked());
   const LinkHandle nested_handle = nested_link->Handle();
   ASSERT_TRUE(fixture->mgr_a->WithLiveLink(adp_handle, [](PeerLink&) {})) << "drop still pending";
 
-  fixture->pump_a->Tick();  // drains the aborted dial's drop while the nested link holds the key
+  fixture->pump_a->Tick(); // drains the aborted dial's drop while the nested link holds the key
   EXPECT_FALSE(fixture->mgr_a->WithLiveLink(adp_handle, [](PeerLink&) {})) << "the aborted dial is gone";
   EXPECT_TRUE(fixture->mgr_a->WithLiveLink(nested_handle, [](PeerLink&) {})) << "the nested link survives";
   fixture->PumpUntil([&] { return nested_ok; });
@@ -1154,7 +1150,8 @@ TEST(MeshLinkTest, NestedEstablishDoesNotWaitOnAnAdpDialUnderTheSameKey) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated; });
   ASSERT_TRUE(associated);
 
@@ -1186,8 +1183,8 @@ TEST(MeshLinkTest, NestedEstablishDoesNotWaitOnAnAdpDialUnderTheSameKey) {
   carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
                 [](Roe<std::vector<uint8_t>>) { return true; });
   std::optional<bool> nested_ok;
-  fixture->mgr_a->EstablishNestedOverCarrier(key, carrier, true,
-                                             [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
+  fixture->mgr_a->EstablishNestedOverCarrier(
+      key, carrier, true, [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return nested_ok.has_value(); });
 
   ASSERT_TRUE(nested_ok.has_value()) << "the nested handshake finished on its own, not with the ADP dial";
@@ -1201,11 +1198,12 @@ TEST(MeshLinkTest, NestedEstablishDoesNotWaitOnAnAdpDialUnderTheSameKey) {
 /** Associate A→B and bring up a Connected nested link over a carrier channel (B accepts). */
 struct ConnectedNested {
   uint32_t carrier_channel = 0;
-  LinkHandle outer_b;  // B's end of the outer (ADP) link carrying the carrier
+  LinkHandle outer_b; // B's end of the outer (ADP) link carrying the carrier
   std::string nested_key = "nested:bob";
 };
 
-std::optional<ConnectedNested> BringUpConnectedNested(MeshLinkFixture& f, const std::string& nested_key = "nested:bob") {
+std::optional<ConnectedNested> BringUpConnectedNested(MeshLinkFixture& f,
+                                                      const std::string& nested_key = "nested:bob") {
   f.mgr_b->EnableNestedCarrierAccept(true);
   auto bob_addr = FormatAdpMultiaddr(f.addr_b, "QmBob");
   if (!bob_addr || !f.mgr_a->RegisterEndpoint("bob", *bob_addr)) {
@@ -1297,7 +1295,7 @@ ChannelPolicy NestedReliablePolicy() {
 std::optional<NestedReliableChannel> OpenNestedReliableChannel(MeshLinkFixture& f, const std::string& nested_key) {
   NestedReliableChannel out;
   f.mgr_b->SetProtocolHandler(kNestedReliableProtocol, [&f, received = out.received, nested_b = out.nested_b](
-                                                          LinkHandle link, const std::string&, uint32_t ch) {
+                                                           LinkHandle link, const std::string&, uint32_t ch) {
     *nested_b = link;
     f.mgr_b->WithLiveLink(link, [&](PeerLink& nested_b) {
       nested_b.Mux()->SetDataHandler(ch, [received](uint32_t, std::vector<uint8_t> payload) {
@@ -1437,7 +1435,7 @@ TEST(MeshLinkTest, NestedReliableChannelSurvivesLossAndReorderingOnTheCarrier) {
     fixture->PumpBoth();
   }
   for (auto* lossy : {fixture->lossy_a.get(), fixture->lossy_b.get()}) {
-    lossy->SetRngSeed(7);
+    lossy->SetRngSeed(11);
     lossy->SetDropRate(0.2);
     lossy->SetReorderWindow(3);
   }
@@ -1456,6 +1454,57 @@ TEST(MeshLinkTest, NestedReliableChannelSurvivesLossAndReorderingOnTheCarrier) {
   auto* link = FindNestedLink(*fixture, nested->nested_key);
   ASSERT_NE(link, nullptr) << "the link survived";
   EXPECT_FALSE(link->CarrierLaneFailed());
+}
+
+// pp-browser #502: a nested handshake over a lossy carrier comes up. The carrier is BestEffort and nothing below
+// resends a handshake message: one lost message used to end the handshake at its dial budget (two lossy long legs
+// through a relay). The initiator resends its last message on a timer; the responder answers a repeat by resending
+// its reply, its Finished included once it is Connected.
+TEST(MeshLinkTest, NestedHandshakeOverALossyCarrierResendsUntilItComesUp) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_b->EnableNestedCarrierAccept(true);
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(bob_addr && fixture->mgr_a->RegisterEndpoint("bob", *bob_addr));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", kAmpCircuitCarrierProtocolId, CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  fixture->PumpUntil([&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(channel_id.has_value());
+  // A relay link holding a circuit is hot in the product; both ends hear each other's cadence before the loss.
+  fixture->mgr_a->MarkHot("bob");
+  fixture->mgr_b->MarkHot("QmAlice");
+  for (int i = 0; i < 20; ++i) {
+    fixture->clock->Advance(10);
+    fixture->PumpBoth();
+  }
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+  for (auto* lossy : {fixture->lossy_a.get(), fixture->lossy_b.get()}) {
+    lossy->SetRngSeed(11);
+    lossy->SetDropRate(0.1);
+  }
+  std::optional<bool> nested_ok;
+  fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", carrier, true,
+                                             [&](PeerLinkManager::LinkRoe result) { nested_ok = result.isOk(); });
+  // Within the dial budget (8 s).
+  PumpAdvancing(
+      *fixture, [&] { return nested_ok.has_value(); }, 790);
+  ASSERT_TRUE(nested_ok.has_value()) << "the handshake neither came up nor failed in 7.9 s";
+  EXPECT_TRUE(*nested_ok);
 }
 
 // The relay stops forwarding while both outer links stay up: no resend of a reliable frame gets
@@ -1484,10 +1533,11 @@ TEST(MeshLinkTest, NestedLinkIsDroppedWhenItsReliableLaneGivesUp) {
 
   const std::vector<uint8_t> bytes = {'x'};
   ASSERT_TRUE(static_cast<bool>(nested_a->Mux()->SendData(channel->channel_id, bytes)));
-  PumpAdvancing(*fixture, [&] { return !fixture->mgr_a->WithLiveLink(handle, [](PeerLink&) {}); }, 6000);
+  PumpAdvancing(
+      *fixture, [&] { return !fixture->mgr_a->WithLiveLink(handle, [](PeerLink&) {}); }, 6000);
   EXPECT_FALSE(fixture->mgr_a->WithLiveLink(handle, [](PeerLink&) {}));
   EXPECT_TRUE(fixture->mgr_a->IsConnected("bob")) << "the outer link is fine";
-  fixture->PumpBoth();  // listeners run off-strand
+  fixture->PumpBoth(); // listeners run off-strand
   bool dead = false;
   for (const auto& event : events) {
     dead |= event.kind == LinkEvent::Kind::Dropped && event.handle == handle &&
@@ -1507,12 +1557,14 @@ TEST(MeshLinkTest, ADroppedLinkReportsTheKeepaliveCadenceItRanAt) {
     ASSERT_TRUE(static_cast<bool>(bob_addr));
     ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
     bool associated = false;
-    fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+    fixture->mgr_a->EnsureAssociation("bob",
+                                      [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
     fixture->PumpUntil([&] { return associated; });
     ASSERT_TRUE(associated);
     if (hot) {
       fixture->mgr_a->MarkHot("bob");
-      PumpAdvancing(*fixture, [] { return false; }, 20);  // the cadence is announced and echoed
+      PumpAdvancing(
+          *fixture, [] { return false; }, 20); // the cadence is announced and echoed
     }
     std::vector<LinkEvent> dropped;
     fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) {
@@ -1564,7 +1616,7 @@ TEST(MeshLinkTest, NestedLinkComesUpBesideAConnectedAdpLinkUnderTheSameKey) {
   ASSERT_GE(sodium_init(), 0);
   auto fixture = MeshLinkFixture::Create();
   ASSERT_TRUE(static_cast<bool>(fixture));
-  auto nested = BringUpConnectedNested(*fixture, /*nested_key=*/"bob");  // same key as the ADP link
+  auto nested = BringUpConnectedNested(*fixture, /*nested_key=*/"bob"); // same key as the ADP link
   ASSERT_TRUE(nested.has_value());
   auto* adp = fixture->mgr_a->FindLink("bob");
   ASSERT_NE(adp, nullptr);
@@ -1606,7 +1658,8 @@ TEST(MeshLinkTest, ConnectedNestedLinkIsDroppedWhenItsCarrierCloses) {
   EXPECT_FALSE(fixture->mgr_a->WithLiveLink(nested_handle, [](PeerLink&) {})) << "no Backoff linger";
   bool dropped = false;
   for (const auto& event : events) {
-    if (event.kind == LinkEvent::Kind::Dropped && event.reason == LinkDropReason::CarrierClosed && event.was_connected) {
+    if (event.kind == LinkEvent::Kind::Dropped && event.reason == LinkDropReason::CarrierClosed &&
+        event.was_connected) {
       dropped = true;
     }
   }
@@ -1633,7 +1686,8 @@ TEST(MeshLinkTest, InboundLinkIsDroppedWhenItsHandshakeFails) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   std::optional<bool> associated;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   const auto inbound_failed = [&] {
     for (const auto& event : events_b) {
       if (event.kind == LinkEvent::Kind::Dropped && !event.was_connected &&
@@ -1678,18 +1732,19 @@ TEST(MeshLinkTest, LinkIsDroppedAtOnceWhenTheOsReportsThePeerUnreachable) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated; });
   ASSERT_TRUE(associated);
   std::vector<LinkEvent> events;
   fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
 
   fixture->io_a->SetUnreachable(fixture->addr_b, true);
-  std::optional<PeerLinkManager::ChannelRoe> opened;  // any send on the link hits the route error
+  std::optional<PeerLinkManager::ChannelRoe> opened; // any send on the link hits the route error
   fixture->mgr_a->OpenChannel("bob", "/pp-test/any/1.0.0", ControlJsonChannelPolicy(),
                               [&](PeerLinkManager::ChannelRoe ch) { opened = std::move(ch); });
   fixture->pump_a->Pump();
-  fixture->pump_a->Tick();  // no clock advance: well inside the liveness window
+  fixture->pump_a->Tick(); // no clock advance: well inside the liveness window
 
   EXPECT_EQ(fixture->mgr_a->FindLink("bob"), nullptr);
   bool dropped = false;
@@ -1709,7 +1764,8 @@ TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
   const std::string bob_peer_id = fixture->mgr_a->FindLink("bob")->RemotePeerId();
@@ -1742,7 +1798,8 @@ TEST(MeshLinkTest, CloseAllLinksEvictsThePeerAtOnce) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
 
@@ -1761,7 +1818,7 @@ TEST(MeshLinkTest, CloseAllLinksEvictsThePeerAtOnce) {
   }
   EXPECT_EQ(fixture->clock->NowMs(), before);
   EXPECT_EQ(fixture->mgr_b->FindConnectedInboundLink(), nullptr) << "peer evicts on our Close";
-  fixture->pump_a->Pump();  // deliver the posted drop event
+  fixture->pump_a->Pump(); // deliver the posted drop event
   ASSERT_EQ(dropped.size(), 1u);
   EXPECT_EQ(dropped[0].reason, LinkDropReason::LocalShutdown);
   EXPECT_EQ(fixture->mgr_a->CloseAllLinks(), 0u);
@@ -1781,8 +1838,8 @@ TEST(MeshLinkTest, ServerAtMaxLinksAdmitsANewPeerOnceTheLastOneClosed) {
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { first = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return first && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(first);
-  fixture->mgr_a->CloseAllLinks();  // the first client exits; its Close reaches bob in the same
-                                    // Pump as carol's handshake below
+  fixture->mgr_a->CloseAllLinks(); // the first client exits; its Close reaches bob in the same
+                                   // Pump as carol's handshake below
 
   // A second client from another address and identity.
   auto io_c = std::make_shared<adp::MemoryDatagramIo>(fixture->hub, adp::IpEndpoint::V4(10, 0, 0, 3, 3000));
@@ -1821,7 +1878,8 @@ TEST(MeshLinkTest, DroppedLinkClosesItsChannelSessions) {
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   fixture->mgr_b->SetProtocolHandler("/served/1", [](LinkHandle, const std::string&, uint32_t) {});
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
 
@@ -1837,9 +1895,9 @@ TEST(MeshLinkTest, DroppedLinkClosesItsChannelSessions) {
   });
   ASSERT_TRUE(id.has_value());
   std::string closed_reason;
-  auto session = fixture->mgr_a->BindChannel("bob", *id, ControlJsonChannelPolicy(),
-                                             [](Roe<std::vector<uint8_t>>) { return true; },
-                                             [&](const char* reason) { closed_reason = reason ? reason : ""; });
+  auto session = fixture->mgr_a->BindChannel(
+      "bob", *id, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; },
+      [&](const char* reason) { closed_reason = reason ? reason : ""; });
   ASSERT_NE(session, nullptr);
 
   const std::string bob_peer_id = fixture->mgr_a->FindLink("bob")->RemotePeerId();
@@ -1850,7 +1908,7 @@ TEST(MeshLinkTest, DroppedLinkClosesItsChannelSessions) {
   EXPECT_TRUE(session->IsClosed());
   EXPECT_FALSE(session->EnqueueOutbound({1, 2, 3})) << "no write through the destroyed mux";
   EXPECT_EQ(session->Mux(), nullptr) << "the session forgot the destroyed mux";
-  session.reset();  // destruction must not unbind through the destroyed mux either
+  session.reset(); // destruction must not unbind through the destroyed mux either
 }
 
 // An inbound-channel handler binds on the link the channel came in on (its handle), not on whatever link
@@ -1876,7 +1934,8 @@ TEST(MeshLinkTest, InboundHandlerBindsOnTheLinkItsChannelCameIn) {
                                                });
   });
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated; });
   ASSERT_TRUE(associated);
   std::optional<uint32_t> id;
@@ -1887,8 +1946,7 @@ TEST(MeshLinkTest, InboundHandlerBindsOnTheLinkItsChannelCameIn) {
   });
   fixture->PumpUntil([&] {
     auto* outbound = fixture->mgr_a->FindLink("bob");
-    return id && served != nullptr && outbound && outbound->Mux() &&
-           outbound->Mux()->State(*id) == ChannelState::Open;
+    return id && served != nullptr && outbound && outbound->Mux() && outbound->Mux()->State(*id) == ChannelState::Open;
   });
   ASSERT_NE(served, nullptr) << "bound on the inbound link by its handle";
   auto client = fixture->mgr_a->BindChannel("bob", *id, ControlJsonChannelPolicy(),
@@ -1917,7 +1975,8 @@ TEST(MeshLinkTest, InboundAdoptSkipsEphemeralBurstAlias) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
   const std::string alice_id = fixture->mgr_b->FindConnectedInboundLink()->RemotePeerId();
@@ -1932,7 +1991,8 @@ TEST(MeshLinkTest, InboundAdoptSkipsEphemeralBurstAlias) {
       fixture->mgr_b->RegisterEndpoint(std::string(kBurstDialKeyPrefix) + "0:" + alice_id.substr(0, 12), *alice_ma)));
 
   associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
   auto* inbound = fixture->mgr_b->FindConnectedInboundLink();
@@ -1951,7 +2011,8 @@ TEST(MeshLinkTest, MarkWarmBeforeAssociationAppliesOnConnect) {
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   fixture->PumpUntil([&] { return associated; });
   ASSERT_TRUE(associated);
   auto* link = fixture->mgr_a->FindLink("bob");
@@ -1967,17 +2028,15 @@ TEST(MeshLinkTest, LinkEventsConnectedThenDeadDrop) {
   std::vector<LinkEvent> events_a;
   std::vector<LinkEvent> events_b;
   fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events_a.push_back(event); });
-  const auto id_b =
-      fixture->mgr_b->AddLinkEventListener([&](const LinkEvent& event) { events_b.push_back(event); });
+  const auto id_b = fixture->mgr_b->AddLinkEventListener([&](const LinkEvent& event) { events_b.push_back(event); });
 
   auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
   ASSERT_TRUE(static_cast<bool>(bob_addr));
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
-  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
-  fixture->PumpUntil([&] {
-    return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr;
-  });
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
   ASSERT_TRUE(associated);
 
   ASSERT_EQ(events_a.size(), 1u);
@@ -1994,8 +2053,7 @@ TEST(MeshLinkTest, LinkEventsConnectedThenDeadDrop) {
   // Inbound dial key = "inbound:" + assoc id as lowercase hex (was '0'+nibble → ":;<=>?").
   ASSERT_EQ(events_b[0].dial_key.size(), std::string("inbound:").size() + 2 * adp::kAssocIdBytes);
   EXPECT_EQ(events_b[0].dial_key.rfind("inbound:", 0), 0u);
-  EXPECT_EQ(events_b[0].dial_key.find_first_not_of("0123456789abcdef", 8), std::string::npos)
-      << events_b[0].dial_key;
+  EXPECT_EQ(events_b[0].dial_key.find_first_not_of("0123456789abcdef", 8), std::string::npos) << events_b[0].dial_key;
   fixture->mgr_b->RemoveLinkEventListener(id_b);
 
   // Cold link, no traffic past kAliveTimeoutMs → Tick evicts it as dead.
@@ -2022,7 +2080,7 @@ LinkHandle ConnectHotLink(MeshLinkFixture& f) {
   f.PumpUntil([&] { return associated && f.mgr_b->FindConnectedInboundLink() != nullptr; });
   EXPECT_TRUE(associated);
   f.mgr_a->MarkHot("bob");
-  for (int i = 0; i < 10; ++i) {  // settle: nothing of the handshake still in flight
+  for (int i = 0; i < 10; ++i) { // settle: nothing of the handshake still in flight
     f.clock->Advance(100);
     f.PumpBoth();
   }
@@ -2043,7 +2101,7 @@ TEST(MeshLinkTest, NetworkChangeEvictsASilentLinkWithinTheGrace) {
   std::vector<LinkEvent> events;
   fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
 
-  fixture->lossy_b->SetDropRate(1.0);  // B's replies no longer reach A
+  fixture->lossy_b->SetDropRate(1.0); // B's replies no longer reach A
   // Without a network change, 10 s of silence is well inside the hot window.
   for (int i = 0; i < 20; ++i) {
     fixture->clock->Advance(500);
@@ -2079,7 +2137,7 @@ TEST(MeshLinkTest, NetworkChangeKeepsALinkThatAnswers) {
   auto* link = fixture->mgr_a->FindLink("bob");
   ASSERT_NE(link, nullptr);
   EXPECT_NE(link->SuspectSinceMs(), 0);
-  for (int i = 0; i < 40; ++i) {  // 4 s: twice the grace
+  for (int i = 0; i < 40; ++i) { // 4 s: twice the grace
     fixture->clock->Advance(100);
     fixture->PumpBoth();
   }
@@ -2097,7 +2155,7 @@ TEST(MeshLinkTest, NetworkChangeResendsALostProbe) {
   ASSERT_TRUE(static_cast<bool>(fixture));
   ConnectHotLink(*fixture);
 
-  fixture->lossy_a->SetDropRate(1.0);  // the first probe is lost
+  fixture->lossy_a->SetDropRate(1.0); // the first probe is lost
   EXPECT_EQ(fixture->mgr_a->OnNetworkChanged(), 1u);
   fixture->clock->Advance(100);
   fixture->PumpBoth();
@@ -2121,8 +2179,8 @@ TEST(MeshLinkTest, VerifyLinkEvictsASilentLinkAndSaysSo) {
   std::vector<LinkEvent> events;
   fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) { events.push_back(event); });
 
-  fixture->lossy_b->SetDropRate(1.0);  // B is gone
-  for (int i = 0; i < 10; ++i) {        // 5 s of silence: still Connected (hot window)
+  fixture->lossy_b->SetDropRate(1.0); // B is gone
+  for (int i = 0; i < 10; ++i) {      // 5 s of silence: still Connected (hot window)
     fixture->clock->Advance(500);
     fixture->PumpBoth();
   }
@@ -2185,7 +2243,8 @@ TEST(MeshRuntimeTest, PumpDrivesAssociationRoundTrip) {
   ASSERT_TRUE(static_cast<bool>(harness->mgr_b().RegisterEndpoint("a", harness->ma_a)));
 
   bool associated = false;
-  harness->mgr_a().EnsureAssociation("b", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  harness->mgr_a().EnsureAssociation("b",
+                                     [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   harness->PumpUntil([&] {
     return associated && harness->mgr_a().IsConnected("b") && harness->mgr_b().FindLinkByPeerId(harness->peer_id_a);
   });
@@ -2206,7 +2265,8 @@ TEST(MeshRuntimeTest, StopClosesEveryLinkAndThePeerEvicts) {
   auto harness = std::move(*created);
   ASSERT_TRUE(static_cast<bool>(harness->mgr_a().RegisterEndpoint("b", harness->ma_b)));
   bool associated = false;
-  harness->mgr_a().EnsureAssociation("b", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  harness->mgr_a().EnsureAssociation("b",
+                                     [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   harness->PumpUntil([&] { return associated && harness->mgr_b().FindLinkByPeerId(harness->peer_id_a); });
   ASSERT_NE(harness->mgr_b().FindLinkByPeerId(harness->peer_id_a), nullptr);
 
@@ -2353,7 +2413,7 @@ TEST(MeshLinkTest, CapabilityOmitsListenAddrsForPeersTheDisclosurePolicyRefuses)
   std::vector<std::string> asked;
   h.mgr_a().SetListenAddrDisclosure([&](const std::string& remote_peer_id) {
     asked.push_back(remote_peer_id);
-    return false;  // B may not learn A's addresses
+    return false; // B may not learn A's addresses
   });
   ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
 
@@ -2464,8 +2524,7 @@ TEST(MeshLinkTest, DualDialElectsOneConnectedLinkPerPeerId) {
   h.PumpUntil([&] {
     return done_a > 0 && done_b > 0 && h.mgr_a().CountConnectedLinksForPeerId(h.peer_id_b) == 1 &&
            h.mgr_b().CountConnectedLinksForPeerId(h.peer_id_a) == 1 &&
-           h.mgr_a().FindLinkByPeerId(h.peer_id_b) != nullptr &&
-           h.mgr_b().FindLinkByPeerId(h.peer_id_a) != nullptr;
+           h.mgr_a().FindLinkByPeerId(h.peer_id_b) != nullptr && h.mgr_b().FindLinkByPeerId(h.peer_id_a) != nullptr;
   });
 
   EXPECT_EQ(done_a, 1);
@@ -2543,7 +2602,8 @@ TEST(AmpStackTest, CreateAndAssociateViaStacks) {
   ASSERT_TRUE(static_cast<bool>((*stack_a)->Links().RegisterEndpoint("b", *ma_b)));
 
   bool associated = false;
-  (*stack_a)->Links().EnsureAssociation("b", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  (*stack_a)->Links().EnsureAssociation(
+      "b", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
   for (size_t i = 0; i < 500 && !associated; ++i) {
     (*stack_a)->Pump();
     (*stack_b)->Pump();
@@ -2746,7 +2806,7 @@ TEST(MeshLinkTest, PeerLookupsResolvePastADialHoldingTheKey) {
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
-  for (int i = 0; i < 200 && !associated; ++i) {  // Pump only: keep the dead dial pending
+  for (int i = 0; i < 200 && !associated; ++i) { // Pump only: keep the dead dial pending
     fixture->pump_a->Pump();
     fixture->pump_b->Pump();
   }
@@ -2812,7 +2872,7 @@ TEST(MeshLinkTest, CandidateRetryDoesNotDialOverAConnectedCarrierUnderTheKey) {
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
   bool associated = false;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
-  for (int i = 0; i < 200 && !associated; ++i) {  // Pump only: keep the dead dial's first attempt pending
+  for (int i = 0; i < 200 && !associated; ++i) { // Pump only: keep the dead dial's first attempt pending
     fixture->pump_a->Pump();
     fixture->pump_b->Pump();
   }
@@ -3000,8 +3060,7 @@ TEST(MeshRuntimeDriveTest, BurstDialBlackholeExpiresOnAmpClock) {
   ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
   auto harness = std::move(*created);
 
-  const std::string blackhole =
-      "/ip4/127.0.0.1/udp/1/adp/1.0.0/p2p/" + harness->peer_id_b;
+  const std::string blackhole = "/ip4/127.0.0.1/udp/1/adp/1.0.0/p2p/" + harness->peer_id_b;
   std::optional<BurstDialResult> done;
   harness->runtime_a->BurstDial({blackhole}, std::chrono::milliseconds(100),
                                 [&](BurstDialResult r) { done = std::move(r); });
@@ -3029,7 +3088,7 @@ TEST(MeshRuntimeDriveTest, UnregisterEndpointForgetsTheKey) {
   EXPECT_TRUE(harness->mgr_a().GetLinkSnapshot("probe:1").has_endpoint);
   harness->runtime_a->UnregisterEndpoint("probe:1");
   EXPECT_FALSE(harness->mgr_a().GetLinkSnapshot("probe:1").has_endpoint);
-  harness->runtime_a->UnregisterEndpoint("never-registered");  // no-op
+  harness->runtime_a->UnregisterEndpoint("never-registered"); // no-op
 }
 
 TEST(MeshRuntimeDriveTest, BurstDialConnectsPeer) {
@@ -3073,7 +3132,9 @@ TEST(MeshRuntimeDriveTest, IsConnectedToPeerIdIgnoresCarrierOnly) {
 } // namespace
 namespace {
 
-TEST(PeerLinkConfigTest, DefaultsAreValid) { EXPECT_TRUE(static_cast<bool>(ValidatePeerLinkConfig(PeerLinkConfig{}))); }
+TEST(PeerLinkConfigTest, DefaultsAreValid) {
+  EXPECT_TRUE(static_cast<bool>(ValidatePeerLinkConfig(PeerLinkConfig{})));
+}
 
 TEST(PeerLinkConfigTest, RejectsCombinationsThatCannotWork) {
   auto invalid = [](const std::function<void(PeerLinkConfig&)>& edit) {
@@ -3088,9 +3149,8 @@ TEST(PeerLinkConfigTest, RejectsCombinationsThatCannotWork) {
   EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.adp.alive_timeout_ms = c.adp.rtx_interval_ms; }));
   EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.mux.max_concurrent_channels = 0; }));
   EXPECT_TRUE(invalid([](PeerLinkConfig& c) { c.mux.max_queued_bytes = 1024; }));
-  EXPECT_TRUE(invalid([](PeerLinkConfig& c) {
-    c.mux.frag_assembly_timeout_ms = c.adp.rtx_interval_ms * c.adp.max_rtx - 1;
-  }));
+  EXPECT_TRUE(
+      invalid([](PeerLinkConfig& c) { c.mux.frag_assembly_timeout_ms = c.adp.rtx_interval_ms * c.adp.max_rtx - 1; }));
   // A larger, consistent window is fine.
   EXPECT_FALSE(invalid([](PeerLinkConfig& c) {
     c.adp.reliable_window = 512;

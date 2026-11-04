@@ -16,8 +16,8 @@ void WriteU32Le(std::vector<uint8_t>& out, uint32_t v) {
 }
 
 uint32_t ReadU32Le(const uint8_t* p) {
-  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
 }
 
 uint8_t VersionAndType(const PacketType type) {

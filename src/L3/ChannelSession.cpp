@@ -40,7 +40,7 @@ void ChannelSession::InstallMuxHandlers() {
     mux_->SetTerminalHandler(channel_id_, [weak](uint32_t, const char* reason) {
       if (auto session = weak.lock()) {
         if (IsLinkDropped(reason)) {
-          session->mux_ = nullptr;  // the mux is gone (DetachAllChannels): never touch it again
+          session->mux_ = nullptr; // the mux is gone (DetachAllChannels): never touch it again
         }
         session->NotifyRemoteTerminal(reason);
       }

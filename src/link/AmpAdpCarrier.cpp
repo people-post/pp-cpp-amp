@@ -17,9 +17,8 @@ Roe<uint32_t> ReadU32(std::span<const uint8_t> wire, size_t& offset) {
   if (offset + 4 > wire.size()) {
     return Error("amp carrier: truncated u32");
   }
-  const uint32_t v = static_cast<uint32_t>(wire[offset]) | (static_cast<uint32_t>(wire[offset + 1]) << 8)
-                     | (static_cast<uint32_t>(wire[offset + 2]) << 16)
-                     | (static_cast<uint32_t>(wire[offset + 3]) << 24);
+  const uint32_t v = static_cast<uint32_t>(wire[offset]) | (static_cast<uint32_t>(wire[offset + 1]) << 8) |
+                     (static_cast<uint32_t>(wire[offset + 2]) << 16) | (static_cast<uint32_t>(wire[offset + 3]) << 24);
   offset += 4;
   return v;
 }
@@ -35,7 +34,7 @@ Roe<std::vector<uint8_t>> AmpAdpCarrier::EncodeMsh(const MshMessageType type, co
 }
 
 Roe<std::vector<std::vector<uint8_t>>> AmpAdpCarrier::EncodeMshChunked(const MshMessageType type,
-                                                                         const std::span<const uint8_t> body) {
+                                                                       const std::span<const uint8_t> body) {
   if (body.size() <= kMaxMshBodyPerDatagram) {
     auto single = EncodeMsh(type, body);
     if (!single) {

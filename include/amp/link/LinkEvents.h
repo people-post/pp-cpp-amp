@@ -42,38 +42,38 @@ enum class LinkDropReason : uint8_t {
 
 inline const char* LinkDropReasonName(const LinkDropReason reason) {
   switch (reason) {
-  case LinkDropReason::IdleEvicted:
-    return "idle-evicted";
-  case LinkDropReason::Unresponsive:
-    return "unresponsive";
-  case LinkDropReason::VersionMismatch:
-    return "version-mismatch";
-  case LinkDropReason::Unknown:
-    return "unknown";
-  case LinkDropReason::ConnectionClosed:
-    return "connection-closed";
-  case LinkDropReason::ConnectionDead:
-    return "connection-dead";
-  case LinkDropReason::CarrierClosed:
-    return "carrier-closed";
-  case LinkDropReason::DualDialLost:
-    return "dual-dial-lost";
-  case LinkDropReason::HandshakeFailed:
-    return "handshake-failed";
-  case LinkDropReason::HandshakeTimeout:
-    return "handshake-timeout";
-  case LinkDropReason::TransportFailed:
-    return "transport-failed";
-  case LinkDropReason::DialAborted:
-    return "dial-aborted";
-  case LinkDropReason::Displaced:
-    return "displaced";
-  case LinkDropReason::Requested:
-    return "requested";
-  case LinkDropReason::NetworkChanged:
-    return "network-changed";
-  case LinkDropReason::LocalShutdown:
-    return "local-shutdown";
+    case LinkDropReason::IdleEvicted:
+      return "idle-evicted";
+    case LinkDropReason::Unresponsive:
+      return "unresponsive";
+    case LinkDropReason::VersionMismatch:
+      return "version-mismatch";
+    case LinkDropReason::Unknown:
+      return "unknown";
+    case LinkDropReason::ConnectionClosed:
+      return "connection-closed";
+    case LinkDropReason::ConnectionDead:
+      return "connection-dead";
+    case LinkDropReason::CarrierClosed:
+      return "carrier-closed";
+    case LinkDropReason::DualDialLost:
+      return "dual-dial-lost";
+    case LinkDropReason::HandshakeFailed:
+      return "handshake-failed";
+    case LinkDropReason::HandshakeTimeout:
+      return "handshake-timeout";
+    case LinkDropReason::TransportFailed:
+      return "transport-failed";
+    case LinkDropReason::DialAborted:
+      return "dial-aborted";
+    case LinkDropReason::Displaced:
+      return "displaced";
+    case LinkDropReason::Requested:
+      return "requested";
+    case LinkDropReason::NetworkChanged:
+      return "network-changed";
+    case LinkDropReason::LocalShutdown:
+      return "local-shutdown";
   }
   return "unknown";
 }
@@ -126,14 +126,14 @@ struct LinkEvent {
 
 inline const char* LinkEventKindName(const LinkEvent::Kind kind) {
   switch (kind) {
-  case LinkEvent::Kind::Connected:
-    return "connected";
-  case LinkEvent::Kind::Dropped:
-    return "dropped";
-  case LinkEvent::Kind::PathChanged:
-    return "path-changed";
-  case LinkEvent::Kind::DialFailed:
-    return "dial-failed";
+    case LinkEvent::Kind::Connected:
+      return "connected";
+    case LinkEvent::Kind::Dropped:
+      return "dropped";
+    case LinkEvent::Kind::PathChanged:
+      return "path-changed";
+    case LinkEvent::Kind::DialFailed:
+      return "dial-failed";
   }
   return "unknown";
 }

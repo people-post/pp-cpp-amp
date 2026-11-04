@@ -12,8 +12,8 @@ Session::Session(SessionMaterial material, ByteVector master_ikm, ByteVector tra
       transcript_hash_(std::move(transcript_hash)) {}
 
 Roe<Session> Session::FromMaterial(SessionMaterial material, ByteVector master_ikm, ByteVector transcript_hash) {
-  if (material.k_assoc.size() != kAssocKeyBytes || material.k_send.size() != kSessionKeyBytes
-      || material.k_recv.size() != kSessionKeyBytes) {
+  if (material.k_assoc.size() != kAssocKeyBytes || material.k_send.size() != kSessionKeyBytes ||
+      material.k_recv.size() != kSessionKeyBytes) {
     return Error("amp session: bad key sizes");
   }
   if (master_ikm.empty()) {
