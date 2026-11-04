@@ -437,6 +437,14 @@ void MeshRuntime::SetAdvertisedProtocols(std::vector<std::string> protocols) {
   links_.SetAdvertisedProtocols(std::move(protocols));
 }
 
+void MeshRuntime::SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features) {
+  links_.SetAdvertisedNodeInfo(std::move(node_version), std::move(features));
+}
+
+std::optional<CapabilityExtension> MeshRuntime::RemoteCapabilityExtension(const std::string& peer_id) const {
+  return links_.RemoteCapabilityExtension(peer_id);
+}
+
 void MeshRuntime::MarkWarm(const DialKey& peer_key) { links_.MarkWarm(peer_key); }
 
 void MeshRuntime::MarkHot(const DialKey& peer_key) { links_.MarkHot(peer_key); }

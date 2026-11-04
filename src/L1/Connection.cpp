@@ -605,4 +605,14 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
   }
 }
 
+void Connection::HandleVersionNegotiation(const std::vector<uint8_t>& versions) {
+  if (authenticated_ || !params_.dialer_backoff || closed_) {
+    return;
+  }
+  peer_version_mismatch_ = true;
+  peer_wire_versions_ = versions;
+  closed_ = true;
+  endpoint_->Unregister(id_);
+}
+
 } // namespace pp::adp

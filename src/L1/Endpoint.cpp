@@ -4,6 +4,7 @@
 #include "amp/L1/PacketProtection.h"
 #include "amp/L1/WireCodec.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace pp::adp {
@@ -110,6 +111,10 @@ void Endpoint::Tick() {
 }
 
 void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram) {
+  if (!datagram.empty() && (datagram[0] >> 4) != kWireVersion) {
+    HandleForeignVersion(from, datagram);
+    return;
+  }
   if (datagram.size() < kSealedHeaderBytes + kPacketTagBytes || datagram.size() > kMaxDatagramBytes) {
     NoteRejected();
     return;
@@ -156,6 +161,48 @@ void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> d
     accept_handler_(*accepted);
   }
   (*accepted)->HandleAuthenticated(*decoded, from, now);
+}
+
+void Endpoint::HandleForeignVersion(const IpEndpoint& from, std::span<const uint8_t> datagram) {
+  NoteRejected();
+  if ((datagram[0] >> 4) == kVersionNegotiationNibble) {
+    auto negotiation = WireCodec::DecodeVersionNegotiation(datagram);
+    if (!negotiation) {
+      return;
+    }
+    // A reply that lists our version is not about our version (garbled, or forged): ignore it.
+    if (std::find(negotiation->versions.begin(), negotiation->versions.end(), kWireVersion) !=
+        negotiation->versions.end()) {
+      return;
+    }
+    // Our own dial's packets begin with our layout: the echo names the association, as PeekAssoc reads it.
+    if (auto conn = Find(WireCodec::PeekAssoc(negotiation->echo))) {
+      conn->HandleVersionNegotiation(negotiation->versions);
+    }
+    return;
+  }
+  // Another version's packet: tell its sender which one we speak, if we take dials at all.
+  if (accept_enabled_) {
+    ReplyVersionNegotiation(from, datagram);
+  }
+}
+
+void Endpoint::ReplyVersionNegotiation(const IpEndpoint& from, std::span<const uint8_t> datagram) {
+  static constexpr uint8_t kSpoken[] = {kWireVersion};
+  const auto reply = WireCodec::EncodeVersionNegotiation(datagram, kSpoken);
+  if (reply.size() > datagram.size()) {
+    return; // never amplify: a reply is no larger than what it answers
+  }
+  const int64_t now = clock_->NowMs();
+  if (now - negotiation_window_ms_ >= 1000) {
+    negotiation_window_ms_ = now;
+    negotiation_sent_in_window_ = 0;
+  }
+  if (negotiation_sent_in_window_ >= kVersionNegotiationPerSecond) {
+    return;
+  }
+  ++negotiation_sent_in_window_;
+  (void)SendRaw(from, reply);
 }
 
 } // namespace pp::adp

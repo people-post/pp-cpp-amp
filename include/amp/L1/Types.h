@@ -23,6 +23,17 @@ using pp::Roe;
  * and an HMAC ends them.
  */
 inline constexpr uint8_t kWireVersion = 2;
+/**
+ * Version negotiation (N032): the first-byte high nibble reserved for it in every wire version, never a wire version.
+ * A node that receives a datagram of a version it does not speak answers with
+ *   [0xF0][the first kVersionNegotiationEchoBytes of that datagram, zero padded][count u8][versions u8...]
+ * so the dialer stops at once instead of timing out. Fixed across all wire versions: a dialer of any version finds its
+ * own association id in the echo. Unauthenticated, so it only ever means "stop dialing".
+ */
+inline constexpr uint8_t kVersionNegotiationNibble = 0xF;
+inline constexpr size_t kVersionNegotiationEchoBytes = 16;
+/** At most this many negotiation replies a second from one endpoint (they answer unauthenticated datagrams). */
+inline constexpr int kVersionNegotiationPerSecond = 16;
 inline constexpr size_t kAssocIdBytes = 8;
 inline constexpr size_t kHmacBytes = 16;
 inline constexpr size_t kKeyBytes = 32;

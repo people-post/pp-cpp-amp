@@ -36,6 +36,8 @@ enum class LinkDropReason : uint8_t {
   IdleEvicted,
   /** Asked to prove it is alive (VerifyLink), the link did not answer a probe within the grace. */
   Unresponsive,
+  /** The dialed peer speaks another wire version (its version negotiation reply, N032). */
+  VersionMismatch,
 };
 
 inline const char* LinkDropReasonName(const LinkDropReason reason) {
@@ -44,6 +46,8 @@ inline const char* LinkDropReasonName(const LinkDropReason reason) {
     return "idle-evicted";
   case LinkDropReason::Unresponsive:
     return "unresponsive";
+  case LinkDropReason::VersionMismatch:
+    return "version-mismatch";
   case LinkDropReason::Unknown:
     return "unknown";
   case LinkDropReason::ConnectionClosed:

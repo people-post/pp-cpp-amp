@@ -487,6 +487,55 @@ TEST(MeshLinkTest, AFullTableRefusesADialerAtOnce) {
   EXPECT_LT(took, 1000) << "refused at once, not at the dial timeout";
 }
 
+/** Bob as a node of wire v3: every datagram it receives is answered with version negotiation, none reaches its endpoint. */
+class OtherWireVersionIo final : public adp::DatagramIo {
+public:
+  explicit OtherWireVersionIo(std::shared_ptr<adp::DatagramIo> inner) : inner_(std::move(inner)) {}
+  Roe<void> SendTo(const adp::IpEndpoint& peer, std::span<const uint8_t> datagram) override {
+    return inner_->SendTo(peer, datagram);
+  }
+  Roe<std::optional<std::pair<adp::IpEndpoint, std::vector<uint8_t>>>> RecvFrom() override {
+    while (true) {
+      auto got = inner_->RecvFrom();
+      if (!got || !got->has_value()) {
+        return got;
+      }
+      static constexpr uint8_t kV3[] = {3};
+      (void)inner_->SendTo((*got)->first, adp::WireCodec::EncodeVersionNegotiation((*got)->second, kV3));
+    }
+  }
+  adp::IpEndpoint LocalEndpoint() const override { return inner_->LocalEndpoint(); }
+
+private:
+  std::shared_ptr<adp::DatagramIo> inner_;
+};
+
+// N032: a dialer whose peer speaks another wire version stops at its version negotiation reply, not at the dial
+// timeout, and the attempt is a version mismatch (what the product's node ranking reads).
+TEST(MeshLinkTest, ADialToAnotherWireVersionFailsAtOnceAsAVersionMismatch) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false, {}, {}, [](std::shared_ptr<adp::DatagramIo> io) {
+    return std::make_shared<OtherWireVersionIo>(std::move(io));
+  });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  std::vector<LinkEvent> events;
+  fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& e) { events.push_back(e); });
+  ASSERT_TRUE(
+      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture->addr_b, "QmBob"))));
+  std::optional<PeerLinkManager::LinkRoe> result;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { result = std::move(r); });
+  const int64_t took = fixture->PumpTimed([&] { return result.has_value(); }, 9000);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_FALSE(result->isOk());
+  EXPECT_EQ(result->error().GetCode(), PeerLinkManager::Err::VersionMismatch) << result->error().message;
+  EXPECT_NE(result->error().message.find("wire v3"), std::string::npos) << result->error().message;
+  EXPECT_LT(took, 1000) << "at once, not at the dial timeout";
+  fixture->PumpTimed([] { return false; }, 50);
+  const bool reported = std::any_of(events.begin(), events.end(),
+                                    [](const LinkEvent& e) { return e.reason == LinkDropReason::VersionMismatch; });
+  EXPECT_TRUE(reported) << "the link event names the mismatch";
+}
+
 // LR005: a hello lost (or dropped by a full backlog) is resent on a doubling interval, like a SYN.
 TEST(MeshLinkTest, TheDialerResendsItsHelloOnADoublingInterval) {
   ASSERT_GE(sodium_init(), 0);
@@ -2200,6 +2249,38 @@ TEST(MeshLinkTest, CapabilityExchangeAfterAssociation) {
 
   EXPECT_EQ(seen_on_a.local_peer_id, h.peer_id_b);
   EXPECT_EQ(seen_on_b.local_peer_id, h.peer_id_a);
+}
+
+// N032: after the v1 exchange each side tells the other its wire version, node version and features (channel 0's
+// extension), and the product reads it by PeerId while the link is up.
+TEST(MeshLinkTest, EachSideLearnsTheOthersVersionAndFeaturesOverChannelZero) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto harness = std::move(*created);
+  pbr::test::AmpMeshHarness& h = *harness;
+  h.mgr_a().SetAdvertisedNodeInfo("4.1.0", {"hop_data_lane"});
+  h.mgr_b().SetAdvertisedNodeInfo("4.2.0", {});
+
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
+  bool associated = false;
+  h.mgr_a().EnsureAssociation("b", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  h.PumpUntil([&] {
+    return associated && h.mgr_a().RemoteCapabilityExtension(h.peer_id_b) &&
+           h.mgr_b().RemoteCapabilityExtension(h.peer_id_a);
+  });
+  ASSERT_TRUE(associated);
+
+  const auto on_a = h.mgr_a().RemoteCapabilityExtension(h.peer_id_b);
+  ASSERT_TRUE(on_a.has_value()) << "the dialer learned the responder's";
+  EXPECT_EQ(on_a->amp_wire, adp::kWireVersion);
+  EXPECT_EQ(on_a->node_version, "4.2.0");
+  EXPECT_TRUE(on_a->features.empty());
+  const auto on_b = h.mgr_b().RemoteCapabilityExtension(h.peer_id_a);
+  ASSERT_TRUE(on_b.has_value()) << "the responder learned the dialer's";
+  EXPECT_EQ(on_b->node_version, "4.1.0");
+  EXPECT_EQ(on_b->features, std::vector<std::string>{"hop_data_lane"});
+  EXPECT_FALSE(h.mgr_a().RemoteCapabilityExtension("QmNobody").has_value());
 }
 
 // An application's address-disclosure policy: ch0 carries our listen multiaddrs only to peers it

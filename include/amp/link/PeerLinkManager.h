@@ -50,6 +50,8 @@ public:
     TransportFailed,
     DualDialLost,
     ChannelOpenFailed,
+    /** The peer speaks another wire version (its version negotiation reply, N032). */
+    VersionMismatch,
     Generic,
   };
 
@@ -111,6 +113,10 @@ public:
 
   void SetLocalListenMultiaddrs(std::vector<std::string> multiaddrs);
   void SetAdvertisedProtocols(std::vector<std::string> protocols);
+  /** What channel 0's extension tells each peer (N032): the node's version and features; amp adds its wire version. */
+  void SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features);
+  /** A connected peer's channel-0 extension (N032), or nullopt (not connected, not arrived, or a peer before it). */
+  std::optional<CapabilityExtension> RemoteCapabilityExtension(const std::string& peer_id) const;
   void SetCapabilityHandler(CapabilityHandler handler);
   CapabilityPayload LocalCapability() const;
   /**
@@ -326,6 +332,8 @@ private:
   void OnCapabilityData(const std::string& peer_key, std::vector<uint8_t> payload);
   void OnCh0Data(const std::string& peer_key, std::vector<uint8_t> payload);
   void IngestRemoteCapabilityAddrs(PeerLink& link, const CapabilityPayload& remote);
+  /** Once per link, on an open channel 0 (the mux queues only one message while it opens). */
+  void SendCapabilityExtension(PeerLink& link);
   void FinishDial(const std::string& peer_key, LinkHandle handle, LinkRoe result);
   /** Start outbound dial for `peer_key`; waiters must already be queued. Strand-locked. */
   void BeginOutboundDialLocked(const std::string& peer_key);
@@ -389,6 +397,8 @@ private:
   LinkTable table_;
   std::vector<std::string> local_listen_multiaddrs_;
   std::vector<std::string> advertised_protocols_;
+  std::string advertised_node_version_;
+  std::vector<std::string> advertised_features_;
   CapabilityHandler capability_handler_;
   ListenAddrDisclosure listen_addr_disclosure_;
   /** LocalCapability for `link`: listen multiaddrs only when the disclosure policy allows its peer. */

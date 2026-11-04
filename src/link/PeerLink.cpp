@@ -520,6 +520,15 @@ void PeerLink::FailRefused() {
   FailAssociation(Failure::Of(Err::TransportFailed, "amp link: refused by the peer (its link table is full)"));
 }
 
+void PeerLink::FailVersionMismatch(const std::vector<uint8_t>& versions) {
+  std::string spoken;
+  for (const uint8_t v : versions) {
+    spoken += (spoken.empty() ? "v" : ", v") + std::to_string(v);
+  }
+  FailAssociation(Failure::Of(Err::VersionMismatch, "amp link: the peer speaks wire " + spoken + ", not v" +
+                                                        std::to_string(adp::kWireVersion)));
+}
+
 void PeerLink::DemoteForScheduledDrop() {
   if (phase_ == PeerLinkPhase::Connected || phase_ == PeerLinkPhase::Handshaking ||
       phase_ == PeerLinkPhase::Dialing) {

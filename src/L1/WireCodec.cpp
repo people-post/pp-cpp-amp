@@ -2,6 +2,7 @@
 
 #include "amp/L1/PacketProtection.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace pp::adp {
@@ -42,6 +43,31 @@ Roe<std::vector<uint8_t>> WireCodec::Encode(const WirePacket& pkt) {
   WriteU32Le(out, pkt.seq);
   WriteU32Le(out, pkt.timestamp_ms);
   out.insert(out.end(), pkt.payload.begin(), pkt.payload.end());
+  return out;
+}
+
+std::vector<uint8_t> WireCodec::EncodeVersionNegotiation(const std::span<const uint8_t> received,
+                                                         const std::span<const uint8_t> versions) {
+  std::vector<uint8_t> out(1 + kVersionNegotiationEchoBytes + 1 + versions.size(), 0);
+  out[0] = static_cast<uint8_t>(kVersionNegotiationNibble << 4);
+  std::copy_n(received.begin(), std::min(received.size(), kVersionNegotiationEchoBytes), out.begin() + 1);
+  out[1 + kVersionNegotiationEchoBytes] = static_cast<uint8_t>(versions.size());
+  std::copy(versions.begin(), versions.end(), out.begin() + 2 + kVersionNegotiationEchoBytes);
+  return out;
+}
+
+Roe<WireCodec::VersionNegotiation> WireCodec::DecodeVersionNegotiation(const std::span<const uint8_t> datagram) {
+  constexpr size_t kFixed = 1 + kVersionNegotiationEchoBytes + 1;
+  if (datagram.size() < kFixed || (datagram[0] >> 4) != kVersionNegotiationNibble) {
+    return Error("adp: not a version negotiation");
+  }
+  const size_t count = datagram[kFixed - 1];
+  if (count == 0 || datagram.size() != kFixed + count) {
+    return Error("adp: bad version negotiation");
+  }
+  VersionNegotiation out;
+  std::copy_n(datagram.begin() + 1, kVersionNegotiationEchoBytes, out.echo.begin());
+  out.versions.assign(datagram.begin() + kFixed, datagram.end());
   return out;
 }
 
