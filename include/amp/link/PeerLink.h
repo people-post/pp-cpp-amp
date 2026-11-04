@@ -167,6 +167,15 @@ public:
 
   /** Carrier-backed: resend unacked reliable-lane frames (Tick). */
   void TickCarrierLane(int64_t now_ms);
+  /**
+   * Carrier-backed initiator: resend the last handshake message when no reply came (Tick). A carrier is BestEffort
+   * and nothing below resends: one lost message used to end the handshake at its dial budget (two lossy long legs
+   * through a relay, pp-browser #502).
+   */
+  void TickCarrierHandshake(int64_t now_ms);
+  /** First resend of a carrier handshake message after this; each next one waits twice as long, up to the max. */
+  static constexpr int64_t kCarrierHandshakeResendMs = 500;
+  static constexpr int64_t kCarrierHandshakeResendMaxMs = 1500;
   /** Carrier-backed: a reliable-lane frame ran out of attempts — the path is gone. */
   bool CarrierLaneFailed() const { return lane_ && lane_->Failed(); }
   /** Carrier-backed: the peer speaks the reliable lane (it sent a lane frame). */
@@ -217,6 +226,8 @@ private:
   void AttachMuxTransport();
   void AttachCarrierFrameHandler();
   void HandleCarrierFrame(std::span<const uint8_t> payload);
+  /** A carrier handshake resend's piece (MshChunk): kept across resends until its message is whole. */
+  void HandleCarrierMshChunk(std::span<const uint8_t> payload);
   void HandleLaneFrame(AmpAdpPayloadKind kind, std::span<const uint8_t> payload);
   void DeliverSealedCarrierWire(std::span<const uint8_t> wire);
   /** An opened frame to the mux, once Connected (a sealed packet before then is dropped; reliable ones resend). */
@@ -267,6 +278,14 @@ private:
   bool capability_extension_sent_ = false;
 
   std::unique_ptr<MshAdpHandshake> handshake_;
+  /** Carrier-backed initiator: when the last handshake message goes again, and the wait after that. */
+  int64_t carrier_msh_resend_at_ms_ = 0;
+  int64_t carrier_msh_resend_interval_ms_ = 0;
+  /**
+   * Carrier-backed responder, once Connected: its Finished, sent again if the initiator's Finished comes again (ours
+   * was lost). Cleared at the first sealed frame from the peer, which it sends only once it has ours.
+   */
+  std::vector<uint8_t> carrier_final_msh_;
   /** Shared with the connection, which seals and opens with it (adp::IPacketProtection). */
   std::shared_ptr<Session> session_;
   /** Carrier-backed only: inner packet numbers, per space (the nonce's), and their replay windows. */

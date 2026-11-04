@@ -96,6 +96,15 @@ lifetime, sync-callback reentrancy, or PeerId vs dial-alias confusion.
      alike), never probe, and keep getting plain `Sealed` frames. Lane frames received while
      still handshaking are acked and delivered once the mux exists.
    - Relays need no change (they never parse the carrier).
+   - The nested handshake itself rides the BestEffort carrier, not the lane (the lane is for a
+     Connected link's frames). Nothing below resends it, so the initiator resends its last message
+     on a doubling timer (500 ms, up to 1.5 s) until the reply comes, and the responder answers a
+     repeat of the message it last answered by resending its reply — its Finished too, once it is
+     Connected. A first send is one frame (the outer mux fragments it); a resend goes as `MshChunk`
+     pieces of one outer frame each, which the receiver keeps across resends, so a 7.5 KiB payload
+     message no longer has to come through whole on one try. Older builds ignore the pieces (they
+     sent and got no resend before). pp-browser #502: a call over two lossy long legs.
+     Later (a wire version): the handshake as acked pieces on the lane.
 
 ## Consequences
 

@@ -1435,7 +1435,7 @@ TEST(MeshLinkTest, NestedReliableChannelSurvivesLossAndReorderingOnTheCarrier) {
     fixture->PumpBoth();
   }
   for (auto* lossy : {fixture->lossy_a.get(), fixture->lossy_b.get()}) {
-    lossy->SetRngSeed(7);
+    lossy->SetRngSeed(11);
     lossy->SetDropRate(0.2);
     lossy->SetReorderWindow(3);
   }
@@ -1454,6 +1454,57 @@ TEST(MeshLinkTest, NestedReliableChannelSurvivesLossAndReorderingOnTheCarrier) {
   auto* link = FindNestedLink(*fixture, nested->nested_key);
   ASSERT_NE(link, nullptr) << "the link survived";
   EXPECT_FALSE(link->CarrierLaneFailed());
+}
+
+// pp-browser #502: a nested handshake over a lossy carrier comes up. The carrier is BestEffort and nothing below
+// resends a handshake message: one lost message used to end the handshake at its dial budget (two lossy long legs
+// through a relay). The initiator resends its last message on a timer; the responder answers a repeat by resending
+// its reply, its Finished included once it is Connected.
+TEST(MeshLinkTest, NestedHandshakeOverALossyCarrierResendsUntilItComesUp) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(/*lossy=*/true);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_b->EnableNestedCarrierAccept(true);
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(bob_addr && fixture->mgr_a->RegisterEndpoint("bob", *bob_addr));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = result.isOk(); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", kAmpCircuitCarrierProtocolId, CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  fixture->PumpUntil([&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(channel_id.has_value());
+  // A relay link holding a circuit is hot in the product; both ends hear each other's cadence before the loss.
+  fixture->mgr_a->MarkHot("bob");
+  fixture->mgr_b->MarkHot("QmAlice");
+  for (int i = 0; i < 20; ++i) {
+    fixture->clock->Advance(10);
+    fixture->PumpBoth();
+  }
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+  for (auto* lossy : {fixture->lossy_a.get(), fixture->lossy_b.get()}) {
+    lossy->SetRngSeed(11);
+    lossy->SetDropRate(0.1);
+  }
+  std::optional<bool> nested_ok;
+  fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", carrier, true,
+                                             [&](PeerLinkManager::LinkRoe result) { nested_ok = result.isOk(); });
+  // Within the dial budget (8 s).
+  PumpAdvancing(
+      *fixture, [&] { return nested_ok.has_value(); }, 790);
+  ASSERT_TRUE(nested_ok.has_value()) << "the handshake neither came up nor failed in 7.9 s";
+  EXPECT_TRUE(*nested_ok);
 }
 
 // The relay stops forwarding while both outer links stay up: no resend of a reliable frame gets

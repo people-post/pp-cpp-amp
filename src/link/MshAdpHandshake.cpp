@@ -8,6 +8,7 @@
 #include "crypto/MlKem.h"
 #include "crypto/SodiumUtil.h"
 
+#include <algorithm>
 #include <sodium.h>
 
 namespace pp::amp {
@@ -116,6 +117,9 @@ Roe<void> MshAdpHandshake::SendMessage(const MshMessageType type, const std::spa
     if (!wire) {
       return wire.error();
     }
+    last_wire_ = *wire;
+    last_type_ = type;
+    last_body_.assign(body.begin(), body.end());
     return send_(std::move(*wire));
   }
   auto chunks = AmpAdpCarrier::EncodeMshChunked(type, body);
@@ -128,6 +132,30 @@ Roe<void> MshAdpHandshake::SendMessage(const MshMessageType type, const std::spa
     }
   }
   return Roe<void>();
+}
+
+Roe<void> MshAdpHandshake::Resend() {
+  auto chunks = LastChunks();
+  if (!chunks) {
+    return chunks.error();
+  }
+  for (auto& chunk : *chunks) {
+    if (auto sent = send_(std::move(chunk)); !sent) {
+      return sent.error();
+    }
+  }
+  return Roe<void>();
+}
+
+Roe<std::vector<std::vector<uint8_t>>> MshAdpHandshake::LastChunks() const {
+  if (last_wire_.empty()) {
+    return Error("amp msh adp: nothing to resend");
+  }
+  return AmpAdpCarrier::EncodeMshChunked(last_type_, last_body_);
+}
+
+bool MshAdpHandshake::IsRepeatOfLastAnswered(const MshMessageType type, const std::span<const uint8_t> body) const {
+  return answered_type_ == type && std::equal(body.begin(), body.end(), answered_body_.begin(), answered_body_.end());
 }
 
 Roe<void> MshAdpHandshake::Fail(const std::string message) {
@@ -165,6 +193,13 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
   }
 
   if (role_ == Role::Responder) {
+    if (!chunked_wire_ && IsRepeatOfLastAnswered(type, body)) {
+      return Resend(); // the initiator resent it: our reply was lost
+    }
+    if (type == MshMessageType::ClientHello || type == MshMessageType::ClientPayload) {
+      answered_type_ = type;
+      answered_body_.assign(body.begin(), body.end());
+    }
     switch (type) {
       case MshMessageType::ClientHello: {
         if (started_) {
@@ -259,6 +294,9 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
 
   switch (type) {
     case MshMessageType::ServerHello: {
+      if (remote_hello_.has_value() && !chunked_wire_) {
+        return Roe<void>(); // the responder answered a resend of ours: already taken
+      }
       if (!started_ || remote_hello_.has_value()) {
         return Error("amp msh adp: server hello out of order");
       }
@@ -283,6 +321,9 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
       return SendMessage(MshMessageType::ClientPayload, *client_payload);
     }
     case MshMessageType::ServerPayload: {
+      if (remote_payload_.has_value() && !chunked_wire_) {
+        return Roe<void>(); // the responder answered a resend of ours: already taken
+      }
       if (!remote_hello_ || client_ss_.empty()) {
         return Error("amp msh adp: server payload out of order");
       }

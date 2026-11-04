@@ -106,6 +106,10 @@ void PeerLink::StartHandshakeCommon(const MshAdpHandshake::Role role, CompleteCb
         if (IsCarrierBacked()) {
           // Every handshake message carries a lane probe, so both ends know at Connected.
           SendLaneProbe();
+          if (outbound_) {
+            carrier_msh_resend_interval_ms_ = kCarrierHandshakeResendMs;
+            carrier_msh_resend_at_ms_ = NowMs() + carrier_msh_resend_interval_ms_;
+          }
           auto sent = SendCarrierWire(std::move(payload));
           if (!sent) {
             return Roe<void>(Error(sent.error().message));
@@ -143,6 +147,14 @@ void PeerLink::HandleCarrierFrame(const std::span<const uint8_t> payload) {
   }
   if (phase_ == PeerLinkPhase::Connected && mux_) {
     auto kind = AmpAdpCarrier::DecodeKind(payload);
+    if (kind && *kind == AmpAdpPayloadKind::Msh) {
+      // The initiator resent its Finished: ours was lost.
+      if (const auto msh = AmpAdpCarrier::DecodeMshType(payload);
+          msh && *msh == MshMessageType::Finished && !carrier_final_msh_.empty()) {
+        (void)SendCarrierWire(carrier_final_msh_);
+      }
+      return;
+    }
     if (!kind || (*kind != AmpAdpPayloadKind::Sealed && *kind != AmpAdpPayloadKind::SealedReliable)) {
       return;
     }
@@ -153,6 +165,10 @@ void PeerLink::HandleCarrierFrame(const std::span<const uint8_t> payload) {
     return;
   }
   auto kind = AmpAdpCarrier::DecodeKind(payload);
+  if (kind && *kind == AmpAdpPayloadKind::MshChunk) {
+    HandleCarrierMshChunk(payload); // a resend, in pieces
+    return;
+  }
   if (!kind || *kind != AmpAdpPayloadKind::Msh) {
     return;
   }
@@ -165,6 +181,30 @@ void PeerLink::HandleCarrierFrame(const std::span<const uint8_t> payload) {
     return;
   }
   (void)handshake_->HandleMsh(*msh_type, *body);
+}
+
+void PeerLink::HandleCarrierMshChunk(const std::span<const uint8_t> payload) {
+  auto chunk = AmpAdpCarrier::DecodeMshChunk(payload);
+  if (!chunk) {
+    return;
+  }
+  const auto [type, index, count, piece] = *chunk;
+  // Pieces of another message than the one assembling: that one was superseded (the peer moved on, or a resend
+  // of the one before came late). Start again; never fail the handshake on a lossy carrier's leftovers.
+  if (msh_chunk_count_ != 0 && (type != msh_chunk_type_ || count != msh_chunk_count_)) {
+    msh_chunk_count_ = 0;
+    msh_chunk_parts_.clear();
+    msh_chunk_bytes_ = 0;
+  }
+  auto assembled = PushMshChunk(type, index, count, piece);
+  if (!assembled || !assembled->has_value()) {
+    return;
+  }
+  auto msh_type = AmpAdpCarrier::DecodeMshType(assembled->value());
+  auto body = AmpAdpCarrier::DecodeMshBody(assembled->value());
+  if (msh_type && body) {
+    (void)handshake_->HandleMsh(*msh_type, *body);
+  }
 }
 
 void PeerLink::HandleAdpPayload(const std::span<const uint8_t> payload) {
@@ -279,6 +319,7 @@ void PeerLink::DeliverSealedCarrierWire(const std::span<const uint8_t> wire) {
   }
   // Recorded only once it opened: a forged number must not shut out the real packet.
   (void)window.Accept(header->number);
+  carrier_final_msh_.clear(); // the initiator has our Finished
   DeliverFrame(*opened);
 }
 
@@ -323,6 +364,21 @@ Roe<std::vector<uint8_t>> PeerLink::SealCarrierFrame(const adp::QosClass qos, co
 void PeerLink::SendLaneProbe() {
   if (lane_) {
     (void)SendCarrierWire(AmpAdpCarrier::EncodeLaneAck({}));
+  }
+}
+
+void PeerLink::TickCarrierHandshake(const int64_t now_ms) {
+  if (!IsCarrierBacked() || !outbound_ || phase_ != PeerLinkPhase::Handshaking || !handshake_ ||
+      carrier_msh_resend_at_ms_ == 0 || now_ms < carrier_msh_resend_at_ms_) {
+    return;
+  }
+  carrier_msh_resend_interval_ms_ = std::min(carrier_msh_resend_interval_ms_ * 2, kCarrierHandshakeResendMaxMs);
+  carrier_msh_resend_at_ms_ = now_ms + carrier_msh_resend_interval_ms_;
+  SendLaneProbe();
+  if (auto chunks = handshake_->LastChunks()) {
+    for (auto& chunk : *chunks) {
+      (void)SendCarrierWire(std::move(chunk));
+    }
   }
 }
 
@@ -467,6 +523,9 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   }
   mux_->SetClock([this]() { return host_.now_ms ? host_.now_ms() : 0; });
   AttachMuxTransport();
+  if (IsCarrierBacked() && !outbound_ && handshake_) {
+    carrier_final_msh_ = handshake_->LastWire();
+  }
   handshake_.reset();
   phase_ = PeerLinkPhase::Connected;
   if (!host_.on_established || !host_.on_established(*this)) {
