@@ -948,6 +948,63 @@ TEST(MeshLinkTest, NestedHandshakeTimesOutWhenPeerNeverAnswers) {
   EXPECT_EQ(fixture->mgr_a->FindLink("nested:bob"), nullptr);
 }
 
+// pp-browser #502: a nested handshake under a peer's id, whose record still has untried addresses, keeps the full
+// dial budget. It used to get the short per-candidate one (800 ms), which ran out before the first answer on two
+// long legs through a relay (a US <-> China call): every relayed call between the two phones failed.
+TEST(MeshLinkTest, NestedHandshakeKeepsTheFullDialBudgetWhenThePeerHasUntriedAddresses) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  ASSERT_TRUE(associated);
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", "/pp-test/carrier/1.0.0", CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  fixture->PumpUntil([&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(channel_id.has_value());
+  auto* outbound = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(outbound, nullptr);
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*outbound->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+
+  // The peer's id has two direct addresses on record, neither tried: the short budget would apply to an ADP dial.
+  const std::string key = "QmTarget";
+  auto dead1 = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 1, 901), key);
+  auto dead2 = FormatAdpMultiaddr(adp::IpEndpoint::V4(10, 9, 9, 2, 902), key);
+  ASSERT_TRUE(dead1 && dead2);
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoints(key, {*dead1, *dead2})));
+
+  // The nested handshake gets no answer yet (bob does not accept nested carriers): only the budget can end it.
+  std::optional<PeerLinkManager::LinkRoe> nested;
+  fixture->mgr_a->EstablishNestedOverCarrier(key, carrier, true,
+                                             [&](PeerLinkManager::LinkRoe result) { nested = result; });
+  auto* link = fixture->mgr_a->FindLink(key);
+  ASSERT_NE(link, nullptr);
+  ASSERT_TRUE(link->IsCarrierBacked());
+  fixture->clock->Advance(fixture->mgr_a->Book().Config().dial_attempt_timeout.count() + 200);
+  fixture->pump_a->Tick();
+  EXPECT_FALSE(nested.has_value()) << "past the per-candidate budget: a nested handshake is not a candidate";
+
+  fixture->clock->Advance(8'100);  // past the full dial_timeout (8 s)
+  fixture->pump_a->Tick();
+  ASSERT_TRUE(nested.has_value());
+  EXPECT_FALSE(nested->isOk());
+  fixture->pump_a->Tick();
+}
+
 // k1 (call-path-resilience): a drop scheduled for a failed link must not hit the link that took
 // its dial key before Tick — and the failed one, no longer holding a key, must still be dropped.
 TEST(MeshLinkTest, ScheduledDropHitsTheFailedLinkNotItsReplacement) {

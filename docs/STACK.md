@@ -89,7 +89,10 @@ wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
   failed dial backs off from 1 s, doubling to 30 s, jittered ([TUNING.md](TUNING.md)).
 - **A key's candidates are tried in turn.** With another candidate still to try, one that has
   not answered within `dial_attempt_timeout` gives way to the next; one that answered is the peer,
-  only slow, and keeps the whole `dial_timeout` (a distant node, a post-quantum handshake).
+  only slow, and keeps the whole `dial_timeout` (a distant node, a post-quantum handshake). A
+  nested handshake over a carrier is not a candidate: it always keeps the whole `dial_timeout`, even
+  when the peer's record has untried addresses (two long legs through a relay need more than the
+  short budget, pp-browser #502).
 - **Multiaddrs may name a host.** Besides `/ip4|ip6/<ip>/udp/<port>/adp/1.0.0/p2p/<id>`, a
   dial candidate may be `/dns4|dns6|dns/<host>/udp/<port>/adp/1.0.0/p2p/<id>` (`dns4` asks for an
   IPv4 address, `dns6` IPv6, `dns` either; `/dnsaddr` is not supported). The name is resolved when

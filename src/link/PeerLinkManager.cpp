@@ -1522,8 +1522,12 @@ void PeerLinkManager::Tick() {
     int64_t budget = dial_timeout_ms;
     const auto* conn = link.ConnectionOrNull();
     const bool heard = conn && conn->LastAuthRxMs() > 0;
-    if (const auto* rec = book_.Find(link.PeerKey());
-        !heard && rec && rec->dial_index + 1 < rec->candidates.size() && dial_attempt_ms > 0) {
+    // A nested handshake is not one of the record's address candidates: it keeps the full budget even when the
+    // peer's record has untried addresses (its key is the peer's id, so book_.Find hits). On two long legs through
+    // a relay the short budget ran out before the first answer (a US <-> China call, pp-browser #502).
+    if (const auto* rec = book_.Find(link.PeerKey()); !link.IsCarrierBacked() && !heard && rec &&
+                                                      rec->dial_index + 1 < rec->candidates.size() &&
+                                                      dial_attempt_ms > 0) {
       budget = std::min(budget, dial_attempt_ms);
     }
     if (now - link.HandshakeStartedMs() > budget) {
