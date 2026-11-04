@@ -54,12 +54,20 @@ public:
 
   /**
    * The largest encoded frame its transport carries in one packet (the link's budget, A029 H1): a payload that fits
-   * with a frame header goes as one DATA frame, a larger one as FRAG chunks that fill the budget.
+   * with a frame header goes as one DATA frame, a larger one as FRAG chunks that fill the budget. A budget below
+   * kMinFrameBytes is refused and the old one kept.
    */
-  void SetMaxFrameBytes(size_t bytes) { max_frame_bytes_ = bytes; }
+  Roe<void> SetMaxFrameBytes(size_t bytes);
   size_t MaxFrameBytes() const { return max_frame_bytes_; }
   /** A direct ADP link's budget: one sealed packet's payload. */
   static constexpr size_t kDirectMaxFrameBytes = adp::kMaxSealedPayload;
+  /**
+   * The smallest budget a link may set: a fragment then carries 39 B. Below it the frame header and fragment fields
+   * outweigh what a fragment carries, and below 26 B a fragment carries nothing.
+   */
+  static constexpr size_t kMinFrameBytes = 64;
+  /** The most fragments one message may take (a FRAG frame counts them in 16 bits). */
+  static constexpr size_t kMaxFragmentsPerMessage = 0xFFFF;
 
   /** Allocate id and send OPEN (local initiator). Pass fixed_id for reserved channels (e.g. 0). */
   Roe<uint32_t> OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,

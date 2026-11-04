@@ -441,12 +441,47 @@ TEST(ChannelMuxTest, AMessageFragmentsOnlyPastTheLinksFrameBudgetAndFillsIt) {
   EXPECT_EQ(received[1], over);
 
   transport.sizes.clear();
-  link.initiator.mux.SetMaxFrameBytes(600);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SetMaxFrameBytes(600)));
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(1000, 0x33))));
   for (const size_t size : transport.sizes) {
     EXPECT_LE(size, 600u);
   }
   EXPECT_EQ(transport.sizes.size(), 2u);
+}
+
+// A link with small frames (a Bluetooth link, a carrier nested in a small one): a budget too small to fragment into
+// is refused and the old one kept, and a message needing more fragments than a FRAG frame counts is refused before
+// anything is sent, never sent with a wrapped count the peer cannot assemble.
+TEST(ChannelMuxTest, ASmallFrameBudgetIsBoundedAndNeverWrapsTheFragmentCount) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  const size_t before = link.initiator.mux.MaxFrameBytes();
+  EXPECT_FALSE(static_cast<bool>(link.initiator.mux.SetMaxFrameBytes(ChannelMux::kMinFrameBytes - 1)));
+  EXPECT_FALSE(static_cast<bool>(link.initiator.mux.SetMaxFrameBytes(kChannelHeaderBytes + kChannelFragFieldsBytes)))
+      << "a fragment would carry nothing";
+  EXPECT_EQ(link.initiator.mux.MaxFrameBytes(), before);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SetMaxFrameBytes(ChannelMux::kMinFrameBytes)));
+
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  SizeRecordingTransport transport;
+  transport.Attach(link);
+  std::vector<std::vector<uint8_t>> received;
+  link.responder.mux.SetDataHandler(
+      *ch, [&](uint32_t, std::vector<uint8_t> payload) { received.push_back(std::move(payload)); });
+  const size_t chunk = ChannelMux::kMinFrameBytes - kChannelHeaderBytes - kChannelFragFieldsBytes;
+
+  const std::vector<uint8_t> most(chunk * ChannelMux::kMaxFragmentsPerMessage, 0x44);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, most)));
+  EXPECT_EQ(transport.sizes.size(), ChannelMux::kMaxFragmentsPerMessage) << "the most fragments a frame counts";
+  ASSERT_EQ(received.size(), 1u);
+  EXPECT_EQ(received[0], most);
+
+  transport.sizes.clear();
+  EXPECT_FALSE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(most.size() + 1, 0x55))))
+      << "one fragment more would wrap the 16-bit count";
+  EXPECT_TRUE(transport.sizes.empty()) << "nothing of it is sent";
 }
 
 // Regression: a message needing more fragments than the window had room for

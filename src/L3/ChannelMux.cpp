@@ -486,8 +486,13 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
   }
 
   const size_t chunk_bytes = max_frame_bytes_ - kChannelHeaderBytes - kChannelFragFieldsBytes;
+  const size_t needed = (payload.size() + chunk_bytes - 1) / chunk_bytes;
+  if (needed > kMaxFragmentsPerMessage) {
+    // A wrapped count would send a message the peer can never assemble (a small link budget, a large message).
+    return Error("amp mux: message needs more fragments than a frame counts");
+  }
   const uint64_t msg_id = next_frag_msg_id_++;
-  const uint16_t frag_count = static_cast<uint16_t>((payload.size() + chunk_bytes - 1) / chunk_bytes);
+  const auto frag_count = static_cast<uint16_t>(needed);
   // Fragments the window cannot take now wait in the send queue, so a message
   // larger than the window (or several at once) still goes out in full.
   const adp::QosClass qos = QosForClass(channel->policy.cls);
@@ -518,6 +523,14 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     }
     ++channel->tx_seq;
   }
+  return Roe<void>();
+}
+
+Roe<void> ChannelMux::SetMaxFrameBytes(const size_t bytes) {
+  if (bytes < kMinFrameBytes) {
+    return Error("amp mux: frame budget below the minimum");
+  }
+  max_frame_bytes_ = bytes;
   return Roe<void>();
 }
 

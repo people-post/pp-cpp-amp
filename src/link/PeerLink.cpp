@@ -288,7 +288,9 @@ size_t PeerLink::CarrierMaxFrameBytes() const {
   // frame larger than this would be fragmented twice, once by each mux.
   const size_t outer =
       carrier_ && carrier_->Mux() ? carrier_->Mux()->MaxFrameBytes() : ChannelMux::kDirectMaxFrameBytes;
-  return outer - kChannelHeaderBytes - kCarrierLaneHeaderBytes - kCarrierSealedHeaderBytes - adp::kPacketTagBytes;
+  const size_t wrapping =
+      kChannelHeaderBytes + kCarrierLaneHeaderBytes + kCarrierSealedHeaderBytes + adp::kPacketTagBytes;
+  return outer > wrapping ? outer - wrapping : 0; // 0: no budget (SetMaxFrameBytes refuses it)
 }
 
 Roe<std::vector<uint8_t>> PeerLink::SealCarrierFrame(const adp::QosClass qos, const std::span<const uint8_t> frame) {
@@ -450,7 +452,10 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   session_ = std::make_shared<Session>(std::move(*session));
   mux_ = std::make_unique<ChannelMux>(session_->Material().initiator);
   if (IsCarrierBacked()) {
-    mux_->SetMaxFrameBytes(CarrierMaxFrameBytes());
+    if (auto budget = mux_->SetMaxFrameBytes(CarrierMaxFrameBytes()); !budget) {
+      FailAssociationMessage(budget.error(), Err::HandshakeFailed); // the carrier's frames are too small to nest in
+      return;
+    }
   }
   if (connection_) {
     connection_->SetProtection(session_); // data goes sealed from here (A029 H1)
