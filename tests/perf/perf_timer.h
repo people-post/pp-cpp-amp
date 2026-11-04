@@ -85,6 +85,23 @@ std::vector<double> TimeLoop(const int warmup, const int iters, Fn&& fn) {
   return samples;
 }
 
+/**
+ * Pump until `done` or `limit` of wall time has passed; false on the deadline. An OsUdp case runs on a WallClock and
+ * waits with this: a real socket hands a datagram over on the kernel's time (macOS loopback asynchronously), so a
+ * VirtualClock advanced per round outruns delivery and times the link out before its peer's packets arrive.
+ */
+template <typename Pump, typename Done>
+bool PumpUntilWall(Pump&& pump, Done&& done, const std::chrono::milliseconds limit) {
+  const auto deadline = std::chrono::steady_clock::now() + limit;
+  while (!done()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    pump();
+  }
+  return true;
+}
+
 inline double OpsPerSec(const double mean_ns) {
   if (!(mean_ns > 0)) {
     return 0;

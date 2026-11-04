@@ -379,6 +379,8 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
 
   constexpr size_t kTotal = 64 * 1024;
   constexpr size_t kChunk = 900;
+  constexpr std::chrono::milliseconds kSetupLimit{5000};
+  constexpr std::chrono::milliseconds kTransferLimit{10000};
   const int case_warmup = std::min(warmup, 1);
   const int case_iters = std::max(1, iters);
   std::vector<double> samples;
@@ -387,11 +389,12 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
     auto bound_a = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
     auto bound_b = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
     if (!bound_a || !bound_b) {
+      std::fprintf(stderr, "OsUdpAmp Bind failed on iter\n");
       return false;
     }
     std::shared_ptr<pp::adp::DatagramIo> io_a(std::move(*bound_a));
     std::shared_ptr<pp::adp::DatagramIo> io_b(std::move(*bound_b));
-    auto clock = std::make_shared<pp::adp::VirtualClock>(2'000'000);
+    auto clock = std::make_shared<pp::adp::WallClock>();
     auto ep_a = std::make_unique<pp::adp::Endpoint>(io_a, clock);
     auto ep_b = std::make_unique<pp::adp::Endpoint>(io_b, clock);
     ep_b->SetAcceptEnabled(true);
@@ -399,6 +402,7 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
     auto alice_keys = pp::MlDsa::GenerateKeyPair();
     auto bob_keys = pp::MlDsa::GenerateKeyPair();
     if (!alice_keys || !bob_keys) {
+      std::fprintf(stderr, "OsUdpAmp key generation failed\n");
       return false;
     }
     pp::amp::MshIdentity alice;
@@ -410,6 +414,7 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
     auto peer_a = pbr::test::DeriveTestPeerId(alice.ml_dsa_public_key);
     auto peer_b = pbr::test::DeriveTestPeerId(bob.ml_dsa_public_key);
     if (!peer_a || !peer_b) {
+      std::fprintf(stderr, "OsUdpAmp peer id failed\n");
       return false;
     }
     auto cfg = pbr::test::AmpMeshTestLinkConfig();
@@ -420,6 +425,7 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
 
     auto ma_b = pp::amp::FormatAdpMultiaddr(ep_b->Io().LocalEndpoint(), *peer_b);
     if (!ma_b || !static_cast<bool>(rt_a->Links().RegisterEndpoint("b", *ma_b))) {
+      std::fprintf(stderr, "OsUdpAmp RegisterEndpoint failed\n");
       return false;
     }
 
@@ -434,25 +440,23 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
       ok = r.isOk();
       done = true;
     });
-    for (size_t round = 0; round < 5000 && !(done && rt_a->Links().IsConnected("b")); ++round) {
-      pump();
-      clock->Advance(1);
-    }
+    PumpUntilWall(
+        pump, [&] { return done && rt_a->Links().IsConnected("b"); }, kSetupLimit);
     if (!ok || !rt_a->Links().IsConnected("b")) {
       std::fprintf(stderr, "OsUdpAmp Associate failed\n");
       return false;
     }
 
     // Wait capability / ch0
-    for (size_t round = 0; round < 2000; ++round) {
-      pump();
-      auto* link = rt_a->Links().FindLink("b");
-      if (link && link->Mux() && link->Mux()->State(pp::amp::kCapabilityChannelId) == pp::amp::ChannelState::Open &&
-          link->RemoteCapability()) {
-        break;
-      }
-      clock->Advance(1);
-    }
+    PumpUntilWall(
+        pump,
+        [&] {
+          auto* link = rt_a->Links().FindLink("b");
+          return link && link->Mux() &&
+                 link->Mux()->State(pp::amp::kCapabilityChannelId) == pp::amp::ChannelState::Open &&
+                 link->RemoteCapability();
+        },
+        kSetupLimit);
 
     bool ch_done = false;
     std::optional<uint32_t> ch;
@@ -463,10 +467,8 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
                                 }
                                 ch_done = true;
                               });
-    for (size_t round = 0; round < 2000 && !ch_done; ++round) {
-      pump();
-      clock->Advance(1);
-    }
+    PumpUntilWall(
+        pump, [&] { return ch_done; }, kSetupLimit);
     if (!ch) {
       std::fprintf(stderr, "OsUdpAmp OpenChannel failed\n");
       return false;
@@ -482,32 +484,32 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
 
     const auto t0 = std::chrono::steady_clock::now();
     size_t sent = 0;
-    while (sent < kTotal) {
-      bool made_progress = false;
+    bool link_lost = false;
+    // Sends what the mux takes, then pumps while it is full: acks free it on the wall clock.
+    const auto send_some = [&] {
       while (sent < kTotal) {
         const size_t n = std::min(kChunk, kTotal - sent);
         std::vector<uint8_t> chunk(n, 0x5A);
         auto* link = rt_a->Links().FindLink("b");
         if (!link || !link->Mux()) {
-          return false;
+          link_lost = true;
+          return;
         }
-        auto r = link->Mux()->SendData(*ch, chunk);
-        if (!r) {
+        if (!link->Mux()->SendData(*ch, chunk)) {
           break;
         }
         sent += n;
-        made_progress = true;
       }
       pump();
-      if (!made_progress) {
-        clock->Advance(pp::adp::kDefaultRtxIntervalMs);
-        pump();
-      }
+    };
+    PumpUntilWall(
+        send_some, [&] { return sent == kTotal || link_lost; }, kTransferLimit);
+    if (sent != kTotal) {
+      std::fprintf(stderr, "OsUdpAmp %s at %zu/%zu sent\n", link_lost ? "link lost" : "send stalled", sent, kTotal);
+      return false;
     }
-    for (size_t round = 0; round < 10000 && received < kTotal; ++round) {
-      pump();
-      clock->Advance(1);
-    }
+    PumpUntilWall(
+        pump, [&] { return received >= kTotal; }, kTransferLimit);
     const auto t1 = std::chrono::steady_clock::now();
     if (received != kTotal) {
       std::fprintf(stderr, "OsUdpAmp incomplete %zu/%zu\n", received, kTotal);

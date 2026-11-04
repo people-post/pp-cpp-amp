@@ -205,7 +205,7 @@ bool RunOsUdp(const int warmup, const int iters) {
     }
     std::shared_ptr<pp::adp::DatagramIo> io_a(std::move(*bound_a_i));
     std::shared_ptr<pp::adp::DatagramIo> io_b(std::move(*bound_b_i));
-    auto clock = std::make_shared<pp::adp::VirtualClock>(9'000'000);
+    auto clock = std::make_shared<pp::adp::WallClock>();
     auto ep_a = std::make_unique<pp::adp::Endpoint>(io_a, clock);
     auto ep_b = std::make_unique<pp::adp::Endpoint>(io_b, clock);
     const auto addr_a = ep_a->Io().LocalEndpoint();
@@ -218,12 +218,14 @@ bool RunOsUdp(const int warmup, const int iters) {
     op.peer = addr_b;
     auto ca = ep_a->Open(op);
     if (!ca) {
+      std::fprintf(stderr, "OsUdp Open failed\n");
       return false;
     }
     pp::adp::OpenParams opb = op;
     opb.peer = addr_a;
     auto cb = ep_b->Open(opb);
     if (!cb) {
+      std::fprintf(stderr, "OsUdp Open (peer) failed\n");
       return false;
     }
 
@@ -238,15 +240,17 @@ bool RunOsUdp(const int warmup, const int iters) {
     std::vector<uint8_t> payload(kPacketBytes, 0xCD);
     const auto t0 = std::chrono::steady_clock::now();
     size_t sent = 0;
-    for (size_t round = 0; round < 200000 && received_bytes < total; ++round) {
+    bool send_failed = false;
+    // Sends what the window takes, then pumps: acks open it on the wall clock.
+    const auto send_some = [&] {
       while (sent < kPacketCount) {
         auto r = (*ca)->Send(pp::adp::QosClass::Reliable, payload);
         if (!r) {
-          if (r.error().GetCode() == pp::adp::Connection::Err::WindowFull) {
-            break;
+          if (r.error().GetCode() != pp::adp::Connection::Err::WindowFull) {
+            std::fprintf(stderr, "OsUdp Send failed: %s\n", r.error().message.c_str());
+            send_failed = true;
           }
-          std::fprintf(stderr, "OsUdp Send failed: %s\n", r.error().message.c_str());
-          return false;
+          break;
         }
         ++sent;
       }
@@ -254,9 +258,11 @@ bool RunOsUdp(const int warmup, const int iters) {
       ep_b->Pump();
       ep_a->Tick();
       ep_b->Tick();
-      if (received_bytes < total) {
-        clock->Advance(pp::adp::kDefaultRtxIntervalMs);
-      }
+    };
+    PumpUntilWall(
+        send_some, [&] { return received_bytes >= total || send_failed; }, std::chrono::seconds(10));
+    if (send_failed) {
+      return false;
     }
     const auto t1 = std::chrono::steady_clock::now();
     if (received_bytes != total) {

@@ -6,6 +6,7 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 
 - Isolate **L1 HMAC** (handshake / control), the **packet AEAD**, and **L3 FRAG** before blaming `AmpStack`.
 - Prefer **MemoryDatagramIo** for CPU/alloc baselines; **OsUdpDatagramIo** for real latency.
+- An **OsUdpDatagramIo** case runs on a `WallClock` and waits on wall-time deadlines (`PumpUntilWall`): the kernel delivers on its own time (macOS loopback asynchronously), so a `VirtualClock` advanced per round outruns delivery and times the link out.
 - Shape workloads from product limits (`AmpChannelLimits`, ADP `kMaxDatagramBytes=1232`: `kMaxPayload=1199`, a direct link's FRAG chunk **1178 B**).
 - Report **distributions** (p50/p95/p99); CSV lines prefixed with `csv,`.
 - Keep CI light; heavier link counts via env.
