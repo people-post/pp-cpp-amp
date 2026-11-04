@@ -1,8 +1,8 @@
-# ADR: Stream transport (TCP, TLS, WebSocket) for restrictive networks
+# ADR: Stream transport (TCP, TLS, WebSocket, Bluetooth) for networks without UDP
 
 **Status:** Proposed — design only; implementation not scheduled  
-**Date:** 2026-10-02  
-**Builds on:** [ADR_LINK_PLANE.md](ADR_LINK_PLANE.md) (LinkId, `PeerPresence`, `MeshRuntime`), A024 (carrier links)
+**Date:** 2026-10-02; revised 2026-11-03 for wire v2 (pp-cpp-amp v4.0.0) and Bluetooth  
+**Builds on:** [ADR_LINK_PLANE.md](ADR_LINK_PLANE.md) (LinkId, `PeerPresence`, `MeshRuntime`), A024 (carrier links), A029 H1 (wire v2: packets sealed where they are numbered)
 
 ## Context
 
@@ -15,15 +15,18 @@ reach the mesh at all today.
 peers and encrypts with ML-KEM / ML-DSA and AEAD — and not hiding from a censor
 that fingerprints traffic patterns.
 
-Today's layering already separates what is UDP-specific:
+A second case without UDP: two devices near each other with no network at all, over **Bluetooth**.
+
+The layering separates what is UDP-specific (as of wire v2):
 
 | Layer | UDP-specific? |
 |-------|---------------|
-| L1 ADP (`DatagramIo`, `Endpoint`, `Connection`) | Yes, by design: datagrams with its own reliability (ack, retransmit, replay window, liveness) |
-| L2 MSH session, L3 channel mux | No — they send and receive sealed frames |
-| `PeerLink` | Two transports already: `TransportClass::Adp` and `::Carrier` (A024: MSH and sealed frames over a channel, no ADP) |
+| L1 ADP (`DatagramIo`, `Endpoint`, `Connection`) | Yes, by design: datagrams with its own reliability (ack, retransmit, replay window, liveness), an 8 B association id, no length field (UDP has it), and at most 1 232 B a datagram (`kMaxDatagramBytes`, a compile-time constant) |
+| L2 MSH session | No. It holds the keys and seals or opens a packet given its space and number (`IPacketProtection`); whoever numbers packets calls it |
+| L3 channel mux | No. It sends frames up to the link's budget (`ChannelMux::SetMaxFrameBytes`) and fragments past it |
+| `PeerLink` | Two transports already: `TransportClass::Adp` and `::Carrier` (A024: MSH, then inner packets it numbers and seals itself, no ADP) |
 | `PeerLinkManager` | One ADP `Endpoint` for dial / accept / clock / liveness |
-| Multiaddr | Only `/ip4\|ip6\|dns4\|dns6\|dns/…/udp/<port>/adp/1.0.0/p2p/<id>` (names resolved at dial time) |
+| Multiaddr | Only `/ip4\|ip6\|dns4\|dns6\|dns/…/udp/<port>/adp/1.0.0/p2p/<id>` (names resolved at dial time). An address that does not parse is skipped (`DialBook`, `MeshRuntime`), so new forms are additive |
 | `MeshRuntime` (product API) | No — dial keys and multiaddr strings |
 
 ## Decision (proposed)
@@ -33,9 +36,27 @@ Today's layering already separates what is UDP-specific:
 MSH runs directly over a framed byte stream — no ADP underneath. The stream is
 reliable and ordered, so neither ADP's reliability nor the carrier's reliable lane
 (`CarrierLane`) is used. The carrier path is the template: it already runs the MSH
-handshake and sealed frames as whole frames over a non-ADP transport.
+handshake as whole MSH frames (`MshAdpHandshake` without ADP chunking) and, since
+wire v2, numbers and seals its own packets (`PeerLink::SealCarrierFrame`,
+`DeliverSealedCarrierWire`).
 
-- **Framing:** each MSH message / sealed frame is one length-prefixed record on the stream.
+- **Packets (wire v2):** the stream link does what the carrier link does.
+  - It numbers its packets itself, one counter per direction, and seals each through
+    the session's `IPacketProtection` with the clear header as associated data. The
+    nonce comes from the space and the number, never sent.
+  - It gets its own `PacketSpace` value (the enum has room). The space is part of the
+    nonce, and a session lives on one link, so no two transports number under one key.
+  - Its clear header is a type byte and the 4 B number: no association id (the socket
+    says whose packet it is), no HMAC (the tag authenticates).
+  - At the last number the link fails and redials, as an ADP association does.
+  - A stream delivers in order once, so a number must be exactly one above the last.
+    No replay window: anything else is an attack or a bug, and drops the link.
+- **Framing:** each MSH message / sealed packet is one length-prefixed record on the
+  stream (a varint, or 2 B with records capped at 64 KiB). ADP dropped its length
+  field because UDP gives one; a stream does not.
+- **Frame budget:** the link sets its mux's budget (`SetMaxFrameBytes`). With no path
+  MTU to respect, a TCP link can take large frames (16 KiB, say), so a video frame
+  goes in a few records instead of ~1 178 B fragments.
 - **Backpressure:** a byte cap on the socket's pending send queue feeds the mux's
   `TransportCredits`, as the ADP window does today.
 - **Liveness:** no ADP liveness on a stream. A socket error or close drops the link
@@ -45,6 +66,27 @@ handshake and sealed frames as whole frames over a non-ADP transport.
   §4): listen, accept, connect with a deadline on the Amp clock.
 
 L2, L3, `ChannelMux`, channel policies and every product L4 are unchanged.
+
+### 1a. Bluetooth is a stream link too
+
+Bluetooth's links are reliable and ordered at the link layer, so they take the stream
+link's design (§1), not ADP's retransmits:
+
+| Bluetooth | Shape | Framing |
+|-----------|-------|---------|
+| Classic RFCOMM (Android `BluetoothSocket`; on iOS only for MFi accessories) | Byte stream | Length-prefixed records, as TCP |
+| BLE L2CAP connection-oriented channel (Android 10+ `BluetoothSocket`, iOS `CBL2CAPChannel`'s streams) | Byte stream on both | Length-prefixed records, as TCP |
+| BLE GATT, write without response + notify (the fallback where L2CAP channels are missing) | Messages of ATT MTU − 3 (negotiated, typically 185–512 B), in order while the sender keeps to the platform's flow control (iOS `canSendWriteWithoutResponse`, Android's write callbacks) | One record per message; the budget is the MTU less the packet's wrapping |
+
+- **Small budgets.** A BLE link's frame budget is a few hundred bytes. The mux refuses a
+  budget below `ChannelMux::kMinFrameBytes` (64 B) and a message needing more than
+  65 535 fragments (`kMaxFragmentsPerMessage`), so a small link can neither underflow a
+  fragment's size nor wrap its 16-bit count.
+- **What fits.** About 30 B of each BLE frame is wrapping (5 B header, 16 B tag, 9 B
+  frame header): 12 % of a 244 B frame. A 40 ms Opus packet in a media frame fits one.
+  Video mostly does not fit Bluetooth's rate; product policy decides (§ Limits).
+- **Discovery and addresses** are product work: a Bluetooth peer has no IP. Dial keys
+  are PeerIds already; the address names the radio's peer (`/ble/<id>/amp/…`, open).
 
 ### 2. Layers on the stream, in order of the networks they pass
 
@@ -115,6 +157,7 @@ Nodes listen on both UDP and TCP 443; only the dialer decides.
 | Alternative | Why not |
 |-------------|---------|
 | TCP as a `DatagramIo` under unchanged ADP | ADP's retransmits (50 ms) and 5 s liveness run on top of TCP's own: duplicate sends exactly when a path is congested, liveness fighting TCP backoff; one `Endpoint` per `PeerLinkManager` would force UDP and TCP into one IO with transport-tagged endpoints |
+| Bluetooth GATT as a `DatagramIo` under ADP | The same double reliability (BLE's link layer acknowledges), and ADP's 1 232 B datagram is a constant, larger than any GATT message: ADP would need a per-IO size first |
 | DTLS over UDP | Networks that block UDP block it regardless of content; networks allowing only UDP 443 expect QUIC, which DTLS is not; double encryption for no security gain |
 | QUIC disguise | Real QUIC framing is a second transport stack — large, and TLS-over-TCP covers the same networks |
 
@@ -132,8 +175,13 @@ wiring; metrics labels. L4 protocols and UI unchanged.
 
 ## Open questions
 
-1. Multiaddr tokens: `amp/1.0.0` for streams vs reusing `adp/1.0.0`; `/wss` vs `/tls/ws`.
-2. Fallback head start and how "this network blocks UDP" is remembered.
-3. Calls over a stream: allow, or prefer a relay over UDP when one is reachable.
-4. TLS dependency: BoringSSL in Amp behind an interface, vs injected by the product.
-5. Whether plain TCP (no TLS) is worth shipping on its own, or only as the base of TLS.
+1. Where a Bluetooth link ranks against ADP and TCP stream links (§4), and whether
+   calls may use one.
+2. Whether mesh's own address records (directory, DHT, address disclosure) skip forms
+   they cannot parse as amp does, or refuse the whole record — decides whether
+   advertising stream / Bluetooth addresses needs a coordinated release.
+3. Multiaddr tokens: `amp/1.0.0` for streams vs reusing `adp/1.0.0`; `/wss` vs `/tls/ws`.
+4. Fallback head start and how "this network blocks UDP" is remembered.
+5. Calls over a stream: allow, or prefer a relay over UDP when one is reachable.
+6. TLS dependency: BoringSSL in Amp behind an interface, vs injected by the product.
+7. Whether plain TCP (no TLS) is worth shipping on its own, or only as the base of TLS.

@@ -96,6 +96,10 @@ public:
 
 private:
   void HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram);
+  /** A datagram whose first nibble is not kWireVersion: a version negotiation reply, or another version's packet. */
+  void HandleForeignVersion(const IpEndpoint& from, std::span<const uint8_t> datagram);
+  /** Rate-limited (kVersionNegotiationPerSecond); never more bytes than the datagram it answers. */
+  void ReplyVersionNegotiation(const IpEndpoint& from, std::span<const uint8_t> datagram);
 
   std::shared_ptr<DatagramIo> io_;
   std::shared_ptr<Clock> clock_;
@@ -104,6 +108,8 @@ private:
   bool accept_enabled_ = false;
   AcceptHandler accept_handler_;
   size_t max_accepted_conns_ = 4096;
+  int64_t negotiation_window_ms_ = 0;
+  int negotiation_sent_in_window_ = 0;
 
   std::atomic<uint64_t> tx_datagrams_{0};
   std::atomic<uint64_t> tx_bytes_{0};

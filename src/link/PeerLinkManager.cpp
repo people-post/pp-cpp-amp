@@ -23,6 +23,9 @@ PeerLinkManager::Failure PeerLinkManager::WrapPeerLinkFailure(const PeerLink::Fa
   case PeerLink::Err::DualDialLost:
     return Failure::Of(Err::DualDialLost,
                        detail::AppendFrom("amp link manager: dual-dial lost", "link", child.message));
+  case PeerLink::Err::VersionMismatch:
+    return Failure::Of(Err::VersionMismatch,
+                       detail::AppendFrom("amp link manager: version mismatch", "link", child.message));
   case PeerLink::Err::HandshakeFailed:
     return Failure::Of(Err::HandshakeFailed,
                        detail::AppendFrom("amp link manager: handshake failed", "link", child.message));
@@ -97,6 +100,35 @@ void PeerLinkManager::SetAdvertisedProtocols(std::vector<std::string> protocols)
 void PeerLinkManager::SetCapabilityHandler(CapabilityHandler handler) {
   std::lock_guard lock(strand_mu_);
   capability_handler_ = std::move(handler);
+}
+
+void PeerLinkManager::SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features) {
+  std::lock_guard lock(strand_mu_);
+  advertised_node_version_ = std::move(node_version);
+  advertised_features_ = std::move(features);
+}
+
+std::optional<CapabilityExtension> PeerLinkManager::RemoteCapabilityExtension(const std::string& peer_id) const {
+  std::lock_guard lock(strand_mu_);
+  const PeerLink* link = table_.FindByPeerId(peer_id);
+  if (!link || link->Phase() != PeerLinkPhase::Connected || !link->RemoteCapabilityExtension()) {
+    return std::nullopt;
+  }
+  return *link->RemoteCapabilityExtension();
+}
+
+void PeerLinkManager::SendCapabilityExtension(PeerLink& link) {
+  if (link.CapabilityExtensionSent() || !link.Mux() || link.Mux()->State(kCapabilityChannelId) != ChannelState::Open) {
+    return;
+  }
+  CapabilityExtension extension;
+  extension.amp_wire = adp::kWireVersion;
+  extension.node_version = advertised_node_version_;
+  extension.features = advertised_features_;
+  if (auto encoded = CapabilityCodec::EncodeExtension(extension)) {
+    link.MarkCapabilityExtensionSent();
+    (void)link.Mux()->SendData(kCapabilityChannelId, std::move(*encoded));
+  }
 }
 
 CapabilityPayload PeerLinkManager::LocalCapability() const {
@@ -1321,6 +1353,12 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
   if (!link || !link->Mux()) {
     return;
   }
+  if (CapabilityCodec::IsExtension(payload)) {
+    if (auto extension = CapabilityCodec::DecodeExtension(payload)) {
+      link->ApplyRemoteCapabilityExtension(std::move(*extension));
+    }
+    return;
+  }
   auto decoded = CapabilityCodec::Decode(payload);
   if (!decoded) {
     return;
@@ -1337,6 +1375,8 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
       (void)link->Mux()->SendData(kCapabilityChannelId, std::move(*encoded));
     }
   }
+  // After the v1 messages (the responder's reply, or the dialer on that reply): channel 0 is open both ways.
+  SendCapabilityExtension(*link);
 
   if (first) {
     IngestRemoteCapabilityAddrs(*link, *decoded);
@@ -1503,6 +1543,21 @@ void PeerLinkManager::Tick() {
   for (const auto& handle : refused) {
     if (auto* link = table_.FindLive(handle)) {
       link->FailRefused(); // → establish_cb → FinishDial
+    }
+  }
+  // A dialer whose peer speaks another wire version fails now too (its version negotiation reply, N032).
+  std::vector<std::pair<LinkHandle, std::vector<uint8_t>>> mismatched;
+  table_.ForEach([&](PeerLink& link) {
+    const auto phase = link.Phase();
+    const auto* conn = link.ConnectionOrNull();
+    if (link.IsOutbound() && conn && conn->PeerVersionMismatch() &&
+        (phase == PeerLinkPhase::Handshaking || phase == PeerLinkPhase::Dialing)) {
+      mismatched.emplace_back(link.Handle(), conn->PeerWireVersions());
+    }
+  });
+  for (const auto& [handle, versions] : mismatched) {
+    if (auto* link = table_.FindLive(handle)) {
+      link->FailVersionMismatch(versions); // → establish_cb → FinishDial
     }
   }
   for (const auto& handle : timed_out) {
@@ -1957,6 +2012,8 @@ LinkDropReason PeerLinkManager::DropReasonFor(const Failure& failure) {
     return LinkDropReason::HandshakeFailed;
   case Err::TransportFailed:
     return LinkDropReason::TransportFailed;
+  case Err::VersionMismatch:
+    return LinkDropReason::VersionMismatch;
   default:
     return LinkDropReason::Unknown;
   }

@@ -102,6 +102,15 @@ public:
   bool PeerClosed() const { return peer_closed_; }
   /** A send reported no route to the peer (IsUnreachableSendError): the association is unusable. */
   bool PeerUnreachable() const { return peer_unreachable_; }
+  /** A dialer's peer answered with version negotiation: it speaks none of our wire version (N032). */
+  bool PeerVersionMismatch() const { return peer_version_mismatch_; }
+  /** The wire versions that peer said it speaks (empty unless PeerVersionMismatch). */
+  const std::vector<uint8_t>& PeerWireVersions() const { return peer_wire_versions_; }
+  /**
+   * The endpoint received version negotiation naming this association. Only a dialer before authentication takes it
+   * (it is unauthenticated: an established association ignores it, so a forged one cannot end a link).
+   */
+  void HandleVersionNegotiation(const std::vector<uint8_t>& versions);
 
   void SetPeerEndpoint(IpEndpoint peer);
   /**
@@ -212,6 +221,8 @@ private:
   bool closed_ = false;
   bool peer_closed_ = false;
   bool peer_unreachable_ = false;
+  bool peer_version_mismatch_ = false;
+  std::vector<uint8_t> peer_wire_versions_;
   /** params_.max_rtx to restore once UpgradeBinder proves the association is real (post-MSH). */
   int authenticated_max_rtx_ = 0;
   /** Interval before the next resend after `attempts` (doubling for a dialer's handshake). */

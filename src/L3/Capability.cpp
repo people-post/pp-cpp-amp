@@ -90,4 +90,39 @@ Roe<CapabilityPayload> CapabilityCodec::Decode(std::span<const uint8_t> wire) {
   return out;
 }
 
+Roe<std::vector<uint8_t>> CapabilityCodec::EncodeExtension(const CapabilityExtension& extension) {
+  std::vector<uint8_t> out = {kCapabilityExtensionTag, extension.amp_wire};
+  auto version = ChannelWire::EncodeLenUtf8Le(extension.node_version);
+  if (!version) {
+    return version.error();
+  }
+  out.insert(out.end(), version->begin(), version->end());
+  if (auto features = AppendStringList(out, extension.features); !features) {
+    return features.error();
+  }
+  return out;
+}
+
+Roe<CapabilityExtension> CapabilityCodec::DecodeExtension(std::span<const uint8_t> wire) {
+  if (wire.size() < 2 || wire[0] != kCapabilityExtensionTag) {
+    return Error("amp cap: not a capability extension");
+  }
+  CapabilityExtension out;
+  out.amp_wire = wire[1];
+  auto span = wire.subspan(2);
+  size_t consumed = 0;
+  auto version = ChannelWire::DecodeLenUtf8Le(span, consumed);
+  if (!version) {
+    return version.error();
+  }
+  span = span.subspan(consumed);
+  auto features = ReadStringList(span);
+  if (!features) {
+    return features.error();
+  }
+  out.node_version = std::move(*version);
+  out.features = std::move(*features);
+  return out; // bytes past these are a later version's fields
+}
+
 } // namespace pp::amp

@@ -184,6 +184,10 @@ public:
   void SetCapabilityHandler(PeerLinkManager::CapabilityHandler handler);
   void SetLocalListenMultiaddrs(std::vector<std::string> multiaddrs);
   void SetAdvertisedProtocols(std::vector<std::string> protocols);
+  /** See PeerLinkManager::SetAdvertisedNodeInfo (N032). */
+  void SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features);
+  /** See PeerLinkManager::RemoteCapabilityExtension (N032). */
+  std::optional<CapabilityExtension> RemoteCapabilityExtension(const std::string& peer_id) const;
 
   void MarkWarm(const DialKey& peer_key);
   void MarkHot(const DialKey& peer_key);
