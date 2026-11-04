@@ -60,7 +60,10 @@ inline constexpr int kDefaultMaxRtx = 20;
  * 4 × RTTVAR, at least kRtoGranularityMs over SRTT), never sooner than rtx_interval_ms (a LAN keeps
  * its quick resend; also the wait before the first round trip is measured), doubling for each resend
  * of the same packet up to kMaxRtoMs. A fixed rtx_interval_ms on a 200 ms phone path resent every
- * packet four times, and the copies filled the uplink until nothing got through.
+ * packet four times, and the copies filled the uplink until nothing got through. A new packet starts
+ * from the most any resend backed off since the last clean round trip (RFC 6298 §5.7): with only
+ * rtx_interval_ms before the first one, a path slower than that resent every packet before its ack,
+ * so Karn's rule never let one through as a sample and the link never learned its round trip.
  */
 inline constexpr int64_t kRtoGranularityMs = 10;
 inline constexpr int64_t kMaxRtoMs = 2000;

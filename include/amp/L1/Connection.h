@@ -225,8 +225,16 @@ private:
   std::vector<uint8_t> peer_wire_versions_;
   /** params_.max_rtx to restore once UpgradeBinder proves the association is real (post-MSH). */
   int authenticated_max_rtx_ = 0;
-  /** Interval before the next resend after `attempts` (doubling for a dialer's handshake). */
-  int64_t RetransmitIntervalMs(int attempts) const;
+  /**
+   * Interval before the next resend: the timeout doubled `doublings` times. Before UpgradeBinder,
+   * rtx_interval_ms (doubled only for a dialer's handshake).
+   */
+  int64_t RetransmitIntervalMs(int doublings) const;
+  /**
+   * Doublings a new packet starts with (RFC 6298 §5.7): the most any resend has backed off since the
+   * last clean round trip, which clears it.
+   */
+  int rto_backoff_ = 0;
   /** This association's retransmit timeout from its round trips (see kRtoGranularityMs). */
   int64_t RtoMs() const;
   /**
@@ -269,6 +277,8 @@ private:
     std::vector<uint8_t> payload;
     int64_t next_rtx_ms = 0;
     int attempts = 0;
+    /** rto_backoff_ when first sent: its resends double from there. */
+    int base_backoff = 0;
     /** First send (a round-trip sample when acked before any retransmit). */
     int64_t first_sent_ms = 0;
   };

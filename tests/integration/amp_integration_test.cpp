@@ -538,7 +538,9 @@ TEST_F(AmpIntegrationTest, RekeySurvivesLoss) {
   });
   const std::vector<uint8_t> msg = {'r', 'k'};
   ASSERT_TRUE(h.SendMuxData(HarnessSide::A, "b", *ch, msg));
-  for (int i = 0; i < 60; ++i) {
+  // The rekey's three resends backed the timeout off (RFC 6298 §5.7) and nothing was acked unresent since:
+  // the data's two resends start from 50 << 3 ms, so it lands about 1.2 s later.
+  for (int i = 0; i < 200 && received.empty(); ++i) {
     h.AdvanceMs(15);
   }
   EXPECT_EQ(received, msg);

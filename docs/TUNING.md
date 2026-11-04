@@ -26,6 +26,12 @@ resend of the same packet waits twice as long as the one before, up to `kMaxRtoM
 every packet about four times; the copies filled the uplink and real traffic stopped getting
 through (pp-browser app lab `group_call_on_the_road`).
 
+A new packet starts from the most any resend has backed off since the last clean round trip (RFC
+6298 §5.7), and a packet acked without a resend clears it. Before that, each new packet started
+from `rtx_interval_ms` again: on a path slower than 50 ms every packet was resent before its ack,
+so Karn's rule never took a sample, the link never learned its round trip and resent everything
+(`link_rtt_ms=-1`, `link_resend_pct=100` on a US ↔ China relayed call, pp-browser #502).
+
 `PeerLinkConfig::mux` (`MuxTuning`, applied to every link's channel mux):
 
 | Field | Default | Meaning |
