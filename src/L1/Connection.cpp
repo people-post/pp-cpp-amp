@@ -75,16 +75,16 @@ void Connection::Abandon() {
   endpoint_->Unregister(id_);
 }
 
-int64_t Connection::RetransmitIntervalMs(int attempts) const {
+int64_t Connection::RetransmitIntervalMs(int doublings) const {
   if (authenticated_) {
-    // Each resend of the same packet doubles the wait (RFC 6298 §5.5), up to kMaxRtoMs.
-    const int doublings = std::min(attempts, 8);
+    // Each resend doubles the wait (RFC 6298 §5.5), up to kMaxRtoMs.
+    doublings = std::min(doublings, 8);
     return std::min(RtoMs() << doublings, std::max(kMaxRtoMs, params_.rtx_interval_ms));
   }
   if (!params_.dialer_backoff) {
     return params_.rtx_interval_ms;
   }
-  return params_.rtx_interval_ms << std::min(attempts, 16); // a dialer's handshake: doubling, like SYN retries
+  return params_.rtx_interval_ms << std::min(doublings, 16); // a dialer's handshake: doubling, like SYN retries
 }
 
 int64_t Connection::RtoMs() const {
@@ -346,7 +346,11 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   o.before_upgrade = !pre_upgrade_key_;
   o.seq = tx_seq_rel_;
   o.payload.assign(payload.begin(), payload.end());
-  o.next_rtx_ms = now + RetransmitIntervalMs(0);
+  // A new packet starts from the backed-off timeout (RFC 6298 §5.7): before a clean round trip, a path slower
+  // than rtx_interval_ms would otherwise have every packet resent before its ack, and no ack would ever give a
+  // sample (Karn).
+  o.base_backoff = authenticated_ ? rto_backoff_ : 0;
+  o.next_rtx_ms = now + RetransmitIntervalMs(o.base_backoff);
   o.attempts = 0;
   o.first_sent_ms = now;
   // The seq is taken: track the packet whatever this first send does. A
@@ -366,6 +370,7 @@ void Connection::NoteRttSample(const int64_t rtt_ms) {
   endpoint_->NoteRttSample(rtt_ms);
   const int64_t sample = rtt_ms < 0 ? 0 : rtt_ms;
   ++stats_.rtt_samples;
+  rto_backoff_ = 0;  // a clean round trip: the timeout comes from it again
   stats_.rtt_sum_ms += static_cast<uint64_t>(sample);
   if (stats_.srtt_ms < 0) {
     stats_.srtt_ms = sample;
@@ -389,7 +394,11 @@ void Connection::Tick(int64_t now_ms) {
       continue;
     }
     ++o.attempts;
-    o.next_rtx_ms = now_ms + RetransmitIntervalMs(o.attempts);
+    const int doublings = o.base_backoff + o.attempts;
+    if (authenticated_) {
+      rto_backoff_ = std::max(rto_backoff_, std::min(doublings, 8));
+    }
+    o.next_rtx_ms = now_ms + RetransmitIntervalMs(doublings);
     endpoint_->NoteRetransmit();
     ++stats_.retransmits;
     // Resealed under the current key: the same bytes under the same (space, number), so the same ciphertext unless

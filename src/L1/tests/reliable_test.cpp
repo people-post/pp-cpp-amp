@@ -591,6 +591,76 @@ TEST_F(AdpReliableTest, ResendOfTheSamePacketBacksOff) {
   EXPECT_EQ(o.a->Stats().retransmits, 3u);
 }
 
+// A path slower than rtx_interval_ms, before any round trip: each packet's first resends come before its
+// ack, so Karn never takes a sample from it. A new packet starts from the backed-off timeout (RFC 6298
+// §5.7) until one is acked unresent; the link then learns its round trip and stops resending.
+TEST_F(AdpReliableTest, SlowPathLearnsItsRoundTripFromTheBackedOffTimeout) {
+  auto o = OpenBoth(/*max_rtx=*/20);  // rtx_interval_ms 10
+  constexpr int64_t kRoundTripMs = 250;
+  auto send_over_slow_path = [&](const char* text) {
+    ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes(text)));
+    for (int64_t t = 0; t < kRoundTripMs; t += 10) {
+      o.p.clock->Advance(10);
+      o.p.ep_a->Tick();
+    }
+    o.p.ep_b->Pump();  // B takes every copy and acks
+    o.p.ep_a->Pump();  // A sees the ack a round trip after the first send
+  };
+  send_over_slow_path("one");    // resent at 10, 30, 70, 150 ms: backed off 4 times
+  send_over_slow_path("two");    // starts from 10 << 4: resent once at 160 ms
+  send_over_slow_path("three");  // starts from 10 << 5 = 320 ms: acked first, a clean sample
+  EXPECT_EQ(o.a->Stats().retransmits, 5u);
+  EXPECT_EQ(o.a->Stats().rtt_samples, 1u);
+  EXPECT_EQ(o.a->Stats().srtt_ms, kRoundTripMs);
+
+  for (const char* text : {"four", "five", "six", "seven"}) {
+    send_over_slow_path(text);
+  }
+  EXPECT_EQ(o.a->Stats().retransmits, 5u) << "the round trip is known: no more resends";
+  EXPECT_EQ(o.a->Stats().rtt_samples, 5u);
+}
+
+// A clean round trip clears the backoff: after a loss, the next packet's timeout comes from the round trip.
+TEST_F(AdpReliableTest, CleanRoundTripClearsTheBackoff) {
+  auto o = OpenBoth();
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("one")));
+  o.p.ep_b->Pump();
+  o.p.clock->Advance(20);
+  o.p.ep_a->Pump();  // srtt 20, rttvar 10: timeout 20 + 40 = 60 ms
+  ASSERT_EQ(o.a->Stats().srtt_ms, 20);
+
+  o.p.io_a->DropNext(1);
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("lost")));
+  o.p.clock->Advance(60);
+  o.p.ep_a->Tick();  // resent: backed off once
+  ASSERT_EQ(o.a->Stats().retransmits, 1u);
+  o.p.ep_b->Pump();
+  o.p.ep_a->Pump();
+
+  o.p.io_a->DropNext(1);
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("next")));
+  o.p.clock->Advance(60);
+  o.p.ep_a->Tick();
+  EXPECT_EQ(o.a->Stats().retransmits, 1u) << "it starts from the backed-off 120 ms";
+  o.p.clock->Advance(60);
+  o.p.ep_a->Tick();
+  EXPECT_EQ(o.a->Stats().retransmits, 2u);
+  o.p.ep_b->Pump();
+  o.p.ep_a->Pump();
+
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("clean")));
+  o.p.ep_b->Pump();
+  o.p.clock->Advance(20);
+  o.p.ep_a->Pump();  // acked unresent: the backoff is cleared
+  ASSERT_EQ(o.a->Stats().rtt_samples, 2u);
+
+  o.p.io_a->DropNext(1);
+  ASSERT_TRUE(o.a->Send(pp::adp::QosClass::Reliable, Bytes("after")));
+  o.p.clock->Advance(60);
+  o.p.ep_a->Tick();
+  EXPECT_EQ(o.a->Stats().retransmits, 3u) << "back to the round trip's own timeout (52 ms)";
+}
+
 TEST_F(AdpReliableTest, GarbageDatagramsCountAsRejected) {
   auto p = MakePair();
   const std::vector<uint8_t> junk(64, 0xab);
