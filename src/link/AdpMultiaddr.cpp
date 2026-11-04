@@ -132,13 +132,26 @@ Roe<ParsedAdpMultiaddr> ParseAdpMultiaddr(const std::string_view multiaddr) {
   }
   const bool dns = parts[0] == "dns" || parts[0] == "dns4" || parts[0] == "dns6";
   if ((parts[0] != "ip4" && parts[0] != "ip6" && !dns) || parts[2] != "udp" || parts[4] != kAdpMultiaddrProtocol ||
-      parts[5] != kAdpMultiaddrVersion || parts[6] != "p2p") {
+      parts[6] != "p2p") {
     return Error("amp addr: unsupported multiaddr layout");
+  }
+  int amp_wire = 0;
+  if (parts[5] != kAdpMultiaddrLegacyVersion) {
+    const auto* begin = parts[5].data();
+    const auto* end = begin + parts[5].size();
+    const auto res = std::from_chars(begin, end, amp_wire);
+    if (res.ec != std::errc{} || res.ptr != end || amp_wire <= 0 || amp_wire >= adp::kVersionNegotiationNibble) {
+      return Error("amp addr: unsupported multiaddr layout");
+    }
+    if (amp_wire != adp::kWireVersion) {
+      return Error("amp addr: wire v" + std::to_string(amp_wire) + ", not ours");
+    }
   }
   if (parts[7].empty()) {
     return Error("amp addr: missing peer id");
   }
   ParsedAdpMultiaddr out;
+  out.amp_wire = amp_wire;
   if (dns) {
     if (!IsDnsName(parts[1])) {
       return Error("amp addr: bad hostname");
@@ -180,9 +193,16 @@ Roe<std::string> FormatAdpMultiaddr(const adp::IpEndpoint& endpoint, const std::
   } else {
     return Error("amp addr: unsupported address family");
   }
-  out << "/udp/" << endpoint.port << '/' << kAdpMultiaddrProtocol << '/' << kAdpMultiaddrVersion << "/p2p/"
-      << peer_id;
+  out << AdpUdpSegment(endpoint.port) << "/p2p/" << peer_id;
   return out.str();
+}
+
+std::string AdpMultiaddrVersionToken() {
+  return std::to_string(adp::kWireVersion);
+}
+
+std::string AdpUdpSegment(const uint16_t port) {
+  return "/udp/" + std::to_string(port) + '/' + kAdpMultiaddrProtocol + '/' + AdpMultiaddrVersionToken();
 }
 
 } // namespace pp::amp

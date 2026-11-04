@@ -14,9 +14,10 @@ namespace pp::amp {
 namespace {
 
 TEST(AdpMultiaddrTest, ParseAndFormatRoundTripIpv4) {
-  const std::string multiaddr = "/ip4/127.0.0.1/udp/4001/adp/1.0.0/p2p/QmTestPeer";
+  const std::string multiaddr = "/ip4/127.0.0.1/udp/4001/adp/2/p2p/QmTestPeer";
   auto parsed = ParseAdpMultiaddr(multiaddr);
   ASSERT_TRUE(static_cast<bool>(parsed));
+  EXPECT_EQ(parsed->amp_wire, adp::kWireVersion);
   EXPECT_EQ(parsed->endpoint.family, adp::IpEndpoint::Family::V4);
   EXPECT_EQ(parsed->endpoint.port, 4001u);
   EXPECT_EQ(parsed->peer_id, "QmTestPeer");
@@ -24,6 +25,28 @@ TEST(AdpMultiaddrTest, ParseAndFormatRoundTripIpv4) {
   auto formatted = FormatAdpMultiaddr(parsed->endpoint, parsed->peer_id);
   ASSERT_TRUE(static_cast<bool>(formatted));
   EXPECT_EQ(*formatted, multiaddr);
+}
+
+// pp-browser N032 item 3: an address says its wire version. This build writes ours; it reads the legacy token as
+// "not said" (dialed: version negotiation decides) and refuses another version, so callers skip it before dialing.
+TEST(AdpMultiaddrTest, AnAddressSaysItsWireVersion) {
+  EXPECT_EQ(AdpMultiaddrVersionToken(), std::to_string(adp::kWireVersion));
+  EXPECT_EQ(AdpUdpSegment(443), "/udp/443/adp/" + std::to_string(adp::kWireVersion));
+
+  auto legacy = ParseAdpMultiaddr("/ip4/127.0.0.1/udp/4001/adp/1.0.0/p2p/QmOld");
+  ASSERT_TRUE(static_cast<bool>(legacy)) << "contacts' and seeds' stored addresses keep working";
+  EXPECT_EQ(legacy->amp_wire, 0);
+
+  auto other = ParseAdpMultiaddr("/ip4/127.0.0.1/udp/4001/adp/" + std::to_string(adp::kWireVersion + 1) + "/p2p/QmNew");
+  ASSERT_FALSE(static_cast<bool>(other));
+  EXPECT_NE(other.error().message.find("not ours"), std::string::npos) << other.error().message;
+  for (const char* bad : {"/ip4/127.0.0.1/udp/4001/adp/0/p2p/Qm", "/ip4/127.0.0.1/udp/4001/adp/15/p2p/Qm",
+                          "/ip4/127.0.0.1/udp/4001/adp/2x/p2p/Qm", "/ip4/127.0.0.1/udp/4001/adp//p2p/Qm"}) {
+    EXPECT_FALSE(static_cast<bool>(ParseAdpMultiaddr(bad))) << bad;
+  }
+  auto dns = ParseAdpMultiaddr("/dns4/relay.example.org/udp/443/adp/2/p2p/QmDns");
+  ASSERT_TRUE(static_cast<bool>(dns));
+  EXPECT_EQ(dns->amp_wire, adp::kWireVersion);
 }
 
 TEST(AdpMultiaddrTest, ParseAndFormatRoundTripIpv6) {

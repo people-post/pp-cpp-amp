@@ -25,7 +25,11 @@ inline bool IsEphemeralDialKey(std::string_view key) {
 }
 
 inline constexpr const char* kAdpMultiaddrProtocol = "adp";
-inline constexpr const char* kAdpMultiaddrVersion = "1.0.0";
+/**
+ * The `/adp/<token>/` of an address from before pp-browser N032 item 3: it says no wire version, so it is dialed and
+ * version negotiation decides. Addresses now carry the wire version itself (`/adp/2/`, AdpMultiaddrVersionToken).
+ */
+inline constexpr const char* kAdpMultiaddrLegacyVersion = "1.0.0";
 
 /**
  * Amp-owned outer circuit carrier for nested A↔B Session ([A024]).
