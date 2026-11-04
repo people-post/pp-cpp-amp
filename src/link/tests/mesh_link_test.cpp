@@ -160,7 +160,7 @@ private:
 /** The responder's MSH Finished: the last handshake packet, sent just before it upgrades its HMAC key. */
 bool IsMshFinished(const std::span<const uint8_t> datagram) {
   auto pkt = adp::WireCodec::Decode(datagram);
-  return pkt && pkt->type == adp::PacketType::DataReliable && pkt->payload.size() >= 2 &&
+  return pkt && pkt->type == adp::PacketType::PlainReliable && pkt->payload.size() >= 2 &&
          pkt->payload[0] == static_cast<uint8_t>(AmpAdpPayloadKind::Msh) &&
          pkt->payload[1] == static_cast<uint8_t>(MshMessageType::Finished);
 }
@@ -1217,6 +1217,95 @@ std::optional<NestedReliableChannel> OpenNestedReliableChannel(MeshLinkFixture& 
   return out;
 }
 
+// A029 H1: once connected, both ends' associations seal their data with the session's keys.
+TEST(MeshLinkTest, AConnectedLinkSealsItsDataAtBothEnds) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+  auto* outer_a = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(outer_a, nullptr);
+  ASSERT_NE(outer_a->ConnectionOrNull(), nullptr);
+  EXPECT_TRUE(outer_a->ConnectionOrNull()->Sealing());
+  bool b_seals = false;
+  fixture->mgr_b->WithLiveLink(nested->outer_b, [&](PeerLink& link) {
+    b_seals = link.ConnectionOrNull() && link.ConnectionOrNull()->Sealing();
+  });
+  EXPECT_TRUE(b_seals);
+}
+
+// A029 H1: a nested link's largest packet (its frame budget, sealed, in the lane's wrapper) rides one DATA frame of
+// the outer link whole — before, a full 900 B frame was fragmented again by the outer mux.
+TEST(MeshLinkTest, ANestedLinksLargestPacketFitsOneOuterFrame) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+  auto* nested_a = FindNestedLink(*fixture, nested->nested_key);
+  auto* outer_a = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(nested_a, nullptr);
+  ASSERT_NE(outer_a, nullptr);
+  const size_t inner_packet =
+      kCarrierLaneHeaderBytes + kCarrierSealedHeaderBytes + nested_a->Mux()->MaxFrameBytes() + adp::kPacketTagBytes;
+  EXPECT_EQ(inner_packet, outer_a->Mux()->MaxFrameBytes() - kChannelHeaderBytes);
+  EXPECT_GT(nested_a->Mux()->MaxFrameBytes(), 1100u);
+}
+
+// A029 H1: a nested link's inner packets carry their own numbers, and a hop between the ends that replays one is
+// turned away — on a best-effort channel nothing above would notice the duplicate.
+TEST(MeshLinkTest, ANestedLinkTurnsAwayAReplayedInnerPacket) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto nested = BringUpConnectedNested(*fixture);
+  ASSERT_TRUE(nested.has_value());
+  constexpr const char* kProtocol = "/test/nested-media/1";
+  auto received = std::make_shared<std::vector<std::string>>();
+  fixture->mgr_b->SetProtocolHandler(kProtocol, [&, received](LinkHandle link, const std::string&, uint32_t ch) {
+    fixture->mgr_b->WithLiveLink(link, [&](PeerLink& nested_b) {
+      nested_b.Mux()->SetDataHandler(ch, [received](uint32_t, std::vector<uint8_t> payload) {
+        received->emplace_back(payload.begin(), payload.end());
+      });
+    });
+  });
+  std::optional<uint32_t> id;
+  fixture->mgr_a->OpenChannel(nested->nested_key, kProtocol, CallMediaChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  id = ch.value();
+                                }
+                              });
+  PumpAdvancing(*fixture, [&] {
+    auto* link = FindNestedLink(*fixture, nested->nested_key);
+    return id && link && link->Mux()->State(*id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(id.has_value());
+
+  // One genuine inner packet, sealed by A's nested session under a fresh number, sent twice on the carrier.
+  auto* nested_a = FindNestedLink(*fixture, nested->nested_key);
+  ASSERT_NE(nested_a, nullptr);
+  ChannelFrame frame;
+  frame.header.frame_type = ChannelFrameType::Data;
+  frame.header.channel_id = *id;
+  frame.payload = {'o', 'n', 'c', 'e'};
+  auto encoded = ChannelWire::Encode(frame);
+  ASSERT_TRUE(static_cast<bool>(encoded));
+  const auto header = AmpAdpCarrier::EncodeSealedHeader(/*reliable=*/false, 100000);
+  std::vector<uint8_t> wire(header.begin(), header.end());
+  ASSERT_TRUE(static_cast<bool>(
+      nested_a->GetSession()->SealPacket(adp::PacketSpace::CarrierBestEffort, 100000, header, *encoded, wire)));
+  auto* outer_a = fixture->mgr_a->FindLink("bob");
+  ASSERT_NE(outer_a, nullptr);
+  for (int copy = 0; copy < 2; ++copy) {
+    ASSERT_TRUE(static_cast<bool>(outer_a->Mux()->SendData(nested->carrier_channel, wire)));
+    PumpAdvancing(
+        *fixture, [] { return false; }, 20);
+  }
+  EXPECT_EQ(*received, std::vector<std::string>{"once"});
+}
+
 // Reliable delivery over a nested link (ADR_LINK_PLANE §11): the relay splices a best-effort
 // carrier, so without the lane one lost or reordered frame wedged a Reliable channel for good
 // (call control / chat / hello over a relay — lab `delay 120ms 30ms`).
@@ -1797,7 +1886,7 @@ TEST(MeshLinkTest, LinkEventsConnectedThenDeadDrop) {
   EXPECT_EQ(events_b[0].kind, LinkEvent::Kind::Connected);
   EXPECT_FALSE(events_b[0].outbound);
   // Inbound dial key = "inbound:" + assoc id as lowercase hex (was '0'+nibble → ":;<=>?").
-  ASSERT_EQ(events_b[0].dial_key.size(), std::string("inbound:").size() + 32);
+  ASSERT_EQ(events_b[0].dial_key.size(), std::string("inbound:").size() + 2 * adp::kAssocIdBytes);
   EXPECT_EQ(events_b[0].dial_key.rfind("inbound:", 0), 0u);
   EXPECT_EQ(events_b[0].dial_key.find_first_not_of("0123456789abcdef", 8), std::string::npos)
       << events_b[0].dial_key;

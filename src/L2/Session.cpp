@@ -39,24 +39,23 @@ Direction Session::InDirection() const {
   return material_.initiator ? Direction::ResponderToInitiator : Direction::InitiatorToResponder;
 }
 
-Roe<std::vector<uint8_t>> Session::Seal(const uint32_t channel_id, const uint32_t channel_seq,
-                                        const std::span<const uint8_t> plaintext) const {
-  return SessionCrypto::Seal(material_.k_send, material_.session_epoch, channel_id, channel_seq, OutDirection(),
-                             plaintext);
+Roe<void> Session::SealPacket(const adp::PacketSpace space, const uint32_t number,
+                              const std::span<const uint8_t> header, const std::span<const uint8_t> plaintext,
+                              std::vector<uint8_t>& out) const {
+  return SessionCrypto::SealPacket(material_.k_send, OutDirection(), material_.session_epoch, space, number, header,
+                                   plaintext, out);
 }
 
-Roe<std::vector<uint8_t>> Session::Open(const uint32_t channel_id, const uint32_t channel_seq,
-                                        const std::span<const uint8_t> sealed, const int64_t now_ms) const {
-  auto opened = SessionCrypto::Open(material_.k_recv, material_.session_epoch, channel_id, channel_seq, InDirection(),
-                                    sealed);
-  if (opened) {
+Roe<std::vector<uint8_t>> Session::OpenPacket(const adp::PacketSpace space, const uint32_t number,
+                                              const std::span<const uint8_t> header,
+                                              const std::span<const uint8_t> sealed, const int64_t now_ms) const {
+  auto opened = SessionCrypto::OpenPacket(material_.k_recv, InDirection(), material_.session_epoch, space, number,
+                                          header, sealed);
+  if (opened || !HasGraceRecvKey(now_ms)) {
     return opened;
   }
-  if (previous_recv_key_ && now_ms > 0 && now_ms <= grace_until_ms_) {
-    const uint32_t previous_epoch = material_.session_epoch - 1;
-    return SessionCrypto::Open(*previous_recv_key_, previous_epoch, channel_id, channel_seq, InDirection(), sealed);
-  }
-  return opened.error();
+  return SessionCrypto::OpenPacket(*previous_recv_key_, InDirection(), material_.session_epoch - 1, space, number,
+                                   header, sealed);
 }
 
 Roe<void> Session::Rekey() {

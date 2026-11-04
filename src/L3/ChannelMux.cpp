@@ -18,8 +18,6 @@ MessageReassembly ReassemblyFor(const ChannelPolicy& policy) {
 
 namespace {
 
-inline constexpr size_t kMaxSingleDataBytes = 900;
-
 int64_t DefaultNowMs() { return 0; }
 
 /**
@@ -35,12 +33,10 @@ size_t LocalMaxMessageBytesCeiling(const ChannelClass cls) {
 
 } // namespace
 
-ChannelMux::ChannelMux(Session& session) : session_(session), now_ms_(DefaultNowMs) {
+ChannelMux::ChannelMux(const bool initiator) : now_ms_(DefaultNowMs) {
   // Dual-open on one Session: initiator allocates odd ids, responder even — avoids OPEN glare.
-  next_dynamic_id_ = session.Material().initiator ? 1u : 2u;
+  next_dynamic_id_ = initiator ? 1u : 2u;
 }
-
-void ChannelMux::SetPeerSession(Session* peer_session) { peer_session_ = peer_session; }
 
 void ChannelMux::SetTransport(TransportSend send) { transport_ = std::move(send); }
 
@@ -72,36 +68,29 @@ Roe<void> ChannelMux::SendFrame(const ChannelFrame& frame, ChannelRecord& channe
   if (!wire) {
     return wire.error();
   }
-  return SendWire(frame.header.channel_id, frame.header.channel_seq, QosForClass(channel.policy.cls),
-                  std::move(*wire));
+  return SendWire(frame.header.channel_id, QosForClass(channel.policy.cls), std::move(*wire));
 }
 
 bool ChannelMux::HasReliableCredit() const { return !transport_credits_ || transport_credits_() > 0; }
 
-Roe<void> ChannelMux::SealAndTransport(const uint32_t channel_id, const uint32_t channel_seq, const adp::QosClass qos,
-                                       const std::vector<uint8_t>& wire) {
+Roe<void> ChannelMux::Transport(const adp::QosClass qos, const std::vector<uint8_t>& wire) {
   if (!transport_) {
     return Error("amp mux: no transport");
   }
   last_send_qos_ = qos;
-  // Seal at send time, not queue time: a rekey may happen while a frame waits.
-  auto sealed = session_.Seal(channel_id, channel_seq, wire);
-  if (!sealed) {
-    return sealed.error();
-  }
-  return transport_(channel_id, channel_seq, qos, std::move(*sealed));
+  // The link seals at send time, not queue time: a rekey may happen while a frame waits.
+  return transport_(qos, wire);
 }
 
-Roe<void> ChannelMux::SendWire(const uint32_t channel_id, const uint32_t channel_seq, const adp::QosClass qos,
-                               std::vector<uint8_t> wire) {
+Roe<void> ChannelMux::SendWire(const uint32_t channel_id, const adp::QosClass qos, std::vector<uint8_t> wire) {
   if (qos != adp::QosClass::Reliable) {
-    return SealAndTransport(channel_id, channel_seq, qos, wire);
+    return Transport(qos, wire);
   }
   FlushQueued();
   auto queue = send_queues_.find(channel_id);
   const bool channelWaiting = queue != send_queues_.end() && !queue->second.empty();
   if (!channelWaiting && HasReliableCredit()) {
-    return SealAndTransport(channel_id, channel_seq, qos, wire);
+    return Transport(qos, wire);
   }
   // Window full (or this channel is already waiting): hold it, in order.
   if (queued_bytes_ + wire.size() > tuning_.max_queued_bytes) {
@@ -112,7 +101,7 @@ Roe<void> ChannelMux::SendWire(const uint32_t channel_id, const uint32_t channel
   if (channelQueue.empty()) {
     send_order_.push_back(channel_id);
   }
-  channelQueue.push_back(QueuedFrame{channel_seq, std::move(wire)});
+  channelQueue.push_back(QueuedFrame{std::move(wire)});
   return Roe<void>();
 }
 
@@ -129,7 +118,7 @@ void ChannelMux::FlushQueued() {
     queued_bytes_ -= frame.wire.size();
     // A transport failure here has no caller to report to; the link layer
     // handles a dead connection, and the peer's reassembly times out.
-    (void)SealAndTransport(channel_id, frame.channel_seq, adp::QosClass::Reliable, frame.wire);
+    (void)Transport(adp::QosClass::Reliable, frame.wire);
     if (it->second.empty()) {
       send_queues_.erase(it);
     } else {
@@ -464,19 +453,10 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
   }
 }
 
-Roe<void> ChannelMux::OnSealedInbound(const uint32_t channel_id, const uint32_t channel_seq,
-                                      std::span<const uint8_t> sealed) {
-  const int64_t now_ms = now_ms_ ? now_ms_() : 0;
-  auto opened = session_.Open(channel_id, channel_seq, sealed, now_ms);
-  if (!opened) {
-    return opened.error();
-  }
-  auto frame = ChannelWire::Decode(*opened);
+Roe<void> ChannelMux::OnFrameInbound(const std::span<const uint8_t> wire) {
+  auto frame = ChannelWire::Decode(wire);
   if (!frame) {
     return frame.error();
-  }
-  if (frame->header.channel_id != channel_id) {
-    return Error("amp mux: channel id mismatch");
   }
   return DispatchFrame(std::move(*frame));
 }
@@ -490,7 +470,8 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     return Error("amp mux: payload too large");
   }
 
-  if (payload.size() <= kMaxSingleDataBytes) {
+  const size_t max_single = max_frame_bytes_ - kChannelHeaderBytes;
+  if (payload.size() <= max_single) {
     ChannelFrame frame;
     frame.header.frame_type = ChannelFrameType::Data;
     frame.header.channel_id = channel_id;
@@ -504,9 +485,9 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     return Roe<void>();
   }
 
+  const size_t chunk_bytes = max_frame_bytes_ - kChannelHeaderBytes - kChannelFragFieldsBytes;
   const uint64_t msg_id = next_frag_msg_id_++;
-  const uint16_t frag_count =
-      static_cast<uint16_t>((payload.size() + kMaxSingleDataBytes - 1) / kMaxSingleDataBytes);
+  const uint16_t frag_count = static_cast<uint16_t>((payload.size() + chunk_bytes - 1) / chunk_bytes);
   // Fragments the window cannot take now wait in the send queue, so a message
   // larger than the window (or several at once) still goes out in full.
   const adp::QosClass qos = QosForClass(channel->policy.cls);
@@ -515,8 +496,8 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     return Error("amp mux: send queue full");
   }
   for (uint16_t i = 0; i < frag_count; ++i) {
-    const size_t offset = static_cast<size_t>(i) * kMaxSingleDataBytes;
-    const size_t chunk_len = std::min(kMaxSingleDataBytes, payload.size() - offset);
+    const size_t offset = static_cast<size_t>(i) * chunk_bytes;
+    const size_t chunk_len = std::min(chunk_bytes, payload.size() - offset);
     ChannelHeader header;
     header.frame_type = ChannelFrameType::Frag;
     header.channel_id = channel_id;
@@ -526,7 +507,7 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     if (!wire) {
       return wire.error();
     }
-    auto sent = SendWire(channel_id, channel->tx_seq, qos, std::move(*wire));
+    auto sent = SendWire(channel_id, qos, std::move(*wire));
     if (!sent) {
       return sent.error();
     }
@@ -636,8 +617,7 @@ Roe<void> ChannelMux::SendCapabilityOffer(ChannelMux& mux, const CapabilityPaylo
   return Error("amp mux: capability channel not usable");
 }
 
-Roe<void> ChannelMux::InjectSealedForTest(const uint32_t channel_id, const uint32_t channel_seq,
-                                          std::vector<uint8_t> sealed) {
+Roe<void> ChannelMux::InjectFrameForTest(const uint32_t channel_id, std::vector<uint8_t> frame) {
   if (!transport_) {
     return Error("amp mux: no transport");
   }
@@ -646,7 +626,7 @@ Roe<void> ChannelMux::InjectSealedForTest(const uint32_t channel_id, const uint3
     return Error("amp mux: inject on closed channel");
   }
   last_send_qos_ = QosForClass(channel->policy.cls);
-  return transport_(channel_id, channel_seq, last_send_qos_, std::move(sealed));
+  return transport_(last_send_qos_, std::move(frame));
 }
 
 void ChannelMux::ExpireIdleReaders(const int64_t now_ms) {

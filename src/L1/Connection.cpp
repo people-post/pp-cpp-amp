@@ -13,6 +13,13 @@
 #include <utility>
 
 namespace pp::adp {
+namespace {
+
+PacketSpace SpaceOf(const PacketType type) {
+  return type == PacketType::DataReliable ? PacketSpace::Reliable : PacketSpace::BestEffort;
+}
+
+} // namespace
 
 Connection::Connection(Endpoint& endpoint, OpenParams params)
     : endpoint_(&endpoint), id_(params.id), binder_(params.key), peer_(params.peer),
@@ -97,6 +104,10 @@ void Connection::SetPeerEndpoint(IpEndpoint peer) {
   if (on_path_change_) {
     on_path_change_(from, peer_);
   }
+}
+
+void Connection::SetProtection(std::shared_ptr<const IPacketProtection> protection) {
+  protection_ = std::move(protection);
 }
 
 void Connection::UpgradeBinder(PeerKey key) {
@@ -208,34 +219,83 @@ void Connection::DeliverReliableInOrder() {
     m.assoc = id_;
     m.seq = it->first;
     m.qos = QosClass::Reliable;
-    m.payload = std::move(it->second);
+    m.sealed = it->second.sealed;
+    m.payload = std::move(it->second.payload);
     rx_rel_hold_.erase(it);
     ++rx_rel_next_deliver_;
     on_message_(m);
   }
 }
 
-Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std::span<const uint8_t> payload,
-                                             int64_t now_ms, const PeerKey* key) {
-  if (peer_.port == 0 && type != PacketType::Close) {
-    // Allow send only if peer known (except we still encode close).
+Connection::Roe<std::vector<uint8_t>> Connection::SealDatagram(const PacketType type, const uint32_t seq,
+                                                               const std::span<const uint8_t> payload) const {
+  if (!protection_) {
+    return Failure::Of(Err::WireError, "adp: no session keys to seal with");
   }
-  WirePacket pkt;
-  pkt.version = kWireVersion;
-  pkt.type = type;
-  pkt.assoc = id_;
-  pkt.seq = seq;
-  pkt.timestamp_ms = TruncTs(now_ms);
-  pkt.payload.assign(payload.begin(), payload.end());
-  auto encoded = WireCodec::Encode(pkt);
-  if (!encoded) {
-    return Failure::Of(Err::WireError, encoded.error().message);
-  }
-  auto sealed = key ? HmacBinder(*key).Seal(std::move(*encoded)) : binder_.Seal(std::move(*encoded));
-  if (!sealed) {
+  SealedHeader h;
+  h.type = type;
+  h.assoc = id_;
+  h.number = seq;
+  const auto header = WireCodec::EncodeSealedHeader(h);
+  std::vector<uint8_t> out;
+  out.reserve(header.size() + payload.size() + kPacketTagBytes);
+  out.assign(header.begin(), header.end());
+  if (auto sealed = protection_->SealPacket(SpaceOf(type), seq, header, payload, out); !sealed) {
     return Failure::Of(Err::WireError, sealed.error().message);
   }
-  auto sent = endpoint_->SendRaw(peer_, *sealed);
+  return out;
+}
+
+Connection::Roe<WirePacket> Connection::OpenDatagram(const std::span<const uint8_t> datagram,
+                                                     const int64_t now_ms) const {
+  if (!protection_) {
+    return Failure::Of(Err::WireError, "adp: sealed packet before session keys");
+  }
+  auto header = WireCodec::DecodeSealedHeader(datagram);
+  if (!header) {
+    return Failure::Of(Err::WireError, header.error().message);
+  }
+  auto opened = protection_->OpenPacket(SpaceOf(header->type), header->number, datagram.first(kSealedHeaderBytes),
+                                        datagram.subspan(kSealedHeaderBytes), now_ms);
+  if (!opened) {
+    return Failure::Of(Err::WireError, opened.error().message);
+  }
+  WirePacket pkt;
+  pkt.type = header->type;
+  pkt.assoc = header->assoc;
+  pkt.seq = header->number;
+  pkt.payload = std::move(*opened);
+  return pkt;
+}
+
+Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std::span<const uint8_t> payload,
+                                             int64_t now_ms, const PeerKey* key) {
+  std::vector<uint8_t> datagram;
+  if (IsSealed(type)) {
+    auto sealed = SealDatagram(type, seq, payload);
+    if (!sealed) {
+      return sealed.error();
+    }
+    datagram = std::move(*sealed);
+  } else {
+    WirePacket pkt;
+    pkt.version = kWireVersion;
+    pkt.type = type;
+    pkt.assoc = id_;
+    pkt.seq = seq;
+    pkt.timestamp_ms = TruncTs(now_ms);
+    pkt.payload.assign(payload.begin(), payload.end());
+    auto encoded = WireCodec::Encode(pkt);
+    if (!encoded) {
+      return Failure::Of(Err::WireError, encoded.error().message);
+    }
+    auto maced = key ? HmacBinder(*key).Seal(std::move(*encoded)) : binder_.Seal(std::move(*encoded));
+    if (!maced) {
+      return Failure::Of(Err::WireError, maced.error().message);
+    }
+    datagram = std::move(*maced);
+  }
+  auto sent = endpoint_->SendRaw(peer_, datagram);
   if (!sent) {
     // Checked here, for every send (data, retransmit, ack, keepalive), whether or not the caller
     // looks at the result.
@@ -261,7 +321,8 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   if (closed_) {
     return Failure::Of(Err::Closed, "adp: send on closed connection");
   }
-  if (payload.size() > kMaxPayload) {
+  // A sealed packet's header and tag are smaller than an HMAC packet's: it carries a little more.
+  if (payload.size() > (Sealing() ? kMaxSealedPayload : kMaxPayload)) {
     return Failure::Of(Err::PayloadTooLarge, "adp: payload too large");
   }
   const int64_t now = endpoint_->GetClock().NowMs();
@@ -270,7 +331,8 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
       return Failure::Of(Err::SeqWrap, "adp: seq wrap");
     }
     ++tx_seq_be_;
-    return SendPacketAsFailure(PacketType::DataBestEffort, tx_seq_be_, payload, now);
+    return SendPacketAsFailure(Sealing() ? PacketType::DataBestEffort : PacketType::PlainBestEffort, tx_seq_be_,
+                               payload, now);
   }
   if (outstanding_.size() >= params_.reliable_window) {
     return Failure::Of(Err::WindowFull, "adp: reliable window full");
@@ -280,6 +342,7 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   }
   ++tx_seq_rel_;
   Outstanding o;
+  o.type = Sealing() ? PacketType::DataReliable : PacketType::PlainReliable;
   o.before_upgrade = !pre_upgrade_key_;
   o.seq = tx_seq_rel_;
   o.payload.assign(payload.begin(), payload.end());
@@ -292,7 +355,7 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   outstanding_.push_back(std::move(o));
   endpoint_->NoteReliableSent();
   ++stats_.reliable_sent;
-  auto sent = SendPacket(PacketType::DataReliable, tx_seq_rel_, payload, now);
+  auto sent = SendPacket(outstanding_.back().type, tx_seq_rel_, payload, now);
   if (!sent && peer_unreachable_) {
     return sent.error();  // no route: the link layer tears this path down
   }
@@ -329,10 +392,12 @@ void Connection::Tick(int64_t now_ms) {
     o.next_rtx_ms = now_ms + RetransmitIntervalMs(o.attempts);
     endpoint_->NoteRetransmit();
     ++stats_.retransmits;
-    // Under the key it first went out with: the peer of a handshake that finished here first still checks the
-    // pre-session key, and a resend under the new one never got through (the dial timed out).
-    const PeerKey* key = o.before_upgrade && pre_upgrade_key_ ? &*pre_upgrade_key_ : nullptr;
-    (void)SendPacket(PacketType::DataReliable, o.seq, o.payload, now_ms, key);
+    // Resealed under the current key: the same bytes under the same (space, number), so the same ciphertext unless
+    // a rekey came between. A plain (handshake) packet from before the upgrade goes under the key it first went out
+    // with: the peer of a handshake that finished here first still checks the pre-session key, and a resend under
+    // the new one never got through (the dial timed out).
+    const PeerKey* key = o.before_upgrade && pre_upgrade_key_ && !IsSealed(o.type) ? &*pre_upgrade_key_ : nullptr;
+    (void)SendPacket(o.type, o.seq, o.payload, now_ms, key);
   }
   // Drop permanently failed from front.
   while (!outstanding_.empty() && outstanding_.front().attempts >= params_.max_rtx &&
@@ -345,6 +410,21 @@ void Connection::Tick(int64_t now_ms) {
 
 void Connection::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram,
                                 int64_t now_ms) {
+  auto type = WireCodec::PeekType(datagram);
+  if (!type) {
+    endpoint_->NoteRejected();
+    return;
+  }
+  if (IsSealed(*type)) {
+    // Opened before anything trusts it: the replay window, liveness and the path move only on a packet that opened.
+    auto opened = OpenDatagram(datagram, now_ms);
+    if (!opened) {
+      endpoint_->NoteRejected();
+      return;
+    }
+    HandleAuthenticated(*opened, from, now_ms);
+    return;
+  }
   if (!binder_.Verify(datagram)) {
     if (pre_upgrade_key_ && HmacBinder(*pre_upgrade_key_).Verify(datagram)) {
       if (auto decoded = WireCodec::Decode(datagram)) {
@@ -363,6 +443,24 @@ void Connection::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t>
   HandleAuthenticated(*decoded, from, now_ms);
 }
 
+bool Connection::RefusePlainAfterKeys(const WirePacket& pkt) {
+  if (!protection_ || IsSealed(pkt.type)) {
+    return false;
+  }
+  if (pkt.type == PacketType::PlainBestEffort) {
+    return true;
+  }
+  if (pkt.type == PacketType::PlainReliable) {
+    // The handshake's last packets may still be resent after both ends have keys: ack a duplicate so its sender
+    // stops, take nothing new in the clear.
+    if (rx_rel_.Classify(pkt.seq) == ReplayWindow::Verdict::Duplicate) {
+      (void)SendPacket(PacketType::Ack, pkt.seq, {}, endpoint_->GetClock().NowMs());
+    }
+    return true;
+  }
+  return false;
+}
+
 void Connection::HandlePreUpgradeKeyPacket(const WirePacket& pkt, const int64_t now_ms) {
   if (!AcceptSkew(pkt.timestamp_ms, now_ms)) {
     return;
@@ -375,7 +473,7 @@ void Connection::HandlePreUpgradeKeyPacket(const WirePacket& pkt, const int64_t 
                        outstanding_.end());
     return;
   }
-  if (pkt.type == PacketType::DataReliable && rx_rel_.Classify(pkt.seq) == ReplayWindow::Verdict::Duplicate) {
+  if (pkt.type == PacketType::PlainReliable && rx_rel_.Classify(pkt.seq) == ReplayWindow::Verdict::Duplicate) {
     // The peer's handshake packet again (our ack was lost or went out under the new key): ack it under the key it
     // came with, which is the one the peer checks acks of it with.
     (void)SendPacket(PacketType::Ack, pkt.seq, {}, now_ms, &*pre_upgrade_key_);
@@ -383,7 +481,12 @@ void Connection::HandlePreUpgradeKeyPacket(const WirePacket& pkt, const int64_t 
 }
 
 void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& from, int64_t now_ms) {
-  if (!AcceptSkew(pkt.timestamp_ms, now_ms)) {
+  const bool sealed = IsSealed(pkt.type);
+  // A sealed packet has no timestamp: under a session key its replay window is its freshness.
+  if (!sealed && !AcceptSkew(pkt.timestamp_ms, now_ms)) {
+    return;
+  }
+  if (RefusePlainAfterKeys(pkt)) {
     return;
   }
   // Only a fresh packet proves the peer is alive and may move the path (A003): data by its replay
@@ -395,9 +498,11 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
   bool ack_reliable = false;
   switch (pkt.type) {
   case PacketType::DataBestEffort:
+  case PacketType::PlainBestEffort:
     fresh = fresh_data = rx_be_.Accept(pkt.seq);
     break;
   case PacketType::DataReliable:
+  case PacketType::PlainReliable:
     // Record (and later ACK) only a packet we keep: one ACKed but dropped is
     // never resent and stalls in-order delivery for good. Duplicates are ACKed
     // so the sender stops resending; too far ahead, or no room in the hold,
@@ -424,7 +529,7 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     fresh = !have_auth_rx_ts_ || static_cast<int32_t>(pkt.timestamp_ms - max_auth_rx_ts_) > 0;
     break;
   }
-  if (!have_auth_rx_ts_ || static_cast<int32_t>(pkt.timestamp_ms - max_auth_rx_ts_) > 0) {
+  if (!sealed && (!have_auth_rx_ts_ || static_cast<int32_t>(pkt.timestamp_ms - max_auth_rx_ts_) > 0)) {
     max_auth_rx_ts_ = pkt.timestamp_ms;
     have_auth_rx_ts_ = true;
   }
@@ -465,7 +570,8 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     HandleKeepalive(pkt, now_ms);
     break;
   }
-  case PacketType::DataBestEffort: {
+  case PacketType::DataBestEffort:
+  case PacketType::PlainBestEffort: {
     if (!fresh_data) {
       break;
     }
@@ -474,12 +580,14 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
       m.assoc = id_;
       m.seq = pkt.seq;
       m.qos = QosClass::BestEffort;
+      m.sealed = sealed;
       m.payload = pkt.payload;
       on_message_(m);
     }
     break;
   }
-  case PacketType::DataReliable: {
+  case PacketType::DataReliable:
+  case PacketType::PlainReliable: {
     if (ack_reliable) {
       (void)SendPacket(PacketType::Ack, pkt.seq, {}, now_ms);
     }
@@ -489,7 +597,7 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
     // The hold is capped to the reliable window (checked above): a forged
     // out-of-order seq per packet cannot grow it without bound.
     if (on_message_) {
-      rx_rel_hold_[pkt.seq] = pkt.payload;
+      rx_rel_hold_[pkt.seq] = HeldReliable{sealed, pkt.payload};
       DeliverReliableInOrder();
     }
     break;

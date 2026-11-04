@@ -431,14 +431,17 @@ TEST_F(AmpIntegrationTest, WireRekeyWithGraceWindow) {
   frame.payload = {'g', 'r', 'a', 'c', 'e'};
   auto wire = pp::amp::ChannelWire::Encode(frame);
   ASSERT_TRUE(static_cast<bool>(wire));
-  auto stale_sealed = link_a->GetSession()->Seal(*ch, 99, *wire);
-  ASSERT_TRUE(static_cast<bool>(stale_sealed));
+  // A packet sealed under the old keys (number 99 in the reliable space), opened after the rekey.
+  std::vector<uint8_t> stale_sealed;
+  ASSERT_TRUE(
+      static_cast<bool>(link_a->GetSession()->SealPacket(pp::adp::PacketSpace::Reliable, 99, {}, *wire, stale_sealed)));
 
   ASSERT_TRUE(h.RequestRekey(HarnessSide::A, "b"));
   EXPECT_EQ(link_a->GetSession()->Material().session_epoch, epoch_before + 1);
   EXPECT_EQ(link_b->GetSession()->Material().session_epoch, epoch_before + 1);
 
-  auto opened = link_b->GetSession()->Open(*ch, 99, *stale_sealed, h.clock->NowMs());
+  auto opened =
+      link_b->GetSession()->OpenPacket(pp::adp::PacketSpace::Reliable, 99, {}, stale_sealed, h.clock->NowMs());
   ASSERT_TRUE(static_cast<bool>(opened));
   auto decoded = pp::amp::ChannelWire::Decode(*opened);
   ASSERT_TRUE(static_cast<bool>(decoded));
@@ -474,13 +477,15 @@ TEST_F(AmpIntegrationTest, PostGraceStaleEpochDropped) {
   frame.payload = {'s', 't', 'a', 'l', 'e'};
   auto wire = pp::amp::ChannelWire::Encode(frame);
   ASSERT_TRUE(static_cast<bool>(wire));
-  auto stale_sealed = link_a->GetSession()->Seal(*ch, 77, *wire);
-  ASSERT_TRUE(static_cast<bool>(stale_sealed));
+  std::vector<uint8_t> stale_sealed;
+  ASSERT_TRUE(
+      static_cast<bool>(link_a->GetSession()->SealPacket(pp::adp::PacketSpace::Reliable, 77, {}, *wire, stale_sealed)));
 
   ASSERT_TRUE(h.RequestRekey(HarnessSide::A, "b"));
   h.AdvanceMs(pp::amp::kSessionRekeyGraceMs + 1);
 
-  auto opened = link_b->GetSession()->Open(*ch, 77, *stale_sealed, h.clock->NowMs());
+  auto opened =
+      link_b->GetSession()->OpenPacket(pp::adp::PacketSpace::Reliable, 77, {}, stale_sealed, h.clock->NowMs());
   EXPECT_FALSE(static_cast<bool>(opened));
 
   const std::vector<uint8_t> msg = {'f', 'r', 'e', 's', 'h'};

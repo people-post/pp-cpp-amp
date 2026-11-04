@@ -80,7 +80,7 @@ TEST_F(AdpEdgeTest, ReplayRejectOnWireBestEffort) {
   (*cb)->OnMessage([&](const pp::adp::Message&) { ++got; });
 
   pp::adp::WirePacket pkt;
-  pkt.type = pp::adp::PacketType::DataBestEffort;
+  pkt.type = pp::adp::PacketType::PlainBestEffort;
   pkt.assoc = Aid();
   pkt.seq = 1;
   pkt.timestamp_ms = static_cast<uint32_t>(p.clock->NowMs() & 0xffffffffull);
@@ -110,7 +110,7 @@ TEST_F(AdpEdgeTest, ReliableDupAckOnlyOnce) {
   (*cb)->OnMessage([&](const pp::adp::Message&) { ++got; });
 
   pp::adp::WirePacket pkt;
-  pkt.type = pp::adp::PacketType::DataReliable;
+  pkt.type = pp::adp::PacketType::PlainReliable;
   pkt.assoc = Aid();
   pkt.seq = 1;
   pkt.timestamp_ms = static_cast<uint32_t>(p.clock->NowMs() & 0xffffffffull);
@@ -161,7 +161,7 @@ TEST_F(AdpEdgeTest, UpgradeBinderRejectsOldKey) {
   (*cb)->OnMessage([&](const pp::adp::Message&) { ++got; });
 
   pp::adp::WirePacket old_pkt;
-  old_pkt.type = pp::adp::PacketType::DataBestEffort;
+  old_pkt.type = pp::adp::PacketType::PlainBestEffort;
   old_pkt.assoc = Aid();
   old_pkt.seq = 1;
   old_pkt.timestamp_ms = static_cast<uint32_t>(p.clock->NowMs() & 0xffffffffull);

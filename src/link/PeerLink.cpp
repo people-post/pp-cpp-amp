@@ -38,6 +38,10 @@ PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool 
     : peer_key_(std::move(peer_key)), remote_peer_id_(std::move(remote_peer_id)), outbound_(outbound),
       connection_(std::move(connection)), identity_(std::move(local_identity)), host_(std::move(host)) {
   connection_->OnMessage([this](const adp::Message& message) {
+    if (message.sealed) {
+      DeliverFrame(message.payload);
+      return;
+    }
     HandleAdpPayload(message.payload);
   });
 }
@@ -133,7 +137,7 @@ void PeerLink::HandleCarrierFrame(const std::span<const uint8_t> payload) {
   }
   if (phase_ == PeerLinkPhase::Connected && mux_) {
     auto kind = AmpAdpCarrier::DecodeKind(payload);
-    if (!kind || *kind != AmpAdpPayloadKind::Sealed) {
+    if (!kind || (*kind != AmpAdpPayloadKind::Sealed && *kind != AmpAdpPayloadKind::SealedReliable)) {
       return;
     }
     DeliverSealedCarrierWire(payload);
@@ -158,22 +162,8 @@ void PeerLink::HandleCarrierFrame(const std::span<const uint8_t> payload) {
 }
 
 void PeerLink::HandleAdpPayload(const std::span<const uint8_t> payload) {
+  // Plain (HMAC'd) payloads are the handshake's: once Connected, data comes sealed (DeliverFrame).
   if (phase_ == PeerLinkPhase::Connected && mux_) {
-    auto kind = AmpAdpCarrier::DecodeKind(payload);
-    if (!kind) {
-      return;
-    }
-    if (*kind == AmpAdpPayloadKind::Sealed) {
-      auto header = AmpAdpCarrier::DecodeSealedHeader(payload);
-      if (!header) {
-        return;
-      }
-      auto body = AmpAdpCarrier::DecodeSealedBody(payload);
-      if (!body) {
-        return;
-      }
-      (void)mux_->OnSealedInbound(header->first, header->second, *body);
-    }
     return;
   }
 
@@ -264,15 +254,62 @@ void PeerLink::FlushLaneBacklog() {
 }
 
 void PeerLink::DeliverSealedCarrierWire(const std::span<const uint8_t> wire) {
+  if (!session_) {
+    return;
+  }
   auto header = AmpAdpCarrier::DecodeSealedHeader(wire);
   if (!header) {
     return;
   }
-  auto body = AmpAdpCarrier::DecodeSealedBody(wire);
-  if (!body) {
+  auto& window = header->reliable ? carrier_rx_rel_ : carrier_rx_be_;
+  if (window.Classify(header->number) != adp::ReplayWindow::Verdict::Fresh) {
+    return; // a replay (or a lane resend we already took)
+  }
+  const auto space = header->reliable ? adp::PacketSpace::CarrierReliable : adp::PacketSpace::CarrierBestEffort;
+  auto opened = session_->OpenPacket(space, header->number, wire.first(kCarrierSealedHeaderBytes),
+                                     wire.subspan(kCarrierSealedHeaderBytes), NowMs());
+  if (!opened) {
     return;
   }
-  (void)mux_->OnSealedInbound(header->first, header->second, *body);
+  // Recorded only once it opened: a forged number must not shut out the real packet.
+  (void)window.Accept(header->number);
+  DeliverFrame(*opened);
+}
+
+void PeerLink::DeliverFrame(const std::span<const uint8_t> frame) {
+  if (phase_ != PeerLinkPhase::Connected || !mux_) {
+    return;
+  }
+  (void)mux_->OnFrameInbound(frame);
+}
+
+size_t PeerLink::CarrierMaxFrameBytes() const {
+  // An inner packet must ride one DATA frame of the outer link whole (the hop's bridge forwards it as it is): a
+  // frame larger than this would be fragmented twice, once by each mux.
+  const size_t outer =
+      carrier_ && carrier_->Mux() ? carrier_->Mux()->MaxFrameBytes() : ChannelMux::kDirectMaxFrameBytes;
+  return outer - kChannelHeaderBytes - kCarrierLaneHeaderBytes - kCarrierSealedHeaderBytes - adp::kPacketTagBytes;
+}
+
+Roe<std::vector<uint8_t>> PeerLink::SealCarrierFrame(const adp::QosClass qos, const std::span<const uint8_t> frame) {
+  if (!session_) {
+    return Error("amp link: no session to seal with");
+  }
+  const bool reliable = qos == adp::QosClass::Reliable;
+  uint32_t& counter = reliable ? carrier_tx_rel_ : carrier_tx_be_;
+  if (counter == 0xffffffffu) {
+    return Error("amp link: carrier packet numbers ran out");
+  }
+  const uint32_t number = ++counter;
+  const auto header = AmpAdpCarrier::EncodeSealedHeader(reliable, number);
+  std::vector<uint8_t> out;
+  out.reserve(header.size() + frame.size() + adp::kPacketTagBytes);
+  out.assign(header.begin(), header.end());
+  const auto space = reliable ? adp::PacketSpace::CarrierReliable : adp::PacketSpace::CarrierBestEffort;
+  if (auto sealed = session_->SealPacket(space, number, header, frame, out); !sealed) {
+    return sealed.error();
+  }
+  return out;
 }
 
 void PeerLink::SendLaneProbe() {
@@ -410,8 +447,14 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   if (connection_) {
     connection_->UpgradeBinder(session->AssocKey());
   }
-  session_ = std::make_unique<Session>(std::move(*session));
-  mux_ = std::make_unique<ChannelMux>(*session_);
+  session_ = std::make_shared<Session>(std::move(*session));
+  mux_ = std::make_unique<ChannelMux>(session_->Material().initiator);
+  if (IsCarrierBacked()) {
+    mux_->SetMaxFrameBytes(CarrierMaxFrameBytes());
+  }
+  if (connection_) {
+    connection_->SetProtection(session_); // data goes sealed from here (A029 H1)
+  }
   mux_->SetClock([this]() { return host_.now_ms ? host_.now_ms() : 0; });
   AttachMuxTransport();
   handshake_.reset();
@@ -493,13 +536,12 @@ void PeerLink::AttachMuxTransport() {
     }
     return connection_->ReliableCreditsRemaining();
   });
-  mux_->SetTransport([this](const uint32_t channel_id, const uint32_t channel_seq, const adp::QosClass qos,
-                            std::vector<uint8_t> sealed) -> Roe<void> {
-    auto wire = AmpAdpCarrier::EncodeSealed(channel_id, channel_seq, sealed);
-    if (!wire) {
-      return wire.error();
-    }
+  mux_->SetTransport([this](const adp::QosClass qos, std::vector<uint8_t> frame) -> Roe<void> {
     if (IsCarrierBacked()) {
+      auto wire = SealCarrierFrame(qos, frame);
+      if (!wire) {
+        return wire.error();
+      }
       // Reliable-class frames ride the lane when the peer speaks it; best-effort (media) as is.
       if (qos == adp::QosClass::Reliable && CarrierLaneActive()) {
         auto laned = lane_->Wrap(*wire, NowMs());
@@ -514,7 +556,7 @@ void PeerLink::AttachMuxTransport() {
       }
       return Roe<void>();
     }
-    return SendAdp(std::move(*wire), qos);
+    return SendAdp(std::move(frame), qos); // the connection seals it
   });
 }
 

@@ -37,7 +37,7 @@ protected:
 
 TEST_F(AdpHardenTest, PacketMutilatorNeverCrashes) {
   pp::adp::WirePacket pkt;
-  pkt.type = pp::adp::PacketType::DataBestEffort;
+  pkt.type = pp::adp::PacketType::PlainBestEffort;
   pkt.assoc = Aid();
   pkt.seq = 1;
   pkt.timestamp_ms = 42;
@@ -231,7 +231,7 @@ TEST_F(AdpHardenTest, AcceptedConnectionCapsRetransmitsBeforeAuth) {
         break;
       }
       auto decoded = pp::adp::WireCodec::Decode((*got)->second);
-      if (decoded && decoded->type == pp::adp::PacketType::DataReliable) {
+      if (decoded && decoded->type == pp::adp::PacketType::PlainReliable) {
         ++reliable_sends;
       }
     }

@@ -2,6 +2,7 @@
 
 #include "amp/L1/Clock.h"
 #include "amp/L1/HmacBinder.h"
+#include "amp/L1/PacketProtection.h"
 #include "amp/L1/Types.h"
 #include "amp/L1/CodedFailure.h"
 #include "amp/L1/ReplayWindow.h"
@@ -109,6 +110,14 @@ public:
    * spoofed victim address.
    */
   void UpgradeBinder(PeerKey key);
+
+  /**
+   * The session's keys, once the handshake made them (A029 H1): from here on data goes sealed (DataBestEffort /
+   * DataReliable, the packet number as nonce) and plain data is refused, but for a duplicate of the handshake's own
+   * reliable packets, acked so their sender stops resending.
+   */
+  void SetProtection(std::shared_ptr<const IPacketProtection> protection);
+  bool Sealing() const { return protection_ != nullptr; }
   /** The HMAC key before UpgradeBinder (the pre-session key), kept for the handshake's own packets (see below). */
   bool HasPreUpgradeKeyForTest() const { return pre_upgrade_key_.has_value(); }
   IpEndpoint PeerEndpoint() const { return peer_; }
@@ -155,10 +164,10 @@ public:
   /** Drive retransmits / close drain. */
   void Tick(int64_t now_ms);
 
-  /** Called by Endpoint after HMAC+decode success. */
+  /** Called after HMAC+decode success, or once a sealed packet opened. */
   void HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& from, int64_t now_ms);
 
-  /** Verify HMAC, decode, then HandleAuthenticated. */
+  /** Verify HMAC and decode, or open a sealed packet; then HandleAuthenticated. */
   void HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram, int64_t now_ms);
 
   const HmacBinder& Binder() const { return binder_; }
@@ -170,6 +179,12 @@ private:
 
   Roe<void> SendPacket(PacketType type, uint32_t seq, std::span<const uint8_t> payload, int64_t now_ms,
                        const PeerKey* key = nullptr);
+  /** A sealed packet: its clear header, then `payload` sealed by protection_ under (space, number = seq). */
+  Roe<std::vector<uint8_t>> SealDatagram(PacketType type, uint32_t seq, std::span<const uint8_t> payload) const;
+  /** Open a sealed datagram into a WirePacket (seq = its number), or fail: forged, or no keys yet. */
+  Roe<WirePacket> OpenDatagram(std::span<const uint8_t> datagram, int64_t now_ms) const;
+  /** Plain data after the session has keys: only a handshake duplicate passes (to be acked), else dropped. */
+  bool RefusePlainAfterKeys(const WirePacket& pkt);
   /**
    * A datagram that fails the current key but passes the pre-upgrade one. The handshake straddles the upgrade: the
    * end that finishes first upgrades while its last handshake packet (and the peer's ack of it) may still be in
@@ -189,6 +204,7 @@ private:
   Endpoint* endpoint_ = nullptr;
   AssocId id_{};
   HmacBinder binder_;
+  std::shared_ptr<const IPacketProtection> protection_;
   /** Set by the first UpgradeBinder: the key the handshake's packets went out under. */
   std::optional<PeerKey> pre_upgrade_key_;
   IpEndpoint peer_{};
@@ -215,7 +231,11 @@ private:
   ReplayWindow rx_rel_;
   /** Next Reliable seq to deliver to OnMessage (1-based, matches tx). */
   uint32_t rx_rel_next_deliver_ = 1;
-  std::unordered_map<uint32_t, std::vector<uint8_t>> rx_rel_hold_;
+  struct HeldReliable {
+    bool sealed = false;
+    std::vector<uint8_t> payload;
+  };
+  std::unordered_map<uint32_t, HeldReliable> rx_rel_hold_;
 
   MessageHandler on_message_;
   PathChangeHandler on_path_change_;
@@ -230,6 +250,8 @@ private:
   void HandleKeepalive(const WirePacket& pkt, int64_t now_ms);
 
   struct Outstanding {
+    /** Sent plain or sealed: a resend goes as it first went (the peer may not have keys yet). */
+    PacketType type = PacketType::PlainReliable;
     /** Sent before UpgradeBinder: resent under pre_upgrade_key_, the key the peer may still be checking with. */
     bool before_upgrade = false;
     uint32_t seq = 0;

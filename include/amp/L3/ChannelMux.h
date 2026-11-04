@@ -1,5 +1,6 @@
 #pragma once
 
+#include "amp/L1/PacketProtection.h"
 #include "amp/L1/Types.h"
 #include "amp/L3/AmpChannelLimits.h"
 #include "amp/L3/Capability.h"
@@ -7,8 +8,6 @@
 #include "amp/L3/ChannelWire.h"
 #include "amp/L3/MessageReassembly.h"
 #include "amp/L3/Types.h"
-#include "amp/L2/Session.h"
-
 
 #include <cstdint>
 #include <deque>
@@ -31,24 +30,36 @@ struct MuxTuning {
   int64_t frag_assembly_timeout_ms = kDefaultFragAssemblyTimeoutMs;
 };
 
-/** Multiplexes L3 channels over one AMP Session. Io-thread affine. */
+/**
+ * Multiplexes L3 channels over one AMP Session. Io-thread affine. Frames go to and come from its transport in the
+ * clear: the link seals and opens them (with the session's keys, the packet number as nonce — A029 H1).
+ */
 class ChannelMux {
 public:
-  using TransportSend = std::function<Roe<void>(uint32_t channel_id, uint32_t channel_seq, adp::QosClass qos,
-                                                 std::vector<uint8_t> sealed)>;
+  /** One encoded frame (ChannelWire), to be sealed and sent by the link. */
+  using TransportSend = std::function<Roe<void>(adp::QosClass qos, std::vector<uint8_t> frame)>;
   /** Remaining ADP reliable slots (SIZE_MAX = unlimited / BestEffort-only transport). */
   using TransportCredits = std::function<size_t()>;
   using DataHandler = std::function<void(uint32_t channel_id, std::vector<uint8_t> payload)>;
   using TerminalHandler = std::function<void(uint32_t channel_id, const char* reason)>;
   using InboundOpenHandler = std::function<void(uint32_t channel_id, const std::string& protocol_id)>;
 
-  explicit ChannelMux(Session& session);
+  /** `initiator`: the end that dialed (odd channel ids; the responder's are even). */
+  explicit ChannelMux(bool initiator);
 
-  void SetPeerSession(Session* peer_session);
   void SetTransport(TransportSend send);
   void SetTransportCredits(TransportCredits credits);
   void SetClock(std::function<int64_t()> now_ms);
   void SetTuning(const MuxTuning& tuning) { tuning_ = tuning; }
+
+  /**
+   * The largest encoded frame its transport carries in one packet (the link's budget, A029 H1): a payload that fits
+   * with a frame header goes as one DATA frame, a larger one as FRAG chunks that fill the budget.
+   */
+  void SetMaxFrameBytes(size_t bytes) { max_frame_bytes_ = bytes; }
+  size_t MaxFrameBytes() const { return max_frame_bytes_; }
+  /** A direct ADP link's budget: one sealed packet's payload. */
+  static constexpr size_t kDirectMaxFrameBytes = adp::kMaxSealedPayload;
 
   /** Allocate id and send OPEN (local initiator). Pass fixed_id for reserved channels (e.g. 0). */
   Roe<uint32_t> OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,
@@ -107,8 +118,8 @@ public:
   Roe<void> ResetChannel(uint32_t channel_id, uint32_t code = 1);
   Roe<void> CloseChannel(uint32_t channel_id, std::string reason = {});
 
-  /** After L2 Session::Open on inbound ADP payload. */
-  Roe<void> OnSealedInbound(uint32_t channel_id, uint32_t channel_seq, std::span<const uint8_t> sealed);
+  /** One inbound frame the link opened (ChannelWire bytes). */
+  Roe<void> OnFrameInbound(std::span<const uint8_t> frame);
 
   ChannelState State(uint32_t channel_id) const;
   /** Add this mux's Open channels to `by_protocol` (protocol id → count). */
@@ -126,8 +137,8 @@ public:
 
   static Roe<void> SendCapabilityOffer(ChannelMux& mux, const CapabilityPayload& offer);
 
-  /** Test hook — send pre-sealed L3 bytes on the mux transport. */
-  Roe<void> InjectSealedForTest(uint32_t channel_id, uint32_t channel_seq, std::vector<uint8_t> sealed);
+  /** Test hook — send an encoded frame on the mux transport as if `channel_id` sent it. */
+  Roe<void> InjectFrameForTest(uint32_t channel_id, std::vector<uint8_t> frame);
 
   /**
    * Sweep expired FRAG partial-assembly state on every channel, reset channels
@@ -161,19 +172,17 @@ private:
   const ChannelRecord* ChannelById(uint32_t channel_id) const;
   /** A reliable frame encoded but not yet sealed/sent (waiting for window space). */
   struct QueuedFrame {
-    uint32_t channel_seq = 0;
     std::vector<uint8_t> wire;
   };
 
   Roe<void> SendFrame(const ChannelFrame& frame, ChannelRecord& channel);
   /**
-   * Seal and send an encoded frame, or queue it: a reliable frame waits while
+   * Send an encoded frame (the link seals it), or queue it: a reliable frame waits while
    * the transport window is full or its channel already has frames waiting, so
    * each channel's frames (and its CLOSE) stay in order.
    */
-  Roe<void> SendWire(uint32_t channel_id, uint32_t channel_seq, adp::QosClass qos, std::vector<uint8_t> wire);
-  Roe<void> SealAndTransport(uint32_t channel_id, uint32_t channel_seq, adp::QosClass qos,
-                             const std::vector<uint8_t>& wire);
+  Roe<void> SendWire(uint32_t channel_id, adp::QosClass qos, std::vector<uint8_t> wire);
+  Roe<void> Transport(adp::QosClass qos, const std::vector<uint8_t>& wire);
   bool HasReliableCredit() const;
   /** Send queued frames round-robin across channels while window space lasts. */
   void FlushQueued();
@@ -187,9 +196,8 @@ private:
   /** Tick: reset channels with nothing inbound for their policy's read_timeout. */
   void ExpireIdleReaders(int64_t now_ms);
 
-  Session& session_;
-  Session* peer_session_ = nullptr;
   TransportSend transport_;
+  size_t max_frame_bytes_ = kDirectMaxFrameBytes;
   TransportCredits transport_credits_;
   std::unordered_map<uint32_t, std::deque<QueuedFrame>> send_queues_;
   /** Channels with queued frames, in round-robin order. */

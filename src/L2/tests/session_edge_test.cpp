@@ -29,6 +29,20 @@ SessionMaterial MakeValidMaterial() {
   return material;
 }
 
+// Sealed as a reliable packet with an empty clear header: what a session's keys do for its link (A029 H1).
+Roe<std::vector<uint8_t>> SealOne(const Session& session, const uint32_t number, std::span<const uint8_t> plain) {
+  std::vector<uint8_t> out;
+  if (auto sealed = session.SealPacket(adp::PacketSpace::Reliable, number, {}, plain, out); !sealed) {
+    return sealed.error();
+  }
+  return out;
+}
+
+Roe<std::vector<uint8_t>> OpenOne(const Session& session, const uint32_t number, std::span<const uint8_t> sealed,
+                                  const int64_t now_ms = 0) {
+  return session.OpenPacket(adp::PacketSpace::Reliable, number, {}, sealed, now_ms);
+}
+
 TEST(SessionEdgeTest, FromMaterialRejectsBadKeySizes) {
   auto material = MakeValidMaterial();
   material.k_send.clear();
@@ -66,16 +80,16 @@ TEST(SessionEdgeTest, BidirectionalSealOpenAfterHandshake) {
   ASSERT_TRUE(static_cast<bool>(bob));
 
   const std::vector<uint8_t> a_to_b = {'a', '2', 'b'};
-  auto sealed_ab = alice->Seal(1, 1, a_to_b);
+  auto sealed_ab = SealOne(*alice, 1, a_to_b);
   ASSERT_TRUE(static_cast<bool>(sealed_ab));
-  auto opened_ab = bob->Open(1, 1, *sealed_ab);
+  auto opened_ab = OpenOne(*bob, 1, *sealed_ab);
   ASSERT_TRUE(static_cast<bool>(opened_ab));
   EXPECT_EQ(*opened_ab, a_to_b);
 
   const std::vector<uint8_t> b_to_a = {'b', '2', 'a'};
-  auto sealed_ba = bob->Seal(2, 3, b_to_a);
+  auto sealed_ba = SealOne(*bob, 3, b_to_a);
   ASSERT_TRUE(static_cast<bool>(sealed_ba));
-  auto opened_ba = alice->Open(2, 3, *sealed_ba);
+  auto opened_ba = OpenOne(*alice, 3, *sealed_ba);
   ASSERT_TRUE(static_cast<bool>(opened_ba));
   EXPECT_EQ(*opened_ba, b_to_a);
 }
@@ -113,16 +127,16 @@ TEST(SessionEdgeTest, RekeyInvalidatesPriorEpochTraffic) {
   ASSERT_TRUE(static_cast<bool>(bob));
 
   const std::vector<uint8_t> epoch1 = {'e', 'p', '1'};
-  auto sealed_epoch1 = alice->Seal(5, 1, epoch1);
+  auto sealed_epoch1 = SealOne(*alice, 1, epoch1);
   ASSERT_TRUE(static_cast<bool>(sealed_epoch1));
   ASSERT_TRUE(static_cast<bool>(alice->Rekey()));
   ASSERT_TRUE(static_cast<bool>(bob->Rekey()));
-  EXPECT_FALSE(static_cast<bool>(bob->Open(5, 1, *sealed_epoch1)));
+  EXPECT_FALSE(static_cast<bool>(OpenOne(*bob, 1, *sealed_epoch1)));
 
   const std::vector<uint8_t> epoch2 = {'e', 'p', '2'};
-  auto sealed_epoch2 = alice->Seal(5, 2, epoch2);
+  auto sealed_epoch2 = SealOne(*alice, 2, epoch2);
   ASSERT_TRUE(static_cast<bool>(sealed_epoch2));
-  ASSERT_TRUE(static_cast<bool>(bob->Open(5, 2, *sealed_epoch2)));
+  ASSERT_TRUE(static_cast<bool>(OpenOne(*bob, 2, *sealed_epoch2)));
 }
 
 } // namespace

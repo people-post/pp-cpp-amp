@@ -189,7 +189,7 @@ bool RunOsUdp(const int warmup, const int iters) {
     }
   }
 
-  constexpr size_t kPacketBytes = 1200;
+  constexpr size_t kPacketBytes = pp::adp::kMaxPayload;
   constexpr size_t kPacketCount = 64; // 76800 bytes
   const int case_warmup = std::min(warmup, 1);
   const int case_iters = std::max(1, iters);
@@ -647,8 +647,8 @@ bool RunD1Multi(const int warmup, const int drive_iters) {
 }
 
 bool RunB2(const int warmup, const int iters) {
-  std::printf("\n== B2 BestEffort flood @ 1200 B ==\n");
-  constexpr size_t kPacketBytes = 1200;
+  std::printf("\n== B2 BestEffort flood @ the largest payload ==\n");
+  constexpr size_t kPacketBytes = pp::adp::kMaxPayload;
   constexpr size_t kPacketCount = 2000;
   const int case_warmup = std::min(warmup, 1);
   const int case_iters = std::max(1, iters);
@@ -708,8 +708,8 @@ bool RunB2(const int warmup, const int iters) {
   }
   const auto stats = Summarize(std::move(samples));
   const double pkt_s = OpsPerSec(stats.mean_ns) * static_cast<double>(kPacketCount);
-  PrintHuman("B2", "be_flood_1200", stats, pkt_s, "pkt/s");
-  PrintCsv("B2", "be_flood_1200", kPacketBytes * kPacketCount, stats, pkt_s, "pkt/s");
+  PrintHuman("B2", "be_flood_max", stats, pkt_s, "pkt/s");
+  PrintCsv("B2", "be_flood_max", kPacketBytes * kPacketCount, stats, pkt_s, "pkt/s");
   (void)last_got;
   return true;
 }

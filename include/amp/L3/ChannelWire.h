@@ -11,7 +11,6 @@
 namespace pp::amp {
 
 struct ChannelHeader {
-  uint8_t frame_version = kChannelFrameVersion;
   ChannelFrameType frame_type = ChannelFrameType::Data;
   uint32_t channel_id = 0;
   uint32_t channel_seq = 0;

@@ -16,12 +16,27 @@ namespace pp::adp {
 using pp::Error;
 using pp::Roe;
 
-inline constexpr uint8_t kWireVersion = 1;
-inline constexpr size_t kAssocIdBytes = 16;
+/**
+ * Wire v2 (A029 H1). A packet's first byte is the version (high nibble) and the type (low nibble); then the
+ * association id. Data packets are sealed by the session (version/type, id, packet number in the clear, the rest
+ * under an AEAD whose tag ends the datagram); handshake and control packets carry a sequence number and a timestamp,
+ * and an HMAC ends them.
+ */
+inline constexpr uint8_t kWireVersion = 2;
+inline constexpr size_t kAssocIdBytes = 8;
 inline constexpr size_t kHmacBytes = 16;
 inline constexpr size_t kKeyBytes = 32;
-inline constexpr size_t kHeaderBytes = 28; // before payload + hmac
-inline constexpr uint16_t kMaxPayload = 1200;
+/** Version/type, association id, seq, timestamp: an HMAC packet's header, before its payload and HMAC. */
+inline constexpr size_t kHeaderBytes = 1 + kAssocIdBytes + 4 + 4;
+/** Version/type, association id, packet number: a sealed packet's clear header (its associated data). */
+inline constexpr size_t kSealedHeaderBytes = 1 + kAssocIdBytes + 4;
+/**
+ * The largest datagram: IPv6's smallest MTU (1280) less IPv6 and UDP headers, so a packet crosses any path whole.
+ * The limit is on the datagram; what headers do not take is payload.
+ */
+inline constexpr size_t kMaxDatagramBytes = 1232;
+/** The largest payload a packet carries (an HMAC packet's: its header and tag are the larger). */
+inline constexpr uint16_t kMaxPayload = static_cast<uint16_t>(kMaxDatagramBytes - kHeaderBytes - kHmacBytes);
 inline constexpr int64_t kDefaultSkewMs = 60'000;
 
 inline constexpr size_t kDefaultReliableWindow = 128;
@@ -95,13 +110,29 @@ enum class QosClass : uint8_t {
 };
 
 enum class PacketType : uint8_t {
+  /** Sealed data (the session's keys, a nonce from the packet number): an association's traffic once it has keys. */
   DataBestEffort = 0,
   DataReliable = 1,
   Ack = 2,
   Close = 3,
   /** Sender interval + flags (kKeepalivePayloadBytes); liveness + NAT maintenance (docs/KEEPALIVE.md). */
   Keepalive = 4,
+  /** HMAC'd plain data: the handshake, before the association has session keys. */
+  PlainBestEffort = 5,
+  PlainReliable = 6,
 };
+inline constexpr uint8_t kMaxPacketType = static_cast<uint8_t>(PacketType::PlainReliable);
+
+/** Sealed by the session (no HMAC, no timestamp; the number is the packet number). */
+inline constexpr bool IsSealed(PacketType type) {
+  return type == PacketType::DataBestEffort || type == PacketType::DataReliable;
+}
+inline constexpr bool IsReliableData(PacketType type) {
+  return type == PacketType::DataReliable || type == PacketType::PlainReliable;
+}
+inline constexpr bool IsBestEffortData(PacketType type) {
+  return type == PacketType::DataBestEffort || type == PacketType::PlainBestEffort;
+}
 
 struct AssocId {
   std::array<uint8_t, kAssocIdBytes> bytes{};
@@ -183,9 +214,10 @@ struct IpEndpointHash {
   }
 };
 
+/** One packet, decoded: for a sealed one, `seq` is its packet number, `payload` the opened plaintext, no timestamp. */
 struct WirePacket {
   uint8_t version = kWireVersion;
-  PacketType type = PacketType::DataBestEffort;
+  PacketType type = PacketType::PlainBestEffort;
   AssocId assoc{};
   uint32_t seq = 0;
   uint32_t timestamp_ms = 0;
@@ -196,6 +228,8 @@ struct Message {
   AssocId assoc{};
   uint32_t seq = 0;
   QosClass qos = QosClass::BestEffort;
+  /** It came sealed by the session (data), not HMAC'd plain (the handshake). */
+  bool sealed = false;
   std::vector<uint8_t> payload;
 };
 

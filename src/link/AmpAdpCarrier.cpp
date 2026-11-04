@@ -1,5 +1,7 @@
 #include "amp/link/AmpAdpCarrier.h"
 
+#include "amp/L1/PacketProtection.h"
+
 namespace pp::amp {
 
 namespace {
@@ -62,14 +64,13 @@ Roe<std::vector<std::vector<uint8_t>>> AmpAdpCarrier::EncodeMshChunked(const Msh
   return out;
 }
 
-Roe<std::vector<uint8_t>> AmpAdpCarrier::EncodeSealed(const uint32_t channel_id, const uint32_t channel_seq,
-                                                      const std::span<const uint8_t> sealed) {
-  std::vector<uint8_t> out;
-  out.reserve(1 + 8 + sealed.size());
-  out.push_back(static_cast<uint8_t>(AmpAdpPayloadKind::Sealed));
-  AppendU32(out, channel_id);
-  AppendU32(out, channel_seq);
-  out.insert(out.end(), sealed.begin(), sealed.end());
+std::array<uint8_t, kCarrierSealedHeaderBytes> AmpAdpCarrier::EncodeSealedHeader(const bool reliable,
+                                                                                 const uint32_t number) {
+  std::array<uint8_t, kCarrierSealedHeaderBytes> out{};
+  out[0] = static_cast<uint8_t>(reliable ? AmpAdpPayloadKind::SealedReliable : AmpAdpPayloadKind::Sealed);
+  for (int i = 0; i < 4; ++i) {
+    out[1 + i] = static_cast<uint8_t>(number >> (8 * i));
+  }
   return out;
 }
 
@@ -108,27 +109,23 @@ Roe<std::tuple<MshMessageType, uint16_t, uint16_t, std::span<const uint8_t>>> Am
   return std::make_tuple(type, index, count, payload.subspan(6));
 }
 
-Roe<std::pair<uint32_t, uint32_t>> AmpAdpCarrier::DecodeSealedHeader(const std::span<const uint8_t> payload) {
-  if (payload.size() < 9 || static_cast<AmpAdpPayloadKind>(payload[0]) != AmpAdpPayloadKind::Sealed) {
-    return Error("amp carrier: bad sealed header");
+Roe<CarrierSealedHeader> AmpAdpCarrier::DecodeSealedHeader(const std::span<const uint8_t> payload) {
+  if (payload.size() < kCarrierSealedHeaderBytes + adp::kPacketTagBytes) {
+    return Error("amp carrier: truncated sealed packet");
+  }
+  const auto kind = static_cast<AmpAdpPayloadKind>(payload[0]);
+  if (kind != AmpAdpPayloadKind::Sealed && kind != AmpAdpPayloadKind::SealedReliable) {
+    return Error("amp carrier: not a sealed packet");
   }
   size_t offset = 1;
-  auto channel_id = ReadU32(payload, offset);
-  if (!channel_id) {
-    return channel_id.error();
+  auto number = ReadU32(payload, offset);
+  if (!number) {
+    return number.error();
   }
-  auto channel_seq = ReadU32(payload, offset);
-  if (!channel_seq) {
-    return channel_seq.error();
-  }
-  return std::make_pair(*channel_id, *channel_seq);
-}
-
-Roe<std::vector<uint8_t>> AmpAdpCarrier::DecodeSealedBody(const std::span<const uint8_t> payload) {
-  if (payload.size() < 9) {
-    return Error("amp carrier: truncated sealed payload");
-  }
-  return std::vector<uint8_t>(payload.begin() + 9, payload.end());
+  CarrierSealedHeader header;
+  header.reliable = kind == AmpAdpPayloadKind::SealedReliable;
+  header.number = *number;
+  return header;
 }
 
 std::vector<uint8_t> AmpAdpCarrier::EncodeLaneData(const uint32_t seq, const std::span<const uint8_t> inner) {

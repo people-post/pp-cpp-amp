@@ -92,12 +92,8 @@ Roe<std::vector<uint8_t>> ChannelWire::Encode(const ChannelFrame& frame) {
     return EncodeFrag(frame.header, frame.frag.msg_id, frame.frag.frag_index, frame.frag.frag_count,
                       frame.frag.total_len, frame.frag.chunk);
   }
-  if (frame.header.frame_version != kChannelFrameVersion) {
-    return Error("amp ch: bad frame version");
-  }
   std::vector<uint8_t> out;
-  out.reserve(10 + frame.payload.size() + 64);
-  out.push_back(frame.header.frame_version);
+  out.reserve(kChannelHeaderBytes + frame.payload.size() + 64);
   out.push_back(static_cast<uint8_t>(frame.header.frame_type));
   AppendU32(out, frame.header.channel_id);
   AppendU32(out, frame.header.channel_seq);
@@ -144,12 +140,8 @@ Roe<std::vector<uint8_t>> ChannelWire::Encode(const ChannelFrame& frame) {
 Roe<std::vector<uint8_t>> ChannelWire::EncodeFrag(const ChannelHeader& header, const uint64_t msg_id,
                                                   const uint16_t frag_index, const uint16_t frag_count,
                                                   const uint32_t total_len, const std::span<const uint8_t> chunk) {
-  if (header.frame_version != kChannelFrameVersion) {
-    return Error("amp ch: bad frame version");
-  }
   std::vector<uint8_t> out;
-  out.reserve(10 + 16 + chunk.size());
-  out.push_back(header.frame_version);
+  out.reserve(kChannelHeaderBytes + kChannelFragFieldsBytes + chunk.size());
   out.push_back(static_cast<uint8_t>(ChannelFrameType::Frag));
   AppendU32(out, header.channel_id);
   AppendU32(out, header.channel_seq);
@@ -162,21 +154,16 @@ Roe<std::vector<uint8_t>> ChannelWire::EncodeFrag(const ChannelHeader& header, c
 }
 
 Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
-  if (wire.size() < 10) {
+  if (wire.size() < kChannelHeaderBytes) {
     return Error("amp ch: truncated header");
   }
   ChannelFrame frame;
-  frame.header.frame_version = wire[0];
-  frame.header.frame_type = static_cast<ChannelFrameType>(wire[1]);
-  frame.header.channel_id = static_cast<uint32_t>(wire[2]) | (static_cast<uint32_t>(wire[3]) << 8)
-                            | (static_cast<uint32_t>(wire[4]) << 16) | (static_cast<uint32_t>(wire[5]) << 24);
-  frame.header.channel_seq = static_cast<uint32_t>(wire[6]) | (static_cast<uint32_t>(wire[7]) << 8)
-                             | (static_cast<uint32_t>(wire[8]) << 16) | (static_cast<uint32_t>(wire[9]) << 24);
-  auto body = wire.subspan(10);
-
-  if (frame.header.frame_version != kChannelFrameVersion) {
-    return Error("amp ch: unsupported frame version");
-  }
+  frame.header.frame_type = static_cast<ChannelFrameType>(wire[0]);
+  frame.header.channel_id = static_cast<uint32_t>(wire[1]) | (static_cast<uint32_t>(wire[2]) << 8) |
+                            (static_cast<uint32_t>(wire[3]) << 16) | (static_cast<uint32_t>(wire[4]) << 24);
+  frame.header.channel_seq = static_cast<uint32_t>(wire[5]) | (static_cast<uint32_t>(wire[6]) << 8) |
+                             (static_cast<uint32_t>(wire[7]) << 16) | (static_cast<uint32_t>(wire[8]) << 24);
+  auto body = wire.subspan(kChannelHeaderBytes);
 
   switch (frame.header.frame_type) {
   case ChannelFrameType::Open: {

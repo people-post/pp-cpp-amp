@@ -7,7 +7,13 @@
 
 namespace pp::amp {
 
-inline constexpr uint8_t kChannelFrameVersion = 1;
+/**
+ * A frame's header: type, channel id, channel seq (no version byte: the packet's first byte carries the wire
+ * version). It travels sealed, inside the packet (A029 H1).
+ */
+inline constexpr size_t kChannelHeaderBytes = 1 + 4 + 4;
+/** A fragment's fields after the header: message id, index, count, total length. */
+inline constexpr size_t kChannelFragFieldsBytes = 8 + 2 + 2 + 4;
 inline constexpr uint32_t kCapabilityChannelId = 0;
 /** Protocol of the capability channel each link keeps open (link plumbing, not a request). */
 inline constexpr const char* kCapabilityProtocolId = "/pp-amp/capability/1.0.0";

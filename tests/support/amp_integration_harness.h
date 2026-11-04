@@ -3,6 +3,7 @@
 #include "amp/L1/Connection.h"
 #include "amp/L1/Endpoint.h"
 #include "amp/L1/Types.h"
+#include "amp/L1/WireCodec.h"
 #include "amp/L3/ChannelPolicy.h"
 #include "amp/L3/ChannelWire.h"
 #include "amp/L3/Types.h"
@@ -12,6 +13,7 @@
 #include "support/mesh_harness_support.h"
 #include "support/mesh_test_harness.h"
 
+#include <algorithm>
 #include <functional>
 #include <optional>
 #include <string>
@@ -200,15 +202,25 @@ struct AmpIntegrationHarness : AmpMeshHarness {
     return static_cast<bool>(conn->Send(pp::adp::QosClass::Reliable, payload));
   }
 
-  /** Inject syntactically valid but cryptographically invalid sealed carrier frames. */
-  bool InjectSealedGarbage(const HarnessSide side, const std::string& alias, const uint32_t channel_id,
-                           const uint32_t channel_seq, const size_t garbage_len = 64) {
-    std::vector<uint8_t> garbage(garbage_len, 0xDE);
-    auto wire = pp::amp::AmpAdpCarrier::EncodeSealed(channel_id, channel_seq, garbage);
-    if (!wire) {
+  /**
+   * Inject syntactically valid but cryptographically invalid sealed packets: the link's own association id and a
+   * fresh packet number, a body and tag that do not open. `channel_id` is unused (the channel travels sealed).
+   */
+  bool InjectSealedGarbage(const HarnessSide side, const std::string& alias, const uint32_t /*channel_id*/,
+                           const uint32_t number, const size_t garbage_len = 64) {
+    auto* link = Mgr(side).FindLink(alias);
+    auto* conn = link ? link->ConnectionOrNull() : nullptr;
+    if (!conn) {
       return false;
     }
-    return InjectAdpPayload(side, alias, std::move(*wire));
+    pp::adp::SealedHeader header;
+    header.type = pp::adp::PacketType::DataReliable;
+    header.assoc = conn->Id();
+    header.number = number;
+    const auto clear = pp::adp::WireCodec::EncodeSealedHeader(header);
+    std::vector<uint8_t> datagram(clear.begin(), clear.end());
+    datagram.resize(datagram.size() + std::max(garbage_len, pp::adp::kPacketTagBytes), 0xDE);
+    return static_cast<bool>(Io(side)->SendTo(conn->PeerEndpoint(), datagram));
   }
 
   /** Inject invalid MSH-shaped carrier garbage during handshake. */
@@ -243,11 +255,7 @@ struct AmpIntegrationHarness : AmpMeshHarness {
     if (!wire) {
       return false;
     }
-    auto sealed = link->GetSession()->Seal(channel_id, channel_seq, *wire);
-    if (!sealed) {
-      return false;
-    }
-    return static_cast<bool>(link->Mux()->InjectSealedForTest(channel_id, channel_seq, std::move(*sealed)));
+    return static_cast<bool>(link->Mux()->InjectFrameForTest(channel_id, std::move(*wire)));
   }
 
   /** Send one sealed L3 DATA frame from an alternate local UDP path (NAT handoff). */
