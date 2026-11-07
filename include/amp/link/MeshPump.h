@@ -15,7 +15,8 @@ public:
   MeshPump(adp::Endpoint& endpoint, PeerLinkManager& links);
 
   void Pump();
-  void Tick();
+  /** Housekeeping; `sweep` also walks every connection (resends) and every link (PeerLinkManager::Tick). */
+  void Tick(bool sweep = true);
 
 private:
   adp::Endpoint& endpoint_;

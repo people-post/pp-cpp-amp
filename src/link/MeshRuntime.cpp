@@ -150,7 +150,27 @@ bool MeshRuntime::OnDriverThread() const {
   return driving_thread_.load(std::memory_order_acquire) == self;
 }
 
+bool MeshRuntime::HousekeepingDueLocked(int64_t& last) {
+  const int64_t now = endpoint_.GetClock().NowMs();
+  if (housekeeping_interval_ms_ > 0 && last != std::numeric_limits<int64_t>::min() &&
+      now - last < housekeeping_interval_ms_) {
+    return false;
+  }
+  last = now;
+  return true;
+}
+
+void MeshRuntime::SetHousekeepingInterval(const std::chrono::milliseconds interval) {
+  std::lock_guard lock(io_mu_);
+  housekeeping_interval_ms_ = std::max<int64_t>(0, interval.count());
+}
+
 void MeshRuntime::PumpLocked() {
+  if (!HousekeepingDueLocked(last_io_ticks_ms_)) {
+    DrainPostedIoLocked();
+    pump_.Pump();
+    return;
+  }
   std::vector<IoTickId> ids;
   ids.reserve(io_ticks_.size());
   for (const auto& entry : io_ticks_) {
@@ -169,7 +189,7 @@ void MeshRuntime::PumpLocked() {
 }
 
 void MeshRuntime::TickLocked() {
-  pump_.Tick();
+  pump_.Tick(HousekeepingDueLocked(last_sweep_ms_));
 }
 
 void MeshRuntime::DrainPostedIoLocked() {

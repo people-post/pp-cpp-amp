@@ -10,9 +10,11 @@ void MeshPump::Pump() {
   endpoint_.Pump();
 }
 
-void MeshPump::Tick() {
-  endpoint_.Tick();
-  links_.Tick();
+void MeshPump::Tick(const bool sweep) {
+  if (sweep) {
+    endpoint_.Tick();
+  }
+  links_.Tick(sweep);
 }
 
 } // namespace pp::amp

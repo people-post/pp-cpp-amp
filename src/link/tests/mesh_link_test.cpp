@@ -2258,6 +2258,30 @@ TEST(MeshRuntimeTest, PumpDrivesAssociationRoundTrip) {
 }
 
 // Stopping a runtime is a goodbye, not a silence: the peer drops our link without waiting it out.
+// The walks (io ticks, the link and connection sweeps) run on the housekeeping cadence, not every round: a walk
+// per round cost a busy node its links times its datagram rate (pp-browser STRESS_LAB, 2026-11-07). 0: every round.
+TEST(MeshRuntimeTest, HousekeepingRunsOnItsCadenceNotEveryRound) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto harness = std::move(*created);
+  int ticks = 0;
+  const auto id = harness->runtime_a->AddIoTick([&ticks] { ++ticks; });
+  for (int i = 0; i < 50; ++i) {
+    harness->runtime_a->Pump();
+  }
+  EXPECT_EQ(ticks, 1) << "fifty rounds within one interval: one walk";
+  harness->clock->Advance(kDefaultHousekeepingInterval.count());
+  harness->runtime_a->Pump();
+  EXPECT_EQ(ticks, 2) << "the next interval: the next walk";
+  harness->runtime_a->SetHousekeepingInterval(std::chrono::milliseconds{0});
+  for (int i = 0; i < 5; ++i) {
+    harness->runtime_a->Pump();
+  }
+  EXPECT_EQ(ticks, 7) << "0: every round";
+  harness->runtime_a->RemoveIoTick(id);
+}
+
 TEST(MeshRuntimeTest, StopClosesEveryLinkAndThePeerEvicts) {
   ASSERT_GE(sodium_init(), 0);
   auto created = pbr::test::AmpMeshHarness::Create();
@@ -2272,7 +2296,9 @@ TEST(MeshRuntimeTest, StopClosesEveryLinkAndThePeerEvicts) {
 
   harness->runtime_a->Stop();
   EXPECT_FALSE(harness->mgr_a().IsConnected("b"));
+  // Twenty housekeeping rounds (the sweep that evicts a closed link runs on its cadence, not every round).
   for (int i = 0; i < 20 && harness->mgr_b().FindLinkByPeerId(harness->peer_id_a); ++i) {
+    harness->clock->Advance(kDefaultHousekeepingInterval.count());
     harness->runtime_b->Pump();
     harness->runtime_b->Tick();
   }

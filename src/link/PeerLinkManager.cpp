@@ -1074,6 +1074,9 @@ size_t PeerLinkManager::RequestDropLink(const std::string& peer_key) {
 }
 
 bool PeerLinkManager::AtLinkCapacityLocked() const {
+  if (table_.size() < book_.Config().max_links) {
+    return false; // the walk below only matters at the limit (it ran per new handshake)
+  }
   // A link whose peer already closed is gone in all but bookkeeping — Tick evicts it — so it holds
   // no slot: a Close and a new peer's handshake landing in one Pump must not refuse the newcomer.
   size_t closed = 0;
@@ -1251,12 +1254,13 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
   // Pending (Handshaking) inbound links have their own quota, separate from max_links: a flood
   // of cheap forged-source connection attempts must not fill the whole table before any of them
   // authenticates, starving outbound dials and already-Connected links of a slot.
-  size_t pending_inbound = 0;
-  table_.ForEach([&](PeerLink& link) {
-    if (!link.IsOutbound() && link.Phase() == PeerLinkPhase::Handshaking) {
-      ++pending_inbound;
-    }
+  // The inbound links still handshaking, from the short list of those started (a walk over every link here, per
+  // new connection, was a busy node's largest cost: pp-browser STRESS_LAB, 2026-11-07).
+  std::erase_if(pending_inbound_, [this](const LinkHandle handle) {
+    const PeerLink* link = table_.FindLive(handle);
+    return !link || link->Phase() != PeerLinkPhase::Handshaking;
   });
+  const size_t pending_inbound = pending_inbound_.size();
   if (pending_inbound >= book_.Config().max_pending_inbound) {
     // The handshake backlog is full: drop the hello silently, like a full listen backlog drops a SYN.
     // The dialer resends it on a doubling interval and gets in once handshakes finish.
@@ -1278,6 +1282,7 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
   AssignLinkIdentity(*link);
   PeerLink* raw = link.get();
   table_.Insert(std::move(link));
+  pending_inbound_.push_back(raw->Handle());
   // A failed inbound handshake leaves the link in Backoff under its `inbound:` key, which nothing
   // else evicts: drop it (deferred to Tick — this runs inside the link's own callback).
   raw->StartInboundHandshake([this, handle = raw->Handle()](PeerLink::LinkRoe result) {
@@ -1470,7 +1475,7 @@ void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
   });
 }
 
-void PeerLinkManager::Tick() {
+void PeerLinkManager::Tick(const bool sweep) {
   std::lock_guard lock(strand_mu_);
   if (!pending_drops_.empty()) {
     auto pending = std::move(pending_drops_);
@@ -1501,6 +1506,13 @@ void PeerLinkManager::Tick() {
   }
 
   const int64_t now = endpoint_.GetClock().NowMs();
+  if (sweep) {
+    SweepLinksLocked(now);
+  }
+  TickChannelOpenWaitersLocked(now);
+}
+
+void PeerLinkManager::SweepLinksLocked(const int64_t now) {
   const int64_t dial_timeout_ms = book_.Config().dial_timeout.count();
   const int64_t dial_attempt_ms = book_.Config().dial_attempt_timeout.count();
   std::vector<LinkHandle> timed_out;
@@ -1635,7 +1647,9 @@ void PeerLinkManager::Tick() {
     // By handle: the link judged dead, even if another link now holds its dial key (A024).
     DropLinkByHandle(handle, reason);
   }
+}
 
+void PeerLinkManager::TickChannelOpenWaitersLocked(const int64_t now) {
   // WhenChannelOpen waiters (product H1/H2 replacement).
   if (!channel_open_waiters_.empty()) {
     std::vector<ChannelOpenWaiter> remaining;
