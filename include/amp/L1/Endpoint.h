@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace pp::adp {
@@ -60,7 +61,13 @@ public:
    * own loop (Tick cadence) picks up any remainder on the next call.
    */
   void Pump(size_t budget = kDefaultPumpBudget);
+  /**
+   * Resends: ticks the connections with reliable packets in flight (NoteResendPending), not every connection — a
+   * walk over every association each round was a busy node's largest cost (pp-browser STRESS_LAB, 2026-11-07).
+   */
   void Tick();
+  /** `id` has a reliable packet in flight: Tick looks at it until none is left. Io thread. */
+  void NoteResendPending(const AssocId& id) { resend_pending_.insert(id); }
 
   Roe<void> SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram);
 
@@ -103,6 +110,8 @@ private:
   std::shared_ptr<DatagramIo> io_;
   std::shared_ptr<Clock> clock_;
   std::unordered_map<AssocId, std::shared_ptr<Connection>, AssocIdHash> conns_;
+  /** Connections with reliable packets in flight (Tick's set). */
+  std::unordered_set<AssocId, AssocIdHash> resend_pending_;
   std::optional<PeerKey> accept_key_;
   bool accept_enabled_ = false;
   AcceptHandler accept_handler_;

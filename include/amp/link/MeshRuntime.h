@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -46,6 +47,15 @@ struct BurstDialResult {
  *   and work drain so mux/session frames are off the stack.
  * - PostAfter — Amp-clock timers (sync windows, deadlines). Fired each Drive turn.
  */
+/**
+ * The cadence of MeshRuntime's walks over every link and of the io ticks: their deadlines are seconds long
+ * (handshake and liveness timeouts, keepalives, FRAG sweeps, nested-carrier resends from 500 ms). What must be
+ * prompt is not on it: resends of ADP reliable packets (Endpoint::Tick, every round, only connections with packets
+ * in flight) and queued sends (flushed when an ack frees window). Walked every 5 ms, a node with 6k idle parked
+ * clients spent ~85 % of its CPU walking (pp-browser STRESS_LAB, 2026-11-07).
+ */
+inline constexpr std::chrono::milliseconds kDefaultHousekeepingInterval{50};
+
 class MeshRuntime {
 public:
   using IoTask = std::function<void()>;
@@ -140,7 +150,17 @@ public:
     return std::forward<Fn>(fn)();
   }
 
+  /**
+   * `tick` runs on the io lane on the housekeeping cadence (SetHousekeepingInterval), not every round: io ticks are
+   * deadline sweeps.
+   */
   IoTickId AddIoTick(IoTask tick);
+  /**
+   * How often the walks run — over every connection, every link and the io ticks (default
+   * kDefaultHousekeepingInterval; 0: every round). Datagrams, posted tasks and timers are every round whatever this
+   * says. A walk per round cost a busy node its links times its datagram rate.
+   */
+  void SetHousekeepingInterval(std::chrono::milliseconds interval);
   void RemoveIoTick(IoTickId id);
 
   // --- Product-facing link plane (forwards to PeerLinkManager under strand) ---
@@ -246,6 +266,12 @@ private:
   std::deque<IoTask> deferred_queue_;
   std::vector<TimerEntry> timers_;
   std::vector<IoTickEntry> io_ticks_;
+  int64_t housekeeping_interval_ms_ = kDefaultHousekeepingInterval.count();
+  /** When the io ticks / the link sweep last ran (endpoint clock); INT64_MIN: never. */
+  int64_t last_io_ticks_ms_ = std::numeric_limits<int64_t>::min();
+  int64_t last_sweep_ms_ = std::numeric_limits<int64_t>::min();
+  /** True when `last` is at least the interval behind `now`; then `last` becomes `now`. */
+  bool HousekeepingDueLocked(int64_t& last);
   IoTickId next_io_tick_id_ = 1;
   TimerId next_timer_id_ = 1;
   bool started_ = false;

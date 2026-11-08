@@ -10,9 +10,9 @@ void MeshPump::Pump() {
   endpoint_.Pump();
 }
 
-void MeshPump::Tick() {
-  endpoint_.Tick();
-  links_.Tick();
+void MeshPump::Tick(const bool sweep) {
+  endpoint_.Tick(); // resends: only connections with packets in flight, every round
+  links_.Tick(sweep);
 }
 
 } // namespace pp::amp

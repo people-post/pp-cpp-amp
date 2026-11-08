@@ -529,6 +529,31 @@ TEST(ChannelMuxTest, FragWaitsForWindowThenDeliversWholeMessage) {
   EXPECT_EQ(received, large);
 }
 
+// An ack frees window and what waited goes at once (OnTransportCredit), not at the next housekeeping walk: the walk
+// is slow now (MeshRuntime's cadence), and a bulk transfer must not crawl at one window per walk.
+TEST(ChannelMuxTest, QueuedFramesGoWhenTheTransportHasWindowAgain) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  WindowedTransport transport;
+  transport.window = 1;
+  transport.Attach(link);
+  std::vector<uint8_t> received;
+  link.responder.mux.SetDataHandler(*ch,
+                                    [&](uint32_t, std::vector<uint8_t> payload) { received = std::move(payload); });
+  const std::vector<uint8_t> large(2500, 0xAB);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, large)));
+  ASSERT_EQ(link.initiator.mux.QueuedFrameCount(), 2u);
+  for (int i = 0; i < 2; ++i) {
+    transport.outstanding = 0; // the peer acked: no Tick
+    link.initiator.mux.OnTransportCredit();
+  }
+  EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 0u);
+  EXPECT_EQ(received, large);
+}
+
 // A single message larger than the whole window could never be sent before.
 TEST(ChannelMuxTest, MessageLargerThanWholeWindowIsDelivered) {
   auto link_result = test::AmpTestLink::Create();

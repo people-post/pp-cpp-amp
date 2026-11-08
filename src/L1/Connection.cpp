@@ -67,16 +67,23 @@ void Connection::Close() {
   }
   const int64_t now = endpoint_->GetClock().NowMs();
   (void)SendPacket(PacketType::Close, 0, {}, now);
-  closed_ = true;
-  endpoint_->Unregister(id_);
+  MarkClosed();
 }
 
 void Connection::Abandon() {
   if (closed_) {
     return;
   }
+  MarkClosed();
+}
+
+void Connection::MarkClosed() {
   closed_ = true;
   endpoint_->Unregister(id_);
+  if (auto closed = std::move(on_closed_)) {
+    on_closed_ = nullptr;
+    closed();
+  }
 }
 
 int64_t Connection::RetransmitIntervalMs(int doublings) const {
@@ -361,6 +368,7 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   // failed send is then just a lost packet that the retransmit timer resends;
   // dropping it would leave a seq gap the receiver waits on forever.
   outstanding_.push_back(std::move(o));
+  endpoint_->NoteResendPending(id_);
   endpoint_->NoteReliableSent();
   ++stats_.reliable_sent;
   auto sent = SendPacket(outstanding_.back().type, tx_seq_rel_, payload, now);
@@ -422,6 +430,16 @@ void Connection::Tick(int64_t now_ms) {
 }
 
 void Connection::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram, int64_t now_ms) {
+  // An ack frees window: tell the owner once the datagram is handled (it may send then, not mid-handling).
+  struct AckedNotice {
+    Connection& conn;
+    size_t before;
+    ~AckedNotice() {
+      if (conn.outstanding_.size() < before && conn.on_reliable_acked_) {
+        conn.on_reliable_acked_();
+      }
+    }
+  } acked{*this, outstanding_.size()};
   auto type = WireCodec::PeekType(datagram);
   if (!type) {
     endpoint_->NoteRejected();
@@ -571,8 +589,7 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
         break;
       }
       peer_closed_ = true;
-      closed_ = true;
-      endpoint_->Unregister(id_);
+      MarkClosed();
       break;
     }
     case PacketType::Keepalive: {
@@ -623,8 +640,7 @@ void Connection::HandleVersionNegotiation(const std::vector<uint8_t>& versions) 
   }
   peer_version_mismatch_ = true;
   peer_wire_versions_ = versions;
-  closed_ = true;
-  endpoint_->Unregister(id_);
+  MarkClosed();
 }
 
 } // namespace pp::adp

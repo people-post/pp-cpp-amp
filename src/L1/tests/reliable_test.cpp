@@ -105,6 +105,31 @@ TEST_F(AdpReliableTest, DeliverUnderLoss) {
   EXPECT_EQ(got[0], "rel");
 }
 
+// The sender hears when its reliable packets are acked (its owner flushes queued sends then), and the endpoint stops
+// looking at a connection with nothing in flight (its resend walk covers only those).
+TEST_F(AdpReliableTest, AnAckIsAnnouncedAndEndsTheResendWatch) {
+  auto p = MakePair();
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+  pp::adp::OpenParams opb = op;
+  opb.peer = p.addr_a;
+  auto cb = p.ep_b->Open(opb);
+  ASSERT_TRUE(cb);
+  int acked = 0;
+  (*ca)->OnReliableAcked([&] { ++acked; });
+  ASSERT_TRUE(
+      (*ca)->Send(pp::adp::QosClass::Reliable, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("rel"), 3)));
+  EXPECT_TRUE((*ca)->HasOutstanding());
+  PumpBoth(p);
+  EXPECT_FALSE((*ca)->HasOutstanding());
+  EXPECT_EQ(acked, 1) << "one ack, one notice";
+}
+
 TEST_F(AdpReliableTest, DeliverUnderDup) {
   auto p = MakePair();
   p.ep_b->SetAcceptKey(Key());

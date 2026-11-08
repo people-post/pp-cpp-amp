@@ -302,12 +302,22 @@ public:
 
   static bool IsAssociationNotReady(const Failure& failure) { return failure.GetCode() == Err::AssociationNotReady; }
 
-  void Tick();
+  /**
+   * Housekeeping. Queued work (drops, retries, alias adoption, channel-open waiters) every call; with `sweep` also
+   * the walk over every link — handshake timeouts and refusals, keepalives, liveness eviction, FRAG sweeps — whose
+   * deadlines are seconds long. MeshRuntime sweeps on a cadence, not every round: a walk per round made a busy
+   * node's cost grow with its links times its datagram rate.
+   */
+  void Tick(bool sweep = true);
 
   /** Project manager capabilities into PeerLink's host ports (composition root). */
   PeerLinkHostPorts MakeHostPorts();
 
 private:
+  /** Tick's walk over every link (requires strand_mu_). */
+  void SweepLinksLocked(int64_t now);
+  /** Tick's channel-open waiters (requires strand_mu_). */
+  void TickChannelOpenWaitersLocked(int64_t now);
   void InstallAcceptHandler();
   void OnInboundConnection(std::shared_ptr<adp::Connection> connection);
   bool OnLinkEstablished(PeerLink& link);
@@ -422,6 +432,8 @@ private:
   void AnswerVerifyWaiters(LinkId id, bool alive);
   std::unordered_map<std::string, Failure> last_error_;
   std::unordered_set<std::string> suppress_dial_backoff_;
+  /** Inbound links started and maybe still handshaking (pruned on each new one; their quota's count). */
+  std::vector<LinkHandle> pending_inbound_;
   std::vector<std::pair<LinkHandle, LinkDropReason>> pending_drops_;
   /** After a failed dial, try next DialBook candidate once the link is dropped (Tick). */
   std::vector<std::string> pending_candidate_retry_;
