@@ -46,6 +46,11 @@ PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool 
     }
     HandleAdpPayload(message.payload);
   });
+  connection_->OnReliableAcked([this]() {
+    if (mux_) {
+      mux_->OnTransportCredit(); // queued frames go at once, not at the next housekeeping walk
+    }
+  });
 }
 
 PeerLink::PeerLink(std::string peer_key, std::string remote_peer_id, const bool outbound,
@@ -65,6 +70,7 @@ PeerLink::~PeerLink() {
   // hold the Connection briefly after Unregister; a late Pump must not call into `this`.
   if (connection_) {
     connection_->OnMessage({});
+    connection_->OnReliableAcked({});
   }
   // Carrier is Bound to an outer Mux ([A024]). Orphan without touching mux_ — map destroy
   // order may have already freed that Mux (Windows SEH / SIGFPE on dead unordered_map).
@@ -266,6 +272,9 @@ void PeerLink::HandleLaneFrame(const AmpAdpPayloadKind kind, const std::span<con
   if (kind == AmpAdpPayloadKind::LaneAck) {
     if (auto ack = AmpAdpCarrier::DecodeLaneAck(payload)) {
       lane_->OnAck(*ack, NowMs());
+      if (mux_) {
+        mux_->OnTransportCredit(); // the lane's window moved
+      }
     }
     return;
   }

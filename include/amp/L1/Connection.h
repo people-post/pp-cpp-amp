@@ -147,6 +147,10 @@ public:
   }
 
   void OnMessage(MessageHandler handler) { on_message_ = std::move(handler); }
+  /** Called once a datagram has acknowledged reliable packets (window freed): queued sends may go now. */
+  void OnReliableAcked(std::function<void()> handler) { on_reliable_acked_ = std::move(handler); }
+  /** Reliable packets sent and not yet acknowledged or given up. */
+  bool HasOutstanding() const { return !outstanding_.empty(); }
   void OnPathChange(PathChangeHandler handler) { on_path_change_ = std::move(handler); }
 
   bool LooksAlive(int64_t now_ms) const;
@@ -256,6 +260,7 @@ private:
   std::unordered_map<uint32_t, HeldReliable> rx_rel_hold_;
 
   MessageHandler on_message_;
+  std::function<void()> on_reliable_acked_;
   PathChangeHandler on_path_change_;
   int64_t last_auth_rx_ms_ = 0;
   /** Newest authenticated wire timestamp (serial order): seq-0 control packets are fresh only past it. */

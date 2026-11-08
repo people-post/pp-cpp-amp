@@ -47,8 +47,14 @@ struct BurstDialResult {
  *   and work drain so mux/session frames are off the stack.
  * - PostAfter — Amp-clock timers (sync windows, deadlines). Fired each Drive turn.
  */
-/** The cadence of MeshRuntime's walks: the pump's own idle interval (pp-cpp-mesh MeshPumpThread, 5 ms). */
-inline constexpr std::chrono::milliseconds kDefaultHousekeepingInterval{5};
+/**
+ * The cadence of MeshRuntime's walks over every link and of the io ticks: their deadlines are seconds long
+ * (handshake and liveness timeouts, keepalives, FRAG sweeps, nested-carrier resends from 500 ms). What must be
+ * prompt is not on it: resends of ADP reliable packets (Endpoint::Tick, every round, only connections with packets
+ * in flight) and queued sends (flushed when an ack frees window). Walked every 5 ms, a node with 6k idle parked
+ * clients spent ~85 % of its CPU walking (pp-browser STRESS_LAB, 2026-11-07).
+ */
+inline constexpr std::chrono::milliseconds kDefaultHousekeepingInterval{50};
 
 class MeshRuntime {
 public:

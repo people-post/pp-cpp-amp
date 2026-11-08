@@ -161,6 +161,9 @@ public:
   /** Default cap on bytes waiting for window space (MuxTuning::max_queued_bytes). */
   static constexpr size_t kMaxQueuedBytes = 32 * 1024 * 1024;
 
+  /** The transport has window again (an ack): send what waited for it. */
+  void OnTransportCredit() { FlushQueued(); }
+
 private:
   struct ChannelRecord {
     uint32_t id = 0;

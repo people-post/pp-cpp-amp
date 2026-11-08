@@ -11,9 +11,7 @@ void MeshPump::Pump() {
 }
 
 void MeshPump::Tick(const bool sweep) {
-  if (sweep) {
-    endpoint_.Tick();
-  }
+  endpoint_.Tick(); // resends: only connections with packets in flight, every round
   links_.Tick(sweep);
 }
 

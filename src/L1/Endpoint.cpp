@@ -101,14 +101,26 @@ void Endpoint::Pump(const size_t budget) {
 }
 
 void Endpoint::Tick() {
+  if (resend_pending_.empty()) {
+    return;
+  }
   const int64_t now = clock_->NowMs();
   std::vector<std::shared_ptr<Connection>> snap;
-  snap.reserve(conns_.size());
-  for (auto& [_, c] : conns_) {
-    snap.push_back(c);
+  snap.reserve(resend_pending_.size());
+  for (auto it = resend_pending_.begin(); it != resend_pending_.end();) {
+    auto conn = conns_.find(*it);
+    if (conn == conns_.end() || !conn->second) {
+      it = resend_pending_.erase(it); // gone
+      continue;
+    }
+    snap.push_back(conn->second);
+    ++it;
   }
   for (auto& c : snap) {
     c->Tick(now);
+    if (!c->HasOutstanding()) {
+      resend_pending_.erase(c->Id());
+    }
   }
 }
 
