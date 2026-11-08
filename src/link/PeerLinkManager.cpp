@@ -1874,6 +1874,7 @@ PeerLinkHostPorts PeerLinkManager::MakeHostPorts() {
       .on_established = [this](PeerLink& link) { return OnLinkEstablished(link); },
       // PeerLink only schedules its own drop when it loses dual-dial election.
       .schedule_drop = [this](LinkHandle link) { ScheduleDropLink(link, LinkDropReason::DualDialLost); },
+      .schedule_drop_closed = [this](LinkHandle link) { ScheduleDropLink(link, LinkDropReason::ConnectionClosed); },
       .schedule_adopt_alias = [this](
                                   std::string remote,
                                   std::string alias) { ScheduleAdoptDialAlias(std::move(remote), std::move(alias)); },

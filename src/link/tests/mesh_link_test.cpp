@@ -2282,6 +2282,31 @@ TEST(MeshRuntimeTest, HousekeepingRunsOnItsCadenceNotEveryRound) {
   harness->runtime_a->RemoveIoTick(id);
 }
 
+// A Connected link whose connection closed is gone after one round, not at the next housekeeping walk (50 ms): a dial
+// in between took the dead link and failed with "send on closed connection" (pp-browser
+// CallMediaLegCoordinatorTest.RedialAfterPeerSilentlyDroppedLink).
+TEST(MeshRuntimeTest, AClosedConnectionsLinkGoesAtOnce) {
+  ASSERT_GE(sodium_init(), 0);
+  auto created = pbr::test::AmpMeshHarness::Create();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto harness = std::move(*created);
+  ASSERT_TRUE(static_cast<bool>(harness->mgr_a().RegisterEndpoint("b", harness->ma_b)));
+  bool associated = false;
+  harness->mgr_a().EnsureAssociation("b",
+                                     [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  harness->PumpUntil([&] { return associated; });
+  ASSERT_TRUE(associated);
+  auto* link = harness->mgr_a().FindLink("b");
+  ASSERT_NE(link, nullptr);
+  ASSERT_NE(link->ConnectionOrNull(), nullptr);
+  harness->clock->Advance(kDefaultHousekeepingInterval.count()); // a walk just ran: the next is 50 ms away
+  harness->PumpBoth();
+  link->ConnectionOrNull()->Close();
+  harness->runtime_a->Pump();
+  harness->runtime_a->Tick();
+  EXPECT_EQ(harness->mgr_a().FindLink("b"), nullptr) << "the closed link is still there until the next walk";
+}
+
 TEST(MeshRuntimeTest, StopClosesEveryLinkAndThePeerEvicts) {
   ASSERT_GE(sodium_init(), 0);
   auto created = pbr::test::AmpMeshHarness::Create();

@@ -67,16 +67,23 @@ void Connection::Close() {
   }
   const int64_t now = endpoint_->GetClock().NowMs();
   (void)SendPacket(PacketType::Close, 0, {}, now);
-  closed_ = true;
-  endpoint_->Unregister(id_);
+  MarkClosed();
 }
 
 void Connection::Abandon() {
   if (closed_) {
     return;
   }
+  MarkClosed();
+}
+
+void Connection::MarkClosed() {
   closed_ = true;
   endpoint_->Unregister(id_);
+  if (auto closed = std::move(on_closed_)) {
+    on_closed_ = nullptr;
+    closed();
+  }
 }
 
 int64_t Connection::RetransmitIntervalMs(int doublings) const {
@@ -582,8 +589,7 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
         break;
       }
       peer_closed_ = true;
-      closed_ = true;
-      endpoint_->Unregister(id_);
+      MarkClosed();
       break;
     }
     case PacketType::Keepalive: {
@@ -634,8 +640,7 @@ void Connection::HandleVersionNegotiation(const std::vector<uint8_t>& versions) 
   }
   peer_version_mismatch_ = true;
   peer_wire_versions_ = versions;
-  closed_ = true;
-  endpoint_->Unregister(id_);
+  MarkClosed();
 }
 
 } // namespace pp::adp

@@ -42,6 +42,8 @@ struct PeerLinkHostPorts {
   std::function<bool(PeerLink& link)> on_established;
   /** Request parent erase of this link (by handle — its key may be reused) after the stack unwinds (A027). */
   std::function<void(LinkHandle link)> schedule_drop;
+  /** Request parent erase of a Connected link whose connection closed (deferred like schedule_drop). */
+  std::function<void(LinkHandle link)> schedule_drop_closed;
   /** Dual-dial: adopt dial alias onto surviving Connected link. */
   std::function<void(std::string remote_peer_id, std::string dial_alias)> schedule_adopt_alias;
   /** True if another Connected Session already exists for remote PeerId. */
