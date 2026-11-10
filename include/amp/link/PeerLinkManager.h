@@ -291,6 +291,16 @@ public:
 
   size_t CountConnectedLinksForPeerId(const std::string& peer_id) const;
   size_t CountLinks() const;
+  /**
+   * A gate on new inbound associations, asked before any handshake work (the MSH signature and its checks): when it
+   * says no, the newcomer is refused at once (a Close its dialer takes as a refusal, like a TCP reset). A host whose
+   * pump is saturated keeps its CPU for the links it has — parked phones' keepalives and renewals — instead of
+   * spending it on newcomers it would refuse anyway (pp-browser STRESS_LAB: clients that ignore "full"). Empty: every
+   * newcomer goes on to the handshake. Any thread; the gate runs on the io lane.
+   */
+  void SetInboundAdmission(std::function<bool()> admit);
+  /** Inbound associations the admission gate refused, since start. Any thread. */
+  uint64_t InboundRefusedByAdmission() const { return inbound_refused_by_admission_.load(std::memory_order_relaxed); }
   /** Open L3 channels across every link, by protocol id (aggregate; io-thread or under the io lock). */
   std::unordered_map<std::string, size_t> CountOpenChannelsByProtocol() const;
   /**
@@ -434,6 +444,8 @@ private:
   std::unordered_set<std::string> suppress_dial_backoff_;
   /** Inbound links started and maybe still handshaking (pruned on each new one; their quota's count). */
   std::vector<LinkHandle> pending_inbound_;
+  std::function<bool()> inbound_admission_;
+  std::atomic<uint64_t> inbound_refused_by_admission_{0};
   std::vector<std::pair<LinkHandle, LinkDropReason>> pending_drops_;
   /** After a failed dial, try next DialBook candidate once the link is dropped (Tick). */
   std::vector<std::string> pending_candidate_retry_;

@@ -1863,6 +1863,39 @@ TEST(MeshLinkTest, ServerAtMaxLinksAdmitsANewPeerOnceTheLastOneClosed) {
   EXPECT_TRUE(second) << "the stopped client's slot must be free without waiting out its alive timeout";
 }
 
+// The admission gate refuses a newcomer before any handshake work: its dial fails at once as a refusal (a busy host
+// keeps its CPU for the links it has). Once the gate opens, the same peer gets in.
+TEST(MeshLinkTest, TheAdmissionGateRefusesANewcomerBeforeTheHandshake) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  bool admit = false;
+  fixture->mgr_b->SetInboundAdmission([&admit] { return admit; });
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  std::optional<bool> first;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { first = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return first.has_value(); });
+  ASSERT_TRUE(first.has_value()) << "a refused dial ends at once, not at its timeout";
+  EXPECT_FALSE(*first);
+  EXPECT_GE(fixture->mgr_b->InboundRefusedByAdmission(), 1u);
+  EXPECT_EQ(fixture->mgr_b->FindConnectedInboundLink(), nullptr);
+
+  admit = true;
+  fixture->mgr_a->ClearDialBackoff("bob"); // the refusal started a dial backoff (steady clock, from 1 s)
+  std::optional<bool> second;
+  std::string second_error;
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) {
+    second = static_cast<bool>(result);
+    if (!result) {
+      second_error = result.error().message;
+    }
+  });
+  fixture->PumpUntil([&] { return second.has_value() && fixture->mgr_b->FindConnectedInboundLink() != nullptr; });
+  EXPECT_TRUE(second.value_or(false)) << "an open gate lets the same peer in: " << second_error;
+}
+
 // A dropped link destroys its mux: channel sessions bound to it must hear "link-dropped" and forget
 // the mux — they used to keep a dangling pointer and write / unbind through it (UAF, SIGSEGV).
 TEST(MeshLinkTest, DroppedLinkClosesItsChannelSessions) {

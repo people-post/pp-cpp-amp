@@ -1245,6 +1245,11 @@ void PeerLinkManager::AbortInflightDial(const std::string& peer_key) {
 
 void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> connection) {
   std::lock_guard lock(strand_mu_);
+  if (inbound_admission_ && !inbound_admission_()) {
+    inbound_refused_by_admission_.fetch_add(1, std::memory_order_relaxed);
+    connection->Close(); // before the handshake: no signature made or checked for it
+    return;
+  }
   // A full table first makes room by evicting its longest-idle inbound link; failing that, the
   // newcomer is refused at once (a Close its dialer takes as a refusal), like a TCP reset.
   if (AtLinkCapacityLocked() && !EvictIdleInboundLocked()) {
@@ -1826,6 +1831,11 @@ void PeerLinkManager::HandleInboundCarrierChannel(PeerLink& via_link, const uint
   }
 
   EstablishNestedOverCarrier(provisional, std::move(carrier), false, {});
+}
+
+void PeerLinkManager::SetInboundAdmission(std::function<bool()> admit) {
+  std::lock_guard lock(strand_mu_);
+  inbound_admission_ = std::move(admit);
 }
 
 size_t PeerLinkManager::CountLinks() const {
