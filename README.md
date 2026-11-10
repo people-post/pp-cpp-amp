@@ -60,3 +60,7 @@ Sibling checkouts (`../pp-cpp-common`, `../pp-cpp-crypto`) are used automaticall
 Performance harness (A–F matrix + C5/D3/E4/OsUdpAmp): `pp_amp_perf` under `tests/perf/` — see [docs/PERF_CASES.md](docs/PERF_CASES.md).
 
 Bad-network / adversarial correctness IDs: [docs/FAULT_CASES.md](docs/FAULT_CASES.md).
+
+## Formatting
+
+Every first-party C/C++ source is formatted with [`.clang-format`](.clang-format) by exactly clang-format 23.1.5 (`pip install clang-format==23.1.5`; other versions format differently). Run `./scripts/check_format.sh --fix` before committing; CI fails on an unformatted file. Vendored code is left as it came.
