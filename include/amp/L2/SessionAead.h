@@ -11,7 +11,7 @@ struct AeadBlob {
   ByteVector ciphertext;
 };
 
-/** XChaCha20-Poly1305 session AEAD for AMP L2 seal/open. */
+/** XChaCha20-Poly1305 session AEAD for AMP L2 seal/open (pp::XChaCha20Poly1305: BoringSSL, libsodium bytes). */
 class SessionAead {
 public:
   /** Encrypt `plaintext` into `ciphertext_out` (must be ≥ plaintext.size() + tag). */

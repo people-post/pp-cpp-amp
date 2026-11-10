@@ -2,12 +2,8 @@
 
 #include "amp/L2/SessionAead.h"
 
-#include "crypto/SodiumUtil.h"
-
 #include <array>
 #include <cstring>
-
-#include <sodium.h>
 
 namespace pp::amp {
 
