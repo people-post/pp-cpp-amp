@@ -1,4 +1,5 @@
-# pp-cpp-amp's C++ style (the same as pp-browser's). Format new and touched code with it (clang-format 14+).
+# pp-cpp-amp's C++ style (shared by pp-browser and the pp-cpp-* libraries). The whole tree is formatted with
+# clang-format 23.1.5 — use exactly that version (`pip install clang-format==23.1.5`); CI checks every file.
 BasedOnStyle: Google
 ColumnLimit: 120
 IndentWidth: 2

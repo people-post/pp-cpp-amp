@@ -382,7 +382,7 @@ TEST(ChannelSessionTest, ClosedSessionForgetsItsMuxAndOutlivesIt) {
       }
       EXPECT_TRUE(session->IsClosed());
       EXPECT_EQ(session->Mux(), nullptr) << "route " << static_cast<int>(route);
-    }                // the link and its muxes go first
+    } // the link and its muxes go first
     session.reset(); // must not call into the freed mux
   }
 }
