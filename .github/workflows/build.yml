@@ -34,6 +34,26 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ninja --no-progress -y
 
+      # BoringSSL's x86 assembly is NASM on Windows. Without it the build still works, with the portable C AEAD;
+      # CI fails here instead so a missing assembler is not mistaken for a slow build. (pp-cpp-crypto builds it.)
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $nasmDir = "C:\Program Files\NASM"
+          choco install nasm --no-progress -y
+          if (-not (Test-Path "$nasmDir\nasm.exe")) {
+            Write-Host "Chocolatey did not install nasm; downloading from nasm.us"
+            $ver = "2.16.03"
+            $zip = "$env:RUNNER_TEMP\nasm.zip"
+            Invoke-WebRequest -Uri "https://www.nasm.us/pub/nasm/releasebuilds/$ver/win64/nasm-$ver-win64.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\nasm" -Force
+            New-Item -ItemType Directory -Force -Path $nasmDir | Out-Null
+            Copy-Item "$env:RUNNER_TEMP\nasm\nasm-$ver\*" $nasmDir -Recurse -Force
+          }
+          if (-not (Test-Path "$nasmDir\nasm.exe")) { throw "nasm is not installed (Chocolatey and nasm.us both failed)" }
+          echo $nasmDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Configure
         shell: bash
         run: |
