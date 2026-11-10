@@ -343,8 +343,7 @@ bool RunE4(const int warmup, const int iters) {
       std::fprintf(stderr, "E4 nested SendData failed\n");
       return false;
     }
-    if (!h.PumpUntilReceived(
-            nested_received, [&] { return nested_received == msg; }, 3000)) {
+    if (!h.PumpUntilReceived(nested_received, [&] { return nested_received == msg; }, 3000)) {
       std::fprintf(stderr, "E4 nested DATA missing (got %zu bytes)\n", nested_received.size());
       return false;
     }
@@ -440,8 +439,7 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
       ok = r.isOk();
       done = true;
     });
-    PumpUntilWall(
-        pump, [&] { return done && rt_a->Links().IsConnected("b"); }, kSetupLimit);
+    PumpUntilWall(pump, [&] { return done && rt_a->Links().IsConnected("b"); }, kSetupLimit);
     if (!ok || !rt_a->Links().IsConnected("b")) {
       std::fprintf(stderr, "OsUdpAmp Associate failed\n");
       return false;
@@ -467,8 +465,7 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
                                 }
                                 ch_done = true;
                               });
-    PumpUntilWall(
-        pump, [&] { return ch_done; }, kSetupLimit);
+    PumpUntilWall(pump, [&] { return ch_done; }, kSetupLimit);
     if (!ch) {
       std::fprintf(stderr, "OsUdpAmp OpenChannel failed\n");
       return false;
@@ -502,14 +499,12 @@ bool RunOsUdpAmp(const int warmup, const int iters) {
       }
       pump();
     };
-    PumpUntilWall(
-        send_some, [&] { return sent == kTotal || link_lost; }, kTransferLimit);
+    PumpUntilWall(send_some, [&] { return sent == kTotal || link_lost; }, kTransferLimit);
     if (sent != kTotal) {
       std::fprintf(stderr, "OsUdpAmp %s at %zu/%zu sent\n", link_lost ? "link lost" : "send stalled", sent, kTotal);
       return false;
     }
-    PumpUntilWall(
-        pump, [&] { return received >= kTotal; }, kTransferLimit);
+    PumpUntilWall(pump, [&] { return received >= kTotal; }, kTransferLimit);
     const auto t1 = std::chrono::steady_clock::now();
     if (received != kTotal) {
       std::fprintf(stderr, "OsUdpAmp incomplete %zu/%zu\n", received, kTotal);

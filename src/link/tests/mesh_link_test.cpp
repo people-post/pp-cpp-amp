@@ -1404,8 +1404,7 @@ TEST(MeshLinkTest, ANestedLinkTurnsAwayAReplayedInnerPacket) {
   ASSERT_NE(outer_a, nullptr);
   for (int copy = 0; copy < 2; ++copy) {
     ASSERT_TRUE(static_cast<bool>(outer_a->Mux()->SendData(nested->carrier_channel, wire)));
-    PumpAdvancing(
-        *fixture, [] { return false; }, 20);
+    PumpAdvancing(*fixture, [] { return false; }, 20);
   }
   EXPECT_EQ(*received, std::vector<std::string>{"once"});
 }
@@ -1501,8 +1500,7 @@ TEST(MeshLinkTest, NestedHandshakeOverALossyCarrierResendsUntilItComesUp) {
   fixture->mgr_a->EstablishNestedOverCarrier("nested:bob", carrier, true,
                                              [&](PeerLinkManager::LinkRoe result) { nested_ok = result.isOk(); });
   // Within the dial budget (8 s).
-  PumpAdvancing(
-      *fixture, [&] { return nested_ok.has_value(); }, 790);
+  PumpAdvancing(*fixture, [&] { return nested_ok.has_value(); }, 790);
   ASSERT_TRUE(nested_ok.has_value()) << "the handshake neither came up nor failed in 7.9 s";
   EXPECT_TRUE(*nested_ok);
 }
@@ -1533,8 +1531,7 @@ TEST(MeshLinkTest, NestedLinkIsDroppedWhenItsReliableLaneGivesUp) {
 
   const std::vector<uint8_t> bytes = {'x'};
   ASSERT_TRUE(static_cast<bool>(nested_a->Mux()->SendData(channel->channel_id, bytes)));
-  PumpAdvancing(
-      *fixture, [&] { return !fixture->mgr_a->WithLiveLink(handle, [](PeerLink&) {}); }, 6000);
+  PumpAdvancing(*fixture, [&] { return !fixture->mgr_a->WithLiveLink(handle, [](PeerLink&) {}); }, 6000);
   EXPECT_FALSE(fixture->mgr_a->WithLiveLink(handle, [](PeerLink&) {}));
   EXPECT_TRUE(fixture->mgr_a->IsConnected("bob")) << "the outer link is fine";
   fixture->PumpBoth(); // listeners run off-strand
@@ -1563,8 +1560,7 @@ TEST(MeshLinkTest, ADroppedLinkReportsTheKeepaliveCadenceItRanAt) {
     ASSERT_TRUE(associated);
     if (hot) {
       fixture->mgr_a->MarkHot("bob");
-      PumpAdvancing(
-          *fixture, [] { return false; }, 20); // the cadence is announced and echoed
+      PumpAdvancing(*fixture, [] { return false; }, 20); // the cadence is announced and echoed
     }
     std::vector<LinkEvent> dropped;
     fixture->mgr_a->AddLinkEventListener([&](const LinkEvent& event) {

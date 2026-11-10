@@ -259,8 +259,7 @@ bool RunOsUdp(const int warmup, const int iters) {
       ep_a->Tick();
       ep_b->Tick();
     };
-    PumpUntilWall(
-        send_some, [&] { return received_bytes >= total || send_failed; }, std::chrono::seconds(10));
+    PumpUntilWall(send_some, [&] { return received_bytes >= total || send_failed; }, std::chrono::seconds(10));
     if (send_failed) {
       return false;
     }
