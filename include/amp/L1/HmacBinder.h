@@ -2,6 +2,8 @@
 
 #include "amp/L1/Types.h"
 
+#include "crypto/Hmac.h"
+
 #include <array>
 #include <span>
 #include <vector>
@@ -17,13 +19,15 @@ public:
   Roe<std::vector<uint8_t>> Seal(std::vector<uint8_t>&& header_and_payload) const;
   Roe<void> Verify(std::span<const uint8_t> datagram) const;
 
-  void SetKey(PeerKey key) { key_ = key; }
+  void SetKey(PeerKey key);
   const PeerKey& Key() const { return key_; }
 
   static std::array<uint8_t, kHmacBytes> ComputeTag(const PeerKey& key, std::span<const uint8_t> mac_input);
 
 private:
   PeerKey key_;
+  /** key_'s HMAC with its pads hashed once (pp-cpp-crypto, BoringSSL). */
+  HmacSha256 mac_;
 };
 
 } // namespace pp::adp
