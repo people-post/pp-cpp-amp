@@ -109,6 +109,11 @@ public:
 
   /** OpenAck result: the responder has no handler for the channel's protocol. */
   static constexpr uint8_t kOpenAckNoHandler = 1;
+  /**
+   * The terminal reason an opener's channel gets for kOpenAckNoHandler: the peer does not serve the protocol (an older
+   * release), as opposed to a refusal it may lift or an open that ran out of time.
+   */
+  static constexpr const char* kOpenRejectedNoHandler = "open rejected: no handler";
   /** OpenAck result: too many concurrent channels already open on this mux. */
   static constexpr uint8_t kOpenAckTooManyChannels = 2;
   /** OpenAck result: channel id parity does not match the opener's role (dual-open glare guard). */
@@ -158,6 +163,19 @@ public:
   /** Reliable frames waiting for transport window space (all channels). */
   size_t QueuedFrameCount() const;
 
+  /** What one channel has waiting for transport window space. */
+  struct ChannelBacklog {
+    size_t frames = 0;
+    size_t bytes = 0;
+    /** How long its oldest waiting frame has waited (0 when none waits). */
+    int64_t oldest_age_ms = 0;
+  };
+  /**
+   * `channel_id`'s reliable frames still waiting. A sender of time-bound data (call media on a reliable fallback)
+   * reads it to drop a frame that would only wait behind others, rather than queue it.
+   */
+  ChannelBacklog BacklogOf(uint32_t channel_id) const;
+
   /** Default cap on bytes waiting for window space (MuxTuning::max_queued_bytes). */
   static constexpr size_t kMaxQueuedBytes = 32 * 1024 * 1024;
 
@@ -184,6 +202,7 @@ private:
   /** A reliable frame encoded but not yet sealed/sent (waiting for window space). */
   struct QueuedFrame {
     std::vector<uint8_t> wire;
+    int64_t queued_at_ms = 0;
   };
 
   Roe<void> SendFrame(const ChannelFrame& frame, ChannelRecord& channel);
