@@ -391,6 +391,8 @@ private:
   void WatchPathChanges(PeerLink& link);
   void ScheduleAdoptDialAlias(std::string remote_peer_id, std::string dial_alias);
   void MaybeSendKeepalives(int64_t now_ms);
+  /** Each link's carried tier: the highest of the Connected nested links riding its mux. */
+  void UpdateCarriedKeepaliveTiersLocked();
   void ApplyPendingKeepaliveTier(PeerLink& link);
   void PostCompletion(std::function<void()> fn);
   void AssignLinkIdentity(PeerLink& link);
@@ -427,6 +429,8 @@ private:
   std::unordered_set<LinkId> connected_link_ids_;
   /** MarkWarm / MarkHot requested before a link for the key existed. */
   std::unordered_map<std::string, KeepaliveTier> pending_keepalive_tiers_;
+  /** Some link holds a carried tier from the last sweep (UpdateCarriedKeepaliveTiersLocked clears them once). */
+  bool carried_tiers_set_ = false;
   bool nested_carrier_accept_ = false;
   std::string nested_carrier_protocol_id_;
 

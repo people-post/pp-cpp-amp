@@ -654,7 +654,8 @@ void PeerLink::AttachMuxTransport() {
 }
 
 KeepaliveTier PeerLink::GetKeepaliveTier() const {
-  return std::max(keepalive_tier_, mux_ ? mux_->ChannelsKeepaliveTier() : KeepaliveTier::None);
+  return std::max(
+      {keepalive_tier_, carried_keepalive_tier_, mux_ ? mux_->ChannelsKeepaliveTier() : KeepaliveTier::None});
 }
 
 void PeerLink::StopKeepaliveIfUnheld() {
