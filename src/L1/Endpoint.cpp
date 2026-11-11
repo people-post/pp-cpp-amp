@@ -86,18 +86,12 @@ void Endpoint::NoteRttSample(const int64_t rtt_ms) {
 }
 
 void Endpoint::Pump(const size_t budget) {
-  for (size_t n = 0; n < budget; ++n) {
-    auto got = io_->RecvFrom();
-    if (!got) {
-      break;
-    }
-    if (!*got) {
-      break;
-    }
+  // In batches where the IO can (recvmmsg), each datagram handled in the IO's buffer.
+  (void)io_->RecvBatch(budget, [this](const IpEndpoint& from, const std::span<const uint8_t> datagram) {
     rx_datagrams_.fetch_add(1, std::memory_order_relaxed);
-    rx_bytes_.fetch_add((*got)->second.size(), std::memory_order_relaxed);
-    HandleDatagram((*got)->first, (*got)->second);
-  }
+    rx_bytes_.fetch_add(datagram.size(), std::memory_order_relaxed);
+    HandleDatagram(from, datagram);
+  });
 }
 
 void Endpoint::Tick() {
