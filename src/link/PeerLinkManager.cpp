@@ -1455,8 +1455,34 @@ void PeerLinkManager::ApplyPendingKeepaliveTier(PeerLink& link) {
   }
 }
 
+void PeerLinkManager::UpdateCarriedKeepaliveTiersLocked() {
+  // Nested links send no keepalives: the link whose mux carries one keeps the cadence it wants (a chat peer
+  // reached through a relay stays warm, a call's path through it hot). Without it the relay link fell to the
+  // cold window once the call's media stopped and took the carrier with it (pp-browser #577).
+  std::unordered_map<const ChannelMux*, KeepaliveTier> carried;
+  table_.ForEach([&](PeerLink& link) {
+    if (!link.IsCarrierBacked() || link.Phase() != PeerLinkPhase::Connected || !link.Carrier()) {
+      return;
+    }
+    const auto tier = link.GetKeepaliveTier();
+    if (const ChannelMux* below = link.Carrier()->Mux(); below && tier != KeepaliveTier::None) {
+      auto& slot = carried[below];
+      slot = std::max(slot, tier);
+    }
+  });
+  if (carried.empty() && !carried_tiers_set_) {
+    return; // the usual case on a node: no walk for links nothing rides
+  }
+  carried_tiers_set_ = !carried.empty();
+  table_.ForEach([&](PeerLink& link) {
+    const auto it = link.Mux() ? carried.find(link.Mux()) : carried.end();
+    link.SetCarriedKeepaliveTier(it == carried.end() ? KeepaliveTier::None : it->second);
+  });
+}
+
 void PeerLinkManager::MaybeSendKeepalives(const int64_t now_ms) {
   std::lock_guard lock(strand_mu_);
+  UpdateCarriedKeepaliveTiersLocked();
   table_.ForEach([&](PeerLink& link) {
     // Any warm/hot ADP link keeps its own cadence (inbound too): the tier widens its liveness window
     // only once announced, and the echo keeps the NAT open in both directions.

@@ -118,12 +118,21 @@ public:
   void MarkWarm();
   void MarkHot();
   void ClearWarm();
-  /** Kept alive (warm or hot) by a product mark or by a channel open on it. */
+  /** Kept alive (warm or hot) by a product mark, a channel open on it, or a link it carries. */
   bool IsWarm() const { return GetKeepaliveTier() != KeepaliveTier::None; }
-  /** The highest of the product mark (MarkWarm / MarkHot) and the open channels' ChannelPolicy::keepalive. */
+  /**
+   * The highest of the product mark (MarkWarm / MarkHot), the open channels' ChannelPolicy::keepalive and the
+   * tier of the carrier-backed links riding this link's mux (SetCarriedKeepaliveTier).
+   */
   KeepaliveTier GetKeepaliveTier() const;
   /** The product mark alone (what MarkWarm / MarkHot / ClearWarm set). */
   KeepaliveTier MarkedKeepaliveTier() const { return keepalive_tier_; }
+  /**
+   * The highest tier of the nested links carried over this link (PeerLinkManager sets it each sweep): a nested
+   * link sends no keepalives of its own, so the link below it keeps the cadence its riders want.
+   */
+  void SetCarriedKeepaliveTier(KeepaliveTier tier) { carried_keepalive_tier_ = tier; }
+  KeepaliveTier CarriedKeepaliveTier() const { return carried_keepalive_tier_; }
   /**
    * Nothing keeps the link alive any more (no mark, no channel asking) but it still announces a cadence:
    * tell the peer it stopped, as ClearWarm does, so both ends return to the cold window.
@@ -269,6 +278,7 @@ private:
   PeerLinkHostPorts host_;
   PeerLinkPhase phase_ = PeerLinkPhase::Handshaking;
   KeepaliveTier keepalive_tier_ = KeepaliveTier::None;
+  KeepaliveTier carried_keepalive_tier_ = KeepaliveTier::None;
   int64_t last_keepalive_tx_ms_ = 0;
   int64_t suspect_since_ms_ = 0;
   bool suspect_from_verify_ = false;

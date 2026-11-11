@@ -40,10 +40,16 @@ On receipt: record the peer cadence; if echo is requested, reply at once with a 
 | Warm | `PeerLinkManager::MarkWarm` | `keepalive_warm_interval` (60 s) | Silent > window (dead-peer) |
 | Hot | `PeerLinkManager::MarkHot` | `keepalive_hot_interval` (20 s) | Silent > window (dead-peer) |
 
-A link keeps the **highest** of two sources (since v3.5.0):
+A link keeps the **highest** of three sources (the first two since v3.5.0):
 
 - **The product mark** — `MarkWarm` / `MarkHot` / `ClearWarm`, one slot per link (last write wins).
 - **Its open channels** — `ChannelPolicy::keepalive`: while a channel asking for a tier is open (or opening) on the link, at either end that bound it, the link keeps at least that tier; it goes when the channel closes. A link kept up because of what rides it says so by the channel (a call's paths: pp-cpp-mesh `CallMediaControlChannelPolicy`, on every path of a call — call-path-resilience K008), so links shared by several features (chat warms a peer, a call rides the same link) never undo each other: a call ending leaves chat's warm mark, and `ClearWarm` leaves an open channel's tier.
+
+- **The links it carries** — a nested (carrier-backed) link sends no keepalives of its own, so its tier (its mark and
+  its channels) goes to the link whose mux carries it, recomputed every sweep (`PeerLink::CarriedKeepaliveTier`). A
+  peer reached through a relay that chat warms keeps the relay link warm, a call through it keeps it hot. Before,
+  the relay link fell to the cold window as soon as the call's media stopped (or the park on that relay lapsed),
+  died 5 s later, and took the carrier with it, so the next call to the same peer started cold (pp-browser #577).
 
 - **Any** Connected ADP link with a warm/hot tier sends scheduled keepalives — inbound too.
 - Warm/hot links are **not** exempt from eviction: with echoes, silence past the window means dead (reason `connection-dead` in `LinkEvent`). A closed Connection is evicted immediately (B25).

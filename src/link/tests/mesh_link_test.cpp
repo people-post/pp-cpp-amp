@@ -272,6 +272,75 @@ TEST(MeshLinkTest, AnOpenHotChannelKeepsItsSilentLinkAliveAndTheTierGoesWithIt) 
   EXPECT_EQ(b->ConnectionOrNull()->PeerKeepaliveIntervalMs(), 0u) << "bob heard A stop";
 }
 
+// pp-browser #577: a peer reached through a relay rides a nested link over the relay link, and a nested link
+// sends no keepalives. The tier wanted of it (chat's warm mark, a call's hot channel) keeps the relay link
+// below it up, so a quiet spell after a call does not take the carrier with it; once nothing wants it, the relay
+// link is cold again and the carrier goes with it.
+TEST(MeshLinkTest, ANestedLinksTierKeepsTheLinkCarryingItAlive) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_b->EnableNestedCarrierAccept(true);
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  bool associated = false;
+  fixture->mgr_a->EnsureAssociation("bob",
+                                    [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
+  fixture->PumpUntil([&] { return associated; });
+  ASSERT_TRUE(associated);
+  std::optional<uint32_t> channel_id;
+  fixture->mgr_a->OpenChannel("bob", kAmpCircuitCarrierProtocolId, CircuitCarrierChannelPolicy(),
+                              [&](PeerLinkManager::ChannelRoe ch) {
+                                if (ch.isOk()) {
+                                  channel_id = ch.value();
+                                }
+                              });
+  fixture->PumpUntil([&] {
+    auto* outbound = fixture->mgr_a->FindLink("bob");
+    return channel_id && outbound && outbound->Mux() && outbound->Mux()->State(*channel_id) == ChannelState::Open;
+  });
+  ASSERT_TRUE(channel_id.has_value());
+  auto carrier = std::make_shared<ChannelSession>();
+  carrier->Bind(*fixture->mgr_a->FindLink("bob")->Mux(), *channel_id, CircuitCarrierChannelPolicy(),
+                [](Roe<std::vector<uint8_t>>) { return true; });
+  bool nested_ok = false;
+  fixture->mgr_a->EstablishNestedOverCarrier(
+      "nested:bob", carrier, true, [&](PeerLinkManager::LinkRoe result) { nested_ok = static_cast<bool>(result); });
+  carrier.reset();
+  fixture->PumpUntil([&] { return nested_ok; });
+  ASSERT_TRUE(nested_ok);
+  const LinkHandle relay = fixture->mgr_a->FindLink("bob")->Handle();
+  const LinkHandle nested = fixture->mgr_a->FindLink("nested:bob")->Handle();
+  const auto tier_of = [&](const LinkHandle handle) {
+    KeepaliveTier tier = KeepaliveTier::None;
+    fixture->mgr_a->WithLiveLink(handle, [&](PeerLink& link) { tier = link.GetKeepaliveTier(); });
+    return tier;
+  };
+  const auto alive = [&](const LinkHandle handle) {
+    bool connected = false;
+    fixture->mgr_a->WithLiveLink(handle, [&](PeerLink& link) { connected = link.Phase() == PeerLinkPhase::Connected; });
+    return connected;
+  };
+
+  fixture->mgr_a->MarkWarm("nested:bob"); // chat warms the peer it reaches through the relay
+  fixture->PumpTimed([] { return false; }, 3 * adp::kAliveTimeoutMs, 100);
+  EXPECT_EQ(tier_of(relay), KeepaliveTier::Warm) << "the relay link keeps the tier of the link it carries";
+  ASSERT_TRUE(alive(relay)) << "a quiet relay link carrying a warm peer outlived the cold window";
+  ASSERT_TRUE(alive(nested)) << "and so did the carrier";
+  uint32_t announced = 0;
+  fixture->mgr_a->WithLiveLink(
+      relay, [&](PeerLink& link) { announced = link.ConnectionOrNull()->LocalKeepaliveIntervalMs(); });
+  EXPECT_GT(announced, 0u) << "its keepalives announce the cadence to the far end";
+
+  fixture->mgr_a->ClearWarm("nested:bob");
+  fixture->PumpTimed([] { return false; }, 300, 100);
+  EXPECT_EQ(tier_of(relay), KeepaliveTier::None) << "nothing rides it that wants it kept";
+  fixture->PumpTimed([&] { return !alive(nested); }, 3 * adp::kAliveTimeoutMs, 100);
+  EXPECT_FALSE(alive(relay)) << "a cold relay link dies with its silence";
+  EXPECT_FALSE(alive(nested)) << "and takes the carrier with it";
+}
+
 // Messaging and calls share links: chat warms a peer, a call's channel makes the same link hot. The call
 // ending (its channel closing) leaves chat's warm tier, and chat's ClearWarm leaves the call's hot one.
 TEST(MeshLinkTest, ChatsWarmMarkAndACallsHotChannelShareALink) {

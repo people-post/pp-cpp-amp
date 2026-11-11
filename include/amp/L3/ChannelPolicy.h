@@ -93,7 +93,8 @@ inline ChannelPolicy BulkChannelPolicy() {
  * Call-media / realtime frames: BestEffort + drop Oldest under outbound burst.
    * No read timeout by default: a muted or paused stream is legitimately silent. No keepalive tier: carriers
  * and relay data lanes build on it, and their links' tiers are their owners' (a call's own control channel
- * keeps its path hot — pp-cpp-mesh CallMediaControlChannelPolicy).
+ * keeps its path hot — pp-cpp-mesh CallMediaControlChannelPolicy; a carrier's link keeps the tier of the
+ * nested link it carries — docs/KEEPALIVE.md).
  */
 inline ChannelPolicy CallMediaChannelPolicy(std::chrono::milliseconds read_timeout = std::chrono::milliseconds{0}) {
   ChannelPolicy policy;
