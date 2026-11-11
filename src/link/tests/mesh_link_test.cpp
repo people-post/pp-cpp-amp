@@ -15,6 +15,8 @@
 #include "support/mesh_test_harness.h"
 #include "support/mesh_harness_support.h"
 
+#include "amp/link/DualDialElector.h"
+
 #include <gtest/gtest.h>
 #include <sodium.h>
 
@@ -2633,6 +2635,38 @@ TEST(MeshLinkTest, CapabilityIngestEnablesPeerIdDial) {
   // Already connected via inbound adopt/rekey — EnsureAssociation should succeed immediately.
   EXPECT_TRUE(b_assoc) << b_err;
   EXPECT_TRUE(h.mgr_b().IsConnected(h.peer_id_a));
+}
+
+// A026's glare rule (the higher PeerId keeps its outbound link) settles two links set up at once, both alive. A
+// silent existing link is no glare: the peer that dialed again lost it (restarted, a new socket), and its new session
+// wins. The stale outbound link once kept a restarted caller's every redial out until its liveness window ended, so
+// the call could not connect (pp-browser app lab caller_restarts_mid_call, 2026-11-11).
+TEST(DualDialElectorTest, GlareKeepsTheHigherPeersOutboundLinkButASilentLinkLoses) {
+  using Facts = DualDialElector::Facts;
+  const auto wins = [](const bool existing_out, const bool candidate_out, const bool above, const bool silent) {
+    Facts facts;
+    facts.existing_outbound = existing_out;
+    facts.candidate_outbound = candidate_out;
+    facts.local_above_remote = above;
+    facts.existing_silent = silent;
+    return DualDialElector::CandidateWins(facts);
+  };
+  // Glare, both alive.
+  EXPECT_FALSE(wins(true, false, true, false)) << "the higher peer keeps its outbound link";
+  EXPECT_TRUE(wins(false, true, true, false)) << "the higher peer's new outbound replaces an inbound";
+  EXPECT_TRUE(wins(true, false, false, false)) << "the lower peer yields its outbound to the higher's dial";
+  EXPECT_FALSE(wins(false, true, false, false)) << "the lower peer keeps the higher's inbound";
+  EXPECT_TRUE(wins(false, false, true, false)) << "two inbound: the newer";
+  EXPECT_TRUE(wins(false, false, false, false)) << "two inbound: the newer";
+  // A silent existing link loses whatever the glare rule says.
+  for (const bool existing_out : {false, true}) {
+    for (const bool candidate_out : {false, true}) {
+      for (const bool above : {false, true}) {
+        EXPECT_TRUE(wins(existing_out, candidate_out, above, true))
+            << "existing_out=" << existing_out << " candidate_out=" << candidate_out << " above=" << above;
+      }
+    }
+  }
 }
 
 TEST(MeshLinkTest, DualDialElectsOneConnectedLinkPerPeerId) {

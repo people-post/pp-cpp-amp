@@ -338,7 +338,7 @@ PeerLink* PeerLinkManager::FindAnyConnectedLinkForRemotePeerId(const std::string
 
 PeerLink* PeerLinkManager::ElectDualDialWinner(PeerLink& existing, PeerLink& candidate) const {
   std::lock_guard lock(strand_mu_);
-  return DualDialElector::Elect(existing, candidate, local_peer_id_);
+  return DualDialElector::Elect(existing, candidate, local_peer_id_, endpoint_.GetClock().NowMs());
 }
 
 void PeerLinkManager::DropLink(const std::string& peer_key, const LinkDropReason reason) {
