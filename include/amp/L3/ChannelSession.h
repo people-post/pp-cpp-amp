@@ -68,6 +68,10 @@ public:
   uint32_t ChannelId() const { return channel_id_; }
   ChannelMux* Mux() { return mux_; }
   size_t OutboundBacklog() const { return outbound_.size() + (write_inflight_ ? 1 : 0); }
+  /** This channel's reliable frames waiting in its mux for window space (none once closed). */
+  ChannelMux::ChannelBacklog MuxBacklog() const {
+    return mux_ && !closed_ ? mux_->BacklogOf(channel_id_) : ChannelMux::ChannelBacklog{};
+  }
   bool IsClosed() const { return closed_; }
 
 private:
