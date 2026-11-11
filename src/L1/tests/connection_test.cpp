@@ -106,6 +106,60 @@ TEST_F(AdpConnTest, BestEffortDeliver) {
   EXPECT_EQ(got[0], "yo");
 }
 
+// A corked round queues its sends and FlushSends sends them, in order within a peer (MeshRuntime::Drive corks each
+// round so a hop's fan-out to one member goes as one GSO run). Nothing goes before the flush.
+TEST_F(AdpConnTest, CorkedSendsGoAtTheFlushInOrder) {
+  auto p = MakePair();
+  p.ep_b->SetAcceptKey(Key());
+  p.ep_b->SetAcceptEnabled(true);
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+  ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort, std::vector<uint8_t>{0}));
+  p.ep_b->Pump();
+  auto cb = p.ep_b->Find(Aid());
+  ASSERT_NE(cb, nullptr);
+  std::vector<int> got;
+  cb->OnMessage([&](const pp::adp::Message& m) { got.push_back(m.payload.at(0)); });
+
+  p.ep_a->CorkSends();
+  for (int i = 1; i <= 20; ++i) {
+    std::vector<uint8_t> payload(i == 20 ? 30 : 500, static_cast<uint8_t>(i));
+    ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort, payload));
+  }
+  p.ep_b->Pump();
+  EXPECT_TRUE(got.empty()) << "corked: nothing sent yet";
+  p.ep_a->FlushSends();
+  p.ep_b->Pump();
+  ASSERT_EQ(got.size(), 20u);
+  for (int i = 1; i <= 20; ++i) {
+    EXPECT_EQ(got[static_cast<size_t>(i - 1)], i) << "in order";
+  }
+}
+
+// A corked send that finds no route at the flush marks its association, as an immediate one does (the link then
+// drops it at once rather than after its liveness window).
+TEST_F(AdpConnTest, ACorkedSendWithNoRouteMarksTheConnection) {
+  auto p = MakePair();
+  pp::adp::OpenParams op;
+  op.key = Key();
+  op.id = Aid();
+  op.mint_id = false;
+  op.peer = p.addr_b;
+  auto ca = p.ep_a->Open(op);
+  ASSERT_TRUE(ca);
+  p.io_a->SetUnreachable(p.addr_b, true);
+  p.ep_a->CorkSends();
+  (void)(*ca)->Send(pp::adp::QosClass::BestEffort, std::vector<uint8_t>{1, 2, 3});
+  EXPECT_FALSE((*ca)->PeerUnreachable()) << "queued, not sent yet";
+  p.ep_a->FlushSends();
+  EXPECT_TRUE((*ca)->PeerUnreachable());
+}
+
 TEST_F(AdpConnTest, BestEffortNoRtxOnDrop) {
   auto p = MakePair();
   p.ep_b->SetAcceptKey(Key());

@@ -27,6 +27,8 @@ public:
   ~OsUdpDatagramIo() override;
 
   Roe<void> SendTo(const IpEndpoint& peer, std::span<const uint8_t> datagram) override;
+  Roe<void> SendSegments(const IpEndpoint& peer, std::span<const std::span<const uint8_t>> parts,
+                         size_t segment) override;
   Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> RecvFrom() override;
   Roe<size_t> RecvBatch(size_t max, const DatagramVisitor& visit) override;
   bool WaitReadable(std::chrono::milliseconds timeout) override;
@@ -62,6 +64,8 @@ private:
   IpEndpoint local_;
   UdpSocketOptions options_;
   std::vector<uint8_t> recv_scratch_;
+  /** UDP GSO worked or was not tried yet; false once the kernel refused it (SendSegments then loops SendTo). */
+  bool gso_ok_ = true;
   /** POSIX: the pipe's read and write ends. Windows: [0] a loopback UDP socket, [1] unused. -1: none. */
   int wake_fds_[2] = {-1, -1};
   IpEndpoint wake_addr_;

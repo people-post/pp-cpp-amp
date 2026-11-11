@@ -52,13 +52,112 @@ void Endpoint::Unregister(const AssocId& id) {
   conns_.erase(id);
 }
 
-Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram) {
+Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram, const AssocId* assoc) {
+  if (corked_ && assoc) {
+    CorkedSend send;
+    send.peer = peer;
+    send.assoc = *assoc;
+    send.offset = cork_bytes_.size();
+    send.size = datagram.size();
+    cork_bytes_.insert(cork_bytes_.end(), datagram.begin(), datagram.end());
+    corked_sends_.push_back(send);
+    tx_datagrams_.fetch_add(1, std::memory_order_relaxed);
+    tx_bytes_.fetch_add(datagram.size(), std::memory_order_relaxed);
+    if (corked_sends_.size() >= kMaxCorkedSends) {
+      FlushSends();
+      corked_ = true;
+    }
+    return {};
+  }
   auto sent = io_->SendTo(peer, datagram);
   if (sent) {
     tx_datagrams_.fetch_add(1, std::memory_order_relaxed);
     tx_bytes_.fetch_add(datagram.size(), std::memory_order_relaxed);
   }
   return sent;
+}
+
+namespace {
+
+bool SamePeer(const IpEndpoint& a, const IpEndpoint& b) {
+  return a.family == b.family && a.port == b.port && a.addr == b.addr;
+}
+
+bool PeerBefore(const IpEndpoint& a, const IpEndpoint& b) {
+  if (a.family != b.family) {
+    return a.family < b.family;
+  }
+  if (a.port != b.port) {
+    return a.port < b.port;
+  }
+  return a.addr < b.addr;
+}
+
+/** UDP's largest payload, IPv4 (the smaller): a GSO run's bytes stay under it. */
+constexpr size_t kMaxRunBytes = 65507;
+
+} // namespace
+
+void Endpoint::FlushSends() {
+  corked_ = false;
+  if (corked_sends_.empty()) {
+    return;
+  }
+  // Grouped by peer; within a peer, in the order sent (a stable sort).
+  std::vector<size_t> order(corked_sends_.size());
+  for (size_t i = 0; i < order.size(); ++i) {
+    order[i] = i;
+  }
+  std::stable_sort(order.begin(), order.end(), [this](const size_t a, const size_t b) {
+    return PeerBefore(corked_sends_[a].peer, corked_sends_[b].peer);
+  });
+  size_t first = 0;
+  while (first < order.size()) {
+    size_t last = first + 1;
+    while (last < order.size() && SamePeer(corked_sends_[order[last]].peer, corked_sends_[order[first]].peer)) {
+      ++last;
+    }
+    SendRuns(order, first, last);
+    first = last;
+  }
+  corked_sends_.clear();
+  cork_bytes_.clear();
+}
+
+void Endpoint::SendRuns(const std::vector<size_t>& order, const size_t first, const size_t last) {
+  std::vector<std::span<const uint8_t>> parts;
+  size_t at = first;
+  while (at < last) {
+    // A run: datagrams of one size, the last of it may be shorter; at most kMaxSegments and kMaxRunBytes.
+    const size_t segment = corked_sends_[order[at]].size;
+    parts.clear();
+    size_t bytes = 0;
+    size_t end = at;
+    while (end < last && parts.size() < DatagramIo::kMaxSegments) {
+      const CorkedSend& send = corked_sends_[order[end]];
+      if (send.size > segment || bytes + send.size > kMaxRunBytes) {
+        break;
+      }
+      parts.emplace_back(cork_bytes_.data() + send.offset, send.size);
+      bytes += send.size;
+      ++end;
+      if (send.size < segment) {
+        break; // a shorter one ends the run
+      }
+    }
+    const IpEndpoint& peer = corked_sends_[order[at]].peer;
+    auto sent = parts.size() == 1 ? io_->SendTo(peer, parts.front()) : io_->SendSegments(peer, parts, segment);
+    if (!sent && IsUnreachableSendError(sent.error())) {
+      for (size_t i = at; i < end; ++i) {
+        if (const auto& assoc = corked_sends_[order[i]].assoc) {
+          if (auto conn = Find(*assoc)) {
+            conn->MarkPeerUnreachable();
+          }
+        }
+      }
+    }
+    at = end;
+  }
 }
 
 EndpointStats Endpoint::Stats() const {
