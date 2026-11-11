@@ -1,11 +1,13 @@
 #include "amp/L1/OsUdpDatagramIo.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -18,6 +20,7 @@ using socklen_t = int;
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -112,11 +115,141 @@ void CloseFd(int fd) {
 
 } // namespace
 
+#if defined(__linux__)
+struct OsUdpDatagramIo::RecvBatchBuffers {
+  std::vector<uint8_t> data = std::vector<uint8_t>(kRecvBatch * kRecvBufferBytes);
+  std::array<mmsghdr, kRecvBatch> msgs{};
+  std::array<iovec, kRecvBatch> iovs{};
+  std::array<sockaddr_storage, kRecvBatch> names{};
+  struct Control {
+    alignas(cmsghdr) char bytes[CMSG_SPACE(sizeof(uint32_t))];
+  };
+  std::array<Control, kRecvBatch> controls{};
+};
+#else
+struct OsUdpDatagramIo::RecvBatchBuffers {};
+#endif
+
 OsUdpDatagramIo::OsUdpDatagramIo(int fd, IpEndpoint local, UdpSocketOptions options)
-    : fd_(fd), local_(local), options_(options) {}
+    : fd_(fd), local_(local), options_(options) {
+  OpenWakeHandle();
+}
 
 OsUdpDatagramIo::~OsUdpDatagramIo() {
   CloseSocket();
+  for (int& w : wake_fds_) {
+    if (w >= 0) {
+#if defined(_WIN32)
+      CloseFd(w);
+#else
+      ::close(w);
+#endif
+      w = -1;
+    }
+  }
+}
+
+void OsUdpDatagramIo::OpenWakeHandle() {
+  // Without one, a wake waits out the poll's timeout: slower, never wrong.
+#if defined(_WIN32)
+  // WSAPoll takes sockets only: the wake is a datagram to a loopback socket of our own.
+  const SOCKET w = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (w == INVALID_SOCKET) {
+    return;
+  }
+  sockaddr_in a{};
+  a.sin_family = AF_INET;
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  int len = sizeof(a);
+  u_long nonblocking = 1;
+  if (::bind(w, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0 ||
+      ::getsockname(w, reinterpret_cast<sockaddr*>(&a), &len) != 0 || ioctlsocket(w, FIONBIO, &nonblocking) != 0) {
+    closesocket(w);
+    return;
+  }
+  wake_fds_[0] = static_cast<int>(w);
+  wake_addr_ = IpEndpoint::V4(127, 0, 0, 1, ntohs(a.sin_port));
+#else
+  int p[2] = {-1, -1};
+  if (::pipe(p) != 0) {
+    return;
+  }
+  for (const int end : p) {
+    ::fcntl(end, F_SETFL, ::fcntl(end, F_GETFL, 0) | O_NONBLOCK);
+    ::fcntl(end, F_SETFD, FD_CLOEXEC);
+  }
+  wake_fds_[0] = p[0];
+  wake_fds_[1] = p[1];
+#endif
+}
+
+void OsUdpDatagramIo::WakeWaiter() {
+  const char byte = 1;
+#if defined(_WIN32)
+  if (wake_fds_[0] >= 0) {
+    sockaddr_storage ss{};
+    socklen_t len = 0;
+    ToSockAddr(wake_addr_, ss, len);
+    (void)::sendto(static_cast<SOCKET>(wake_fds_[0]), &byte, 1, 0, reinterpret_cast<sockaddr*>(&ss), len);
+  }
+#else
+  if (wake_fds_[1] >= 0) {
+    (void)!::write(wake_fds_[1], &byte, 1); // full pipe: a wake is already pending
+  }
+#endif
+}
+
+void OsUdpDatagramIo::DrainWakeHandle() {
+  char buf[64];
+#if defined(_WIN32)
+  while (wake_fds_[0] >= 0 && ::recv(static_cast<SOCKET>(wake_fds_[0]), buf, sizeof(buf), 0) > 0) {
+  }
+#else
+  while (wake_fds_[0] >= 0 && ::read(wake_fds_[0], buf, sizeof(buf)) > 0) {
+  }
+#endif
+}
+
+bool OsUdpDatagramIo::WaitReadable(const std::chrono::milliseconds timeout) {
+  const int ms = static_cast<int>(std::clamp<int64_t>(timeout.count(), 0, 60000));
+#if defined(_WIN32)
+  WSAPOLLFD fds[2] = {};
+  ULONG count = 0;
+  int socket_at = -1;
+  if (fd_ >= 0) {
+    fds[count].fd = static_cast<SOCKET>(fd_);
+    fds[count].events = POLLRDNORM;
+    socket_at = static_cast<int>(count++);
+  }
+  if (wake_fds_[0] >= 0) {
+    fds[count].fd = static_cast<SOCKET>(wake_fds_[0]);
+    fds[count].events = POLLRDNORM;
+    ++count;
+  }
+  if (count == 0) {
+    std::this_thread::sleep_for(timeout);
+    return false;
+  }
+  const int n = ::WSAPoll(fds, count, ms);
+  if (n <= 0) {
+    return false;
+  }
+  DrainWakeHandle();
+  return socket_at >= 0 && (fds[socket_at].revents & (POLLRDNORM | POLLERR)) != 0;
+#else
+  // A negative fd is ignored by poll(): no socket (a failed reopen) or no wake handle.
+  pollfd fds[2] = {};
+  fds[0].fd = fd_;
+  fds[0].events = POLLIN;
+  fds[1].fd = wake_fds_[0];
+  fds[1].events = POLLIN;
+  const int n = ::poll(fds, 2, ms);
+  if (n <= 0) {
+    return false;
+  }
+  DrainWakeHandle();
+  return fd_ >= 0 && (fds[0].revents & (POLLIN | POLLERR)) != 0;
+#endif
 }
 
 void OsUdpDatagramIo::CloseSocket() {
@@ -320,17 +453,14 @@ std::optional<DatagramIoStats> OsUdpDatagramIo::Stats() const {
   return stats;
 }
 
-Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo::RecvFrom() {
+Roe<std::optional<std::pair<IpEndpoint, size_t>>> OsUdpDatagramIo::RecvOneInto(const std::span<uint8_t> buf) {
   if (fd_ < 0) {
     return Error("adp udp: no socket (a reopen failed)");
-  }
-  if (recv_scratch_.size() < 2048) {
-    recv_scratch_.resize(2048);
   }
   sockaddr_storage ss{};
   socklen_t len = sizeof(ss);
 #if defined(__linux__)
-  iovec iov{recv_scratch_.data(), recv_scratch_.size()};
+  iovec iov{buf.data(), buf.size()};
   alignas(cmsghdr) char control[CMSG_SPACE(sizeof(uint32_t))];
   msghdr msg{};
   msg.msg_name = &ss;
@@ -345,32 +475,134 @@ Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo:
       if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SO_RXQ_OVFL) {
         uint32_t drops = 0;
         std::memcpy(&drops, CMSG_DATA(c), sizeof(drops));
-        receive_drops_.store(drops, std::memory_order_relaxed);
+        NoteReceiveDrops(drops);
       }
     }
     if (receive_drops_.load(std::memory_order_relaxed) < 0) {
-      receive_drops_.store(0, std::memory_order_relaxed); // told nothing: none dropped yet
+      NoteReceiveDrops(0); // told nothing: none dropped yet
     }
   }
 #else
-  const auto n = ::recvfrom(fd_, reinterpret_cast<char*>(recv_scratch_.data()), static_cast<int>(recv_scratch_.size()),
-                            0, reinterpret_cast<sockaddr*>(&ss), &len);
+  const auto n = ::recvfrom(fd_, reinterpret_cast<char*>(buf.data()), static_cast<int>(buf.size()), 0,
+                            reinterpret_cast<sockaddr*>(&ss), &len);
 #endif
   if (n < 0) {
 #if defined(_WIN32)
     const int err = WSAGetLastError();
     if (err == WSAEWOULDBLOCK) {
-      return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{};
+      return std::optional<std::pair<IpEndpoint, size_t>>{};
     }
 #else
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{};
+      return std::optional<std::pair<IpEndpoint, size_t>>{};
     }
 #endif
     return IoErr("recvfrom");
   }
-  std::vector<uint8_t> buf(recv_scratch_.begin(), recv_scratch_.begin() + n);
-  return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{{FromSockAddr(ss), std::move(buf)}};
+  return std::optional<std::pair<IpEndpoint, size_t>>{{FromSockAddr(ss), static_cast<size_t>(n)}};
+}
+
+Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> OsUdpDatagramIo::RecvFrom() {
+  if (recv_scratch_.size() < kRecvBufferBytes) {
+    recv_scratch_.resize(kRecvBufferBytes);
+  }
+  auto got = RecvOneInto(recv_scratch_);
+  if (!got) {
+    return got.error();
+  }
+  if (!*got) {
+    return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{};
+  }
+  std::vector<uint8_t> buf(recv_scratch_.begin(), recv_scratch_.begin() + static_cast<std::ptrdiff_t>((*got)->second));
+  return std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>{{(*got)->first, std::move(buf)}};
+}
+
+#if defined(__linux__)
+Roe<size_t> OsUdpDatagramIo::RecvMany(const size_t max, const DatagramVisitor& visit) {
+  if (!batch_) {
+    batch_ = std::make_unique<RecvBatchBuffers>();
+  }
+  auto& b = *batch_;
+  size_t total = 0;
+  while (total < max) {
+    const auto want = static_cast<unsigned>(std::min(kRecvBatch, max - total));
+    for (unsigned i = 0; i < want; ++i) {
+      // The kernel writes the lengths back: set them again before every call.
+      b.iovs[i] = iovec{b.data.data() + i * kRecvBufferBytes, kRecvBufferBytes};
+      msghdr& m = b.msgs[i].msg_hdr;
+      m = msghdr{};
+      m.msg_name = &b.names[i];
+      m.msg_namelen = sizeof(sockaddr_storage);
+      m.msg_iov = &b.iovs[i];
+      m.msg_iovlen = 1;
+      m.msg_control = b.controls[i].bytes;
+      m.msg_controllen = sizeof(b.controls[i].bytes);
+      b.msgs[i].msg_len = 0;
+    }
+    const int n = ::recvmmsg(fd_, b.msgs.data(), want, 0, nullptr);
+    if (n < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        break;
+      }
+      if (total > 0) {
+        break; // reported by the next call
+      }
+      return IoErr("recvmmsg");
+    }
+    for (int i = 0; i < n; ++i) {
+      msghdr& m = b.msgs[static_cast<size_t>(i)].msg_hdr;
+      for (cmsghdr* c = CMSG_FIRSTHDR(&m); c != nullptr; c = CMSG_NXTHDR(&m, c)) {
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SO_RXQ_OVFL) {
+          uint32_t drops = 0;
+          std::memcpy(&drops, CMSG_DATA(c), sizeof(drops));
+          NoteReceiveDrops(drops);
+        }
+      }
+    }
+    if (n > 0 && receive_drops_.load(std::memory_order_relaxed) < 0) {
+      NoteReceiveDrops(0); // told nothing: none dropped yet
+    }
+    for (int i = 0; i < n; ++i) {
+      const auto at = static_cast<size_t>(i);
+      visit(FromSockAddr(b.names[at]),
+            std::span<const uint8_t>(b.data.data() + at * kRecvBufferBytes, b.msgs[at].msg_len));
+    }
+    total += static_cast<size_t>(n);
+    if (static_cast<unsigned>(n) < want || fd_ < 0) {
+      break; // drained (or a visitor reopened the socket)
+    }
+  }
+  return total;
+}
+#endif
+
+Roe<size_t> OsUdpDatagramIo::RecvBatch(const size_t max, const DatagramVisitor& visit) {
+  if (fd_ < 0) {
+    return Error("adp udp: no socket (a reopen failed)");
+  }
+#if defined(__linux__)
+  return RecvMany(max, visit);
+#else
+  if (recv_scratch_.size() < kRecvBufferBytes) {
+    recv_scratch_.resize(kRecvBufferBytes);
+  }
+  size_t total = 0;
+  while (total < max) {
+    auto got = RecvOneInto(recv_scratch_);
+    if (!got) {
+      if (total > 0) {
+        break; // reported by the next call
+      }
+      return got.error();
+    }
+    if (!*got) {
+      break;
+    }
+    visit((*got)->first, std::span<const uint8_t>(recv_scratch_.data(), (*got)->second));
+    ++total;
+  }
+  return total;
+#endif
 }
 
 } // namespace pp::adp

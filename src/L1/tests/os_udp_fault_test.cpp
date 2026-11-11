@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -284,6 +285,116 @@ TEST(AdpOsUdpReopenTest, AReopenedSocketKeepsItsPortAndWorks) {
   EXPECT_EQ(RecvWithin(io, 200), ping) << "the new socket receives on the old port";
   ASSERT_TRUE(static_cast<bool>(io.SendTo((*peer)->LocalEndpoint(), ping)));
   EXPECT_EQ(RecvWithin(**peer, 200), ping) << "and sends from it";
+}
+
+// A batch read hands every ready datagram over in order, each from its sender with its own bytes, and stops at the
+// budget: the rest wait for the next call. More than one recvmmsg's worth (32) here.
+TEST(OsUdpBatchTest, ABatchReadHandsOverEveryDatagramInOrderUpToTheBudget) {
+  auto receiver = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  auto sender = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  if (!receiver || !sender) {
+    GTEST_SKIP() << "OsUdp Bind failed — skip in restricted environments";
+  }
+  constexpr int kSent = 100;
+  for (int i = 0; i < kSent; ++i) {
+    std::vector<uint8_t> datagram(static_cast<size_t>(100 + i), static_cast<uint8_t>(i));
+    ASSERT_TRUE(static_cast<bool>((*sender)->SendTo((*receiver)->LocalEndpoint(), datagram)));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(20)); // loopback delivers at once; a margin
+
+  std::vector<std::vector<uint8_t>> got;
+  bool from_sender = true;
+  const auto visit = [&](const pp::adp::IpEndpoint& from, const std::span<const uint8_t> datagram) {
+    from_sender = from_sender && from == (*sender)->LocalEndpoint();
+    got.emplace_back(datagram.begin(), datagram.end());
+  };
+  auto first = (*receiver)->RecvBatch(70, visit);
+  ASSERT_TRUE(static_cast<bool>(first));
+  EXPECT_EQ(*first, 70u) << "the budget, though more were ready";
+  auto rest = (*receiver)->RecvBatch(1000, visit);
+  ASSERT_TRUE(static_cast<bool>(rest));
+  EXPECT_EQ(*rest, 30u);
+  auto none = (*receiver)->RecvBatch(1000, visit);
+  ASSERT_TRUE(static_cast<bool>(none));
+  EXPECT_EQ(*none, 0u) << "drained: nothing, and no error";
+
+  ASSERT_EQ(got.size(), static_cast<size_t>(kSent));
+  EXPECT_TRUE(from_sender);
+  for (int i = 0; i < kSent; ++i) {
+    EXPECT_EQ(got[static_cast<size_t>(i)], std::vector<uint8_t>(static_cast<size_t>(100 + i), static_cast<uint8_t>(i)))
+        << "datagram " << i;
+  }
+}
+
+#if defined(__linux__)
+// The kernel's drop count still rides on what a batch read takes (SO_RXQ_OVFL on each message).
+TEST(OsUdpBatchTest, ABatchReadCountsTheKernelsDrops) {
+  pp::adp::UdpSocketOptions tiny;
+  tiny.receive_buffer_bytes = 4096;
+  auto receiver = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0), tiny);
+  auto sender = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  ASSERT_TRUE(receiver && sender);
+  const std::vector<uint8_t> datagram(1200, 0x42);
+  for (int i = 0; i < 2000; ++i) {
+    (void)(*sender)->SendTo((*receiver)->LocalEndpoint(), datagram);
+  }
+  const auto ignore = [](const pp::adp::IpEndpoint&, std::span<const uint8_t>) {};
+  while (true) {
+    auto n = (*receiver)->RecvBatch(1000, ignore);
+    ASSERT_TRUE(static_cast<bool>(n));
+    if (*n == 0) {
+      break;
+    }
+  }
+  (void)(*sender)->SendTo((*receiver)->LocalEndpoint(), datagram);
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  auto one = (*receiver)->RecvBatch(1000, ignore);
+  ASSERT_TRUE(one && *one == 1u);
+  const auto stats = (*receiver)->Stats();
+  ASSERT_TRUE(stats && stats->receive_drops);
+  EXPECT_GT(*stats->receive_drops, 0u);
+}
+#endif
+
+// An idle reader waits on its socket: it wakes as a datagram arrives, not at the end of the wait, and a wake from
+// another thread (the driver's Stop, posted work) ends the wait too. An idle wait with neither lasts its timeout.
+TEST(OsUdpWaitTest, AWaitEndsWhenADatagramArrivesOrOnAWake) {
+  auto receiver = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  auto sender = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  if (!receiver || !sender) {
+    GTEST_SKIP() << "OsUdp Bind failed — skip in restricted environments";
+  }
+  using Clock = std::chrono::steady_clock;
+  auto& io = **receiver;
+
+  auto began = Clock::now();
+  EXPECT_FALSE(io.WaitReadable(std::chrono::milliseconds(60)));
+  EXPECT_GE(Clock::now() - began, std::chrono::milliseconds(50)) << "idle: the whole timeout";
+
+  std::thread later([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    (void)(*sender)->SendTo(io.LocalEndpoint(), std::vector<uint8_t>{1, 2, 3});
+  });
+  began = Clock::now();
+  EXPECT_TRUE(io.WaitReadable(std::chrono::seconds(5))) << "readable";
+  EXPECT_LT(Clock::now() - began, std::chrono::seconds(2)) << "woken by the datagram, not the timeout";
+  later.join();
+  const auto ignore = [](const pp::adp::IpEndpoint&, std::span<const uint8_t>) {};
+  ASSERT_TRUE(io.RecvBatch(10, ignore) && true);
+
+  std::thread waker([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    io.WakeWaiter();
+  });
+  began = Clock::now();
+  EXPECT_FALSE(io.WaitReadable(std::chrono::seconds(5))) << "woken, nothing to read";
+  EXPECT_LT(Clock::now() - began, std::chrono::seconds(2)) << "the wake ended it";
+  waker.join();
+
+  io.WakeWaiter(); // before the wait: the next one returns at once
+  began = Clock::now();
+  (void)io.WaitReadable(std::chrono::seconds(5));
+  EXPECT_LT(Clock::now() - began, std::chrono::seconds(1));
 }
 
 TEST(AdpOsUdpReopenTest, InMemoryIoHasNoSocketToReopen) {

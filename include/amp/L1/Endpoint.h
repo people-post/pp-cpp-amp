@@ -5,6 +5,7 @@
 #include "amp/L1/Types.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -61,6 +62,13 @@ public:
    * own loop (Tick cadence) picks up any remainder on the next call.
    */
   void Pump(size_t budget = kDefaultPumpBudget);
+  /**
+   * The reading thread: block until a datagram may be ready, `timeout` passes, or WakeIdleWait() (DatagramIo::
+   * WaitReadable). A driver waits here between pumps instead of sleeping blind.
+   */
+  bool WaitReadable(std::chrono::milliseconds timeout) { return io_->WaitReadable(timeout); }
+  /** Any thread: end the driver's WaitReadable now. */
+  void WakeIdleWait() { io_->WakeWaiter(); }
   /**
    * Resends: ticks the connections with reliable packets in flight (NoteResendPending), not every connection — a
    * walk over every association each round was a busy node's largest cost (pp-browser STRESS_LAB, 2026-11-07).
