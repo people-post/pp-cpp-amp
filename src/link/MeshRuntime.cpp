@@ -277,13 +277,16 @@ void MeshRuntime::Drive() {
   if (!BeginDriveLocked()) {
     return;
   }
-  // Turn order: work ticks → UDP pump → mux Tick → work drain → deferred → timers → deferred.
+  // Turn order: work ticks → UDP pump → mux Tick → work drain → deferred → timers → deferred. What the round sends
+  // goes out at its end, grouped by peer (a hop's fan-out of one frame to a member is one GSO send).
+  endpoint_.CorkSends();
   PumpLocked();
   TickLocked();
   DrainPostedIoLocked();
   DrainDeferredLocked();
   FireTimersLocked();
   DrainDeferredLocked();
+  endpoint_.FlushSends();
   EndDriveLocked();
 }
 

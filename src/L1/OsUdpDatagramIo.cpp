@@ -20,6 +20,7 @@ using socklen_t = int;
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/udp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -28,6 +29,13 @@ using socklen_t = int;
 #if defined(__linux__)
 #include <linux/capability.h>
 #include <sys/syscall.h>
+// The kernel's UDP GSO ABI (4.18+); Android's libc headers may not name it.
+#ifndef SOL_UDP
+#define SOL_UDP 17
+#endif
+#ifndef UDP_SEGMENT
+#define UDP_SEGMENT 103
+#endif
 #endif
 
 namespace pp::adp {
@@ -406,13 +414,11 @@ Roe<void> OsUdpDatagramIo::Reopen() {
   return {};
 }
 
-Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_t> datagram) {
-  if (fd_ < 0) {
-    return Error("adp udp: no socket (a reopen failed)");
-  }
-  sockaddr_storage ss{};
-  socklen_t len = 0;
-  if (local_.family == IpEndpoint::Family::V6 && peer.family == IpEndpoint::Family::V4) {
+namespace {
+
+/** `peer` as the sockaddr a socket bound on `local` sends to (a dual-stack socket: ::ffff:a.b.c.d). */
+void PeerSockAddr(const IpEndpoint& local, const IpEndpoint& peer, sockaddr_storage& ss, socklen_t& len) {
+  if (local.family == IpEndpoint::Family::V6 && peer.family == IpEndpoint::Family::V4) {
     // Dual-stack socket: an AF_INET sockaddr is rejected (EINVAL on Darwin); send to ::ffff:a.b.c.d.
     std::memset(&ss, 0, sizeof(ss));
     auto* a6 = reinterpret_cast<sockaddr_in6*>(&ss);
@@ -425,22 +431,78 @@ Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_
   } else {
     ToSockAddr(peer, ss, len);
   }
+}
+
+/** The error a failed send returns (errno / WSAGetLastError now): unreachable ones say so. */
+Error SendError(const IpEndpoint& local, const IpEndpoint& peer, const char* what) {
+#if defined(_WIN32)
+  const int err = WSAGetLastError();
+  const bool unreachable = err == WSAEHOSTUNREACH || err == WSAENETUNREACH || err == WSAEHOSTDOWN || err == WSAENETDOWN;
+#else
+  const int err = errno;
+  const bool unreachable = err == EHOSTUNREACH || err == ENETUNREACH || err == EHOSTDOWN || err == ENETDOWN;
+#endif
+  return Error(unreachable ? kDatagramSendUnreachable : 0,
+               std::string("adp udp: ") + what + " dst=" + EndpointLabel(peer) + " src=" + EndpointLabel(local) +
+                   " errno=" + std::to_string(err));
+}
+
+} // namespace
+
+Roe<void> OsUdpDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_t> datagram) {
+  if (fd_ < 0) {
+    return Error("adp udp: no socket (a reopen failed)");
+  }
+  sockaddr_storage ss{};
+  socklen_t len = 0;
+  PeerSockAddr(local_, peer, ss, len);
   const auto n = ::sendto(fd_, reinterpret_cast<const char*>(datagram.data()), static_cast<int>(datagram.size()), 0,
                           reinterpret_cast<sockaddr*>(&ss), len);
   if (n < 0 || static_cast<size_t>(n) != datagram.size()) {
-#if defined(_WIN32)
-    const int err = WSAGetLastError();
-    const bool unreachable =
-        err == WSAEHOSTUNREACH || err == WSAENETUNREACH || err == WSAEHOSTDOWN || err == WSAENETDOWN;
-#else
-    const int err = errno;
-    const bool unreachable = err == EHOSTUNREACH || err == ENETUNREACH || err == EHOSTDOWN || err == ENETDOWN;
-#endif
-    return Error(unreachable ? kDatagramSendUnreachable : 0, std::string("adp udp: sendto dst=") + EndpointLabel(peer) +
-                                                                 " src=" + EndpointLabel(local_) +
-                                                                 " errno=" + std::to_string(err));
+    return SendError(local_, peer, "sendto");
   }
   return {};
+}
+
+Roe<void> OsUdpDatagramIo::SendSegments(const IpEndpoint& peer, const std::span<const std::span<const uint8_t>> parts,
+                                        const size_t segment) {
+#if defined(__linux__) && defined(UDP_SEGMENT)
+  if (fd_ >= 0 && gso_ok_ && parts.size() > 1 && parts.size() <= kMaxSegments && segment > 0 && segment <= 0xffff) {
+    sockaddr_storage ss{};
+    socklen_t len = 0;
+    PeerSockAddr(local_, peer, ss, len);
+    std::array<iovec, kMaxSegments> iov{};
+    size_t total = 0;
+    for (size_t i = 0; i < parts.size(); ++i) {
+      iov[i] = iovec{const_cast<uint8_t*>(parts[i].data()), parts[i].size()};
+      total += parts[i].size();
+    }
+    alignas(cmsghdr) char control[CMSG_SPACE(sizeof(uint16_t))] = {};
+    msghdr msg{};
+    msg.msg_name = &ss;
+    msg.msg_namelen = len;
+    msg.msg_iov = iov.data();
+    msg.msg_iovlen = parts.size();
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    cmsghdr* c = CMSG_FIRSTHDR(&msg);
+    c->cmsg_level = SOL_UDP;
+    c->cmsg_type = UDP_SEGMENT;
+    c->cmsg_len = CMSG_LEN(sizeof(uint16_t));
+    const auto gso_size = static_cast<uint16_t>(segment);
+    std::memcpy(CMSG_DATA(c), &gso_size, sizeof(gso_size));
+    const auto n = ::sendmsg(fd_, &msg, 0);
+    if (n >= 0 && static_cast<size_t>(n) == total) {
+      return {};
+    }
+    if (n < 0 && (errno == EIO || errno == EINVAL || errno == ENOPROTOOPT || errno == EOPNOTSUPP)) {
+      gso_ok_ = false; // this kernel or device will not segment: one by one from now on
+    } else {
+      return SendError(local_, peer, "sendmsg(gso)");
+    }
+  }
+#endif
+  return DatagramIo::SendSegments(peer, parts, segment);
 }
 
 std::optional<DatagramIoStats> OsUdpDatagramIo::Stats() const {

@@ -77,7 +77,22 @@ public:
   /** `id` has a reliable packet in flight: Tick looks at it until none is left. Io thread. */
   void NoteResendPending(const AssocId& id) { resend_pending_.insert(id); }
 
-  Roe<void> SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram);
+  /**
+   * Send one datagram. An association's (`assoc` set) is queued for FlushSends while corked — Ok then means queued,
+   * and a send that finds no route at the flush tells the association (Connection::MarkPeerUnreachable). One with no
+   * association (a socket probe, a version negotiation reply) goes at once: its caller reads the result.
+   */
+  Roe<void> SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram, const AssocId* assoc = nullptr);
+
+  /**
+   * Queue sends until FlushSends — a driver's round (MeshRuntime::Drive). A hop forwards each frame's packets to
+   * every member in one round; queued, each member's run of same-size packets goes in one GSO send.
+   */
+  void CorkSends() { corked_ = true; }
+  /** Send what is queued (grouped by peer, in order within a peer) and stop queuing. */
+  void FlushSends();
+  /** A corked round flushes itself at this many queued datagrams. */
+  static constexpr size_t kMaxCorkedSends = 256;
 
   void Unregister(const AssocId& id);
 
@@ -114,6 +129,19 @@ private:
   void HandleForeignVersion(const IpEndpoint& from, std::span<const uint8_t> datagram);
   /** Rate-limited (kVersionNegotiationPerSecond); never more bytes than the datagram it answers. */
   void ReplyVersionNegotiation(const IpEndpoint& from, std::span<const uint8_t> datagram);
+
+  /** Send queued datagrams `order[first, last)` (one peer, in order) as GSO runs. */
+  void SendRuns(const std::vector<size_t>& order, size_t first, size_t last);
+
+  struct CorkedSend {
+    IpEndpoint peer;
+    std::optional<AssocId> assoc;
+    size_t offset = 0;
+    size_t size = 0;
+  };
+  bool corked_ = false;
+  std::vector<uint8_t> cork_bytes_;
+  std::vector<CorkedSend> corked_sends_;
 
   std::shared_ptr<DatagramIo> io_;
   std::shared_ptr<Clock> clock_;

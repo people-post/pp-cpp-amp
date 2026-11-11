@@ -397,6 +397,31 @@ TEST(OsUdpWaitTest, AWaitEndsWhenADatagramArrivesOrOnAWake) {
   EXPECT_LT(Clock::now() - began, std::chrono::seconds(1));
 }
 
+// A run of datagrams to one peer goes in one SendSegments (UDP GSO on Linux): every one arrives whole, in order, the
+// shorter last one too — whether the kernel segmented them or the IO sent them one by one.
+TEST(OsUdpBatchTest, SegmentsArriveAsTheDatagramsTheyWere) {
+  auto receiver = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  auto sender = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  if (!receiver || !sender) {
+    GTEST_SKIP() << "OsUdp Bind failed — skip in restricted environments";
+  }
+  constexpr size_t kSegment = 1200;
+  std::vector<std::vector<uint8_t>> datagrams;
+  for (int i = 0; i < 10; ++i) {
+    datagrams.emplace_back(kSegment, static_cast<uint8_t>(i));
+  }
+  datagrams.emplace_back(345, 0x77); // the shorter last
+  std::vector<std::span<const uint8_t>> parts(datagrams.begin(), datagrams.end());
+  ASSERT_TRUE(static_cast<bool>((*sender)->SendSegments((*receiver)->LocalEndpoint(), parts, kSegment)));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  std::vector<std::vector<uint8_t>> got;
+  auto n = (*receiver)->RecvBatch(100, [&](const pp::adp::IpEndpoint&, const std::span<const uint8_t> datagram) {
+    got.emplace_back(datagram.begin(), datagram.end());
+  });
+  ASSERT_TRUE(static_cast<bool>(n));
+  EXPECT_EQ(got, datagrams);
+}
+
 TEST(AdpOsUdpReopenTest, InMemoryIoHasNoSocketToReopen) {
   auto hub = pp::adp::MemoryDatagramIo::MakeHub();
   pp::adp::MemoryDatagramIo memory(hub, pp::adp::IpEndpoint::V4(10, 0, 0, 1, 1));

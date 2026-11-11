@@ -43,6 +43,26 @@ public:
 
   virtual Roe<void> SendTo(const IpEndpoint& peer, std::span<const uint8_t> datagram) = 0;
 
+  /** Most datagrams in one SendSegments call (the kernel's UDP GSO limit). */
+  static constexpr size_t kMaxSegments = 64;
+  /**
+   * Several datagrams to one peer: `parts[i]` is datagram i; every one is `segment` bytes but the last, which may
+   * be shorter (Endpoint::FlushSends groups them so). OsUdpDatagramIo sends them in one system call on Linux and
+   * Android (UDP GSO, UDP_SEGMENT): the stack — routing, the firewall, the checks — handles them once, and the
+   * kernel splits them at the end. Elsewhere, or where the kernel refuses it: SendTo each. An error says so for
+   * the whole run (the unreachable code as SendTo's).
+   */
+  virtual Roe<void> SendSegments(const IpEndpoint& peer, std::span<const std::span<const uint8_t>> parts,
+                                 const size_t segment) {
+    (void)segment;
+    for (const auto& part : parts) {
+      if (auto sent = SendTo(peer, part); !sent) {
+        return sent;
+      }
+    }
+    return {};
+  }
+
   /** Non-blocking: returns nullopt if no datagram ready. */
   virtual Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> RecvFrom() = 0;
 

@@ -306,7 +306,7 @@ Connection::Roe<void> Connection::SendPacket(PacketType type, uint32_t seq, std:
     }
     datagram = std::move(*maced);
   }
-  auto sent = endpoint_->SendRaw(peer_, datagram);
+  auto sent = endpoint_->SendRaw(peer_, datagram, &id_);
   if (!sent) {
     // Checked here, for every send (data, retransmit, ack, keepalive), whether or not the caller
     // looks at the result.

@@ -102,6 +102,8 @@ public:
   bool PeerClosed() const { return peer_closed_; }
   /** A send reported no route to the peer (IsUnreachableSendError): the association is unusable. */
   bool PeerUnreachable() const { return peer_unreachable_; }
+  /** A send queued for later (Endpoint::FlushSends) found no route to the peer. */
+  void MarkPeerUnreachable() { peer_unreachable_ = true; }
   /** A dialer's peer answered with version negotiation: it speaks none of our wire version (N032). */
   bool PeerVersionMismatch() const { return peer_version_mismatch_; }
   /** The wire versions that peer said it speaks (empty unless PeerVersionMismatch). */

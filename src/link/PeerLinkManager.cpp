@@ -1592,6 +1592,25 @@ void PeerLinkManager::SweepLinksLocked(const int64_t now) {
       link->FailRefused(); // → establish_cb → FinishDial
     }
   }
+  // A dialer whose handshake found no route fails now (a send queued in a corked round, Endpoint::FlushSends,
+  // reports it on the connection): otherwise the walk below evicted the handshaking link without finishing its dial,
+  // its slot leaked and its waiters were never told — after a few network changes every dial was "too many
+  // concurrent dials" (pp-browser app lab group_call_on_the_road, 2026-11-11). Before corking the send failed in
+  // the handshake's own call.
+  std::vector<LinkHandle> unreachable;
+  table_.ForEach([&](PeerLink& link) {
+    const auto phase = link.Phase();
+    const auto* conn = link.ConnectionOrNull();
+    if (link.IsOutbound() && conn && conn->PeerUnreachable() &&
+        (phase == PeerLinkPhase::Handshaking || phase == PeerLinkPhase::Dialing)) {
+      unreachable.push_back(link.Handle());
+    }
+  });
+  for (const auto& handle : unreachable) {
+    if (auto* link = table_.FindLive(handle)) {
+      link->FailUnreachable(); // → establish_cb → FinishDial
+    }
+  }
   // A dialer whose peer speaks another wire version fails now too (its version negotiation reply, N032).
   std::vector<std::pair<LinkHandle, std::vector<uint8_t>>> mismatched;
   table_.ForEach([&](PeerLink& link) {

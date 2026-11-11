@@ -601,6 +601,10 @@ void PeerLink::FailRefused() {
   FailAssociation(Failure::Of(Err::TransportFailed, "amp link: refused by the peer (its link table is full)"));
 }
 
+void PeerLink::FailUnreachable() {
+  FailAssociation(Failure::Of(Err::TransportFailed, "amp link: no route to the peer"));
+}
+
 void PeerLink::FailVersionMismatch(const std::vector<uint8_t>& versions) {
   std::string spoken;
   for (const uint8_t v : versions) {

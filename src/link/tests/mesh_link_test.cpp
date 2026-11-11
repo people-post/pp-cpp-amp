@@ -1821,6 +1821,29 @@ TEST(MeshLinkTest, LinkIsDroppedAtOnceWhenTheOsReportsThePeerUnreachable) {
   EXPECT_TRUE(dropped);
 }
 
+// A dial whose hello, queued in a corked round (MeshRuntime::Drive corks each), finds no route at the flush fails
+// its dial at the next walk: its waiter is told and its slot freed. Evicted without finishing, the dial leaked its
+// slot and its waiters; a few network changes later every dial was "too many concurrent dials" (pp-browser app lab
+// group_call_on_the_road, 2026-11-11).
+TEST(MeshLinkTest, ADialWhoseCorkedHelloFindsNoRouteFails) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create();
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto bob_addr = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
+  ASSERT_TRUE(static_cast<bool>(bob_addr));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", *bob_addr)));
+  fixture->io_a->SetUnreachable(fixture->addr_b, true);
+
+  std::optional<PeerLinkManager::LinkRoe> done;
+  fixture->ep_a->CorkSends();
+  fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe result) { done = std::move(result); });
+  EXPECT_FALSE(done.has_value()) << "the hello is queued, not sent";
+  fixture->ep_a->FlushSends();
+  fixture->pump_a->Tick();
+  ASSERT_TRUE(done.has_value()) << "the dial was never finished";
+  EXPECT_FALSE(static_cast<bool>(*done));
+}
+
 // Product warms a peer before dialing it (chat foreground); the tier must not be lost.
 // pp-browser B39: product drops a link it knows is stale; both ends evict it, reason "requested".
 TEST(MeshLinkTest, RequestDropLinkEvictsBothEnds) {
