@@ -196,6 +196,8 @@ public:
   void FailHandshakeTimeout();
   /** The peer closed the association during our handshake: it refused us (table full). */
   void FailRefused();
+  /** A queued send of its handshake found no route to the peer (Endpoint::FlushSends): the dial fails now. */
+  void FailUnreachable();
   /** Its dial's peer speaks none of our wire version (`versions` from its negotiation reply). */
   void FailVersionMismatch(const std::vector<uint8_t>& versions);
   void DemoteForScheduledDrop();
