@@ -4,6 +4,7 @@
 #include "amp/L3/Capability.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace pp::amp {
 
@@ -48,12 +49,12 @@ ChannelMux::~ChannelMux() {
   std::vector<std::pair<uint32_t, TerminalHandler>> handlers;
   for (auto& [id, channel] : channels_) {
     if (channel.on_terminal) {
-      handlers.emplace_back(id, std::move(channel.on_terminal));
+      handlers.emplace_back(id, std::exchange(channel.on_terminal, nullptr));
     }
   }
   for (auto& [id, handler] : pending_terminal_handlers_) {
     if (handler) {
-      handlers.emplace_back(id, std::move(handler));
+      handlers.emplace_back(id, std::exchange(handler, nullptr));
     }
   }
   for (auto& [id, handler] : handlers) {
@@ -305,7 +306,9 @@ std::vector<std::function<void()>> ChannelMux::DetachAllChannels() {
   for (auto& [id, channel] : channels_) {
     channel.state = ChannelState::Closed;
     channel.on_data = nullptr;
-    if (auto handler = std::move(channel.on_terminal)) {
+    // exchange, not move: libc++ leaves a moved-from std::function holding a (cloned) small target, and
+    // ~ChannelMux then told the session the mux died before this notice said the link dropped.
+    if (auto handler = std::exchange(channel.on_terminal, nullptr)) {
       notices.push_back([handler = std::move(handler), channel_id = id]() { handler(channel_id, kLinkDroppedReason); });
     }
   }
