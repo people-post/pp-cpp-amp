@@ -746,6 +746,29 @@ void ChannelMux::ExpireIdleReaders(const int64_t now_ms) {
   }
 }
 
+std::optional<int64_t> ChannelMux::NextTickDueMs(const int64_t now_ms) const {
+  std::optional<int64_t> due;
+  const auto note = [&due](const int64_t at) {
+    if (!due || at < *due) {
+      due = at;
+    }
+  };
+  if (!send_queues_.empty()) {
+    note(now_ms);
+  }
+  for (const auto& [_, channel] : channels_) {
+    if (const auto started = channel.reassembly.OldestStartedMs()) {
+      const int64_t timeout =
+          channel.reassembly.Lossy() ? kLossyFragAssemblyTimeoutMs : tuning_.frag_assembly_timeout_ms;
+      note(*started + timeout + 1); // SweepExpired drops a partial older than the timeout
+    }
+    if (channel.policy.read_timeout.count() > 0 && channel.state != ChannelState::Closed) {
+      note(channel.read_clock_ms < 0 ? now_ms : channel.read_clock_ms + channel.policy.read_timeout.count());
+    }
+  }
+  return due;
+}
+
 void ChannelMux::Tick(const int64_t now_ms) {
   for (auto& [_, channel] : channels_) {
     channel.reassembly.SweepExpired(

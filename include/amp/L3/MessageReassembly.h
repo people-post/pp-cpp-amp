@@ -30,6 +30,8 @@ public:
   Roe<std::optional<std::vector<uint8_t>>> Push(const ChannelFragBody& frag, int64_t now_ms);
 
   void SweepExpired(int64_t now_ms, int64_t timeout_ms = kDefaultFragAssemblyTimeoutMs);
+  /** When the oldest partial began (SweepExpired drops it `timeout_ms` after); nullopt: none assembling. */
+  std::optional<int64_t> OldestStartedMs() const;
 
 private:
   struct Partial {

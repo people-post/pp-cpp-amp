@@ -65,7 +65,7 @@ PeerLinkManager::PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_iden
 }
 
 PeerLinkManager::PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
-                                 PeerLinkConfig config, std::recursive_mutex& strand_mu)
+                                 PeerLinkConfig config, IoLaneMutex& strand_mu)
     : endpoint_(endpoint),
       local_identity_(std::move(local_identity)),
       local_peer_id_(std::move(local_peer_id)),
@@ -1543,9 +1543,25 @@ void PeerLinkManager::Tick(const bool sweep) {
   TickChannelOpenWaitersLocked(now);
 }
 
-void PeerLinkManager::SweepLinksLocked(const int64_t now) {
-  const int64_t dial_timeout_ms = book_.Config().dial_timeout.count();
+int64_t PeerLinkManager::HandshakeBudgetMsLocked(const PeerLink& link) const {
+  // The short per-candidate budget skips an address that does not answer. One that answers is the
+  // peer, only slow (a distant node, a VPN, a post-quantum handshake): it keeps the full budget
+  // rather than giving way to a fallback that may never answer at all.
   const int64_t dial_attempt_ms = book_.Config().dial_attempt_timeout.count();
+  int64_t budget = book_.Config().dial_timeout.count();
+  const auto* conn = link.ConnectionOrNull();
+  const bool heard = conn && conn->LastAuthRxMs() > 0;
+  // A nested handshake is not one of the record's address candidates: it keeps the full budget even when the
+  // peer's record has untried addresses (its key is the peer's id, so book_.Find hits). On two long legs through
+  // a relay the short budget ran out before the first answer (a US <-> China call, pp-browser #502).
+  if (const auto* rec = book_.Find(link.PeerKey());
+      !link.IsCarrierBacked() && !heard && rec && rec->dial_index + 1 < rec->candidates.size() && dial_attempt_ms > 0) {
+    budget = std::min(budget, dial_attempt_ms);
+  }
+  return budget;
+}
+
+void PeerLinkManager::SweepLinksLocked(const int64_t now) {
   std::vector<LinkHandle> timed_out;
   table_.ForEach([&](PeerLink& link) {
     // Nested (carrier-backed) handshakes share this same budget: previously excluded
@@ -1559,21 +1575,7 @@ void PeerLinkManager::SweepLinksLocked(const int64_t now) {
     if (link.HandshakeStartedMs() <= 0) {
       return;
     }
-    // The short per-candidate budget skips an address that does not answer. One that answers is the
-    // peer, only slow (a distant node, a VPN, a post-quantum handshake): it keeps the full budget
-    // rather than giving way to a fallback that may never answer at all.
-    int64_t budget = dial_timeout_ms;
-    const auto* conn = link.ConnectionOrNull();
-    const bool heard = conn && conn->LastAuthRxMs() > 0;
-    // A nested handshake is not one of the record's address candidates: it keeps the full budget even when the
-    // peer's record has untried addresses (its key is the peer's id, so book_.Find hits). On two long legs through
-    // a relay the short budget ran out before the first answer (a US <-> China call, pp-browser #502).
-    if (const auto* rec = book_.Find(link.PeerKey()); !link.IsCarrierBacked() && !heard && rec &&
-                                                      rec->dial_index + 1 < rec->candidates.size() &&
-                                                      dial_attempt_ms > 0) {
-      budget = std::min(budget, dial_attempt_ms);
-    }
-    if (now - link.HandshakeStartedMs() > budget) {
+    if (now - link.HandshakeStartedMs() > HandshakeBudgetMsLocked(link)) {
       timed_out.push_back(link.Handle());
     }
   });
@@ -1697,6 +1699,87 @@ void PeerLinkManager::SweepLinksLocked(const int64_t now) {
     // By handle: the link judged dead, even if another link now holds its dial key (A024).
     DropLinkByHandle(handle, reason);
   }
+  sweep_due_ms_ = ComputeSweepDueLocked(now);
+}
+
+int64_t PeerLinkManager::ComputeSweepDueLocked(const int64_t now) {
+  // Each check of the walk above, as the time it next has something to do. A link whose state the walk acts on
+  // at once (refused, unreachable, closed, a failed lane) is due now: the next walk (at MeshRuntime's cadence)
+  // takes it. Time-bound steps only: what a datagram or a call changes, the runtime walks again for anyway.
+  int64_t due = kNotDue;
+  const auto note = [&due](const int64_t at) { due = std::min(due, at); };
+  const int64_t grace = book_.Config().network_change_grace.count();
+  table_.ForEach([&](PeerLink& link) {
+    const auto phase = link.Phase();
+    const auto* conn = link.ConnectionOrNull();
+    if (phase == PeerLinkPhase::Handshaking || phase == PeerLinkPhase::Dialing) {
+      if (link.HandshakeStartedMs() > 0) {
+        note(link.HandshakeStartedMs() + HandshakeBudgetMsLocked(link) + 1);
+      }
+      if (link.IsOutbound() && conn && (conn->PeerClosed() || conn->PeerUnreachable() || conn->PeerVersionMismatch())) {
+        note(now);
+      }
+    }
+    if (const auto* mux = link.Mux()) {
+      if (const auto mux_due = mux->NextTickDueMs(now)) {
+        note(*mux_due);
+      }
+    }
+    if (link.IsCarrierBacked()) {
+      if (link.Carrier() && link.Carrier()->IsClosed() && phase != PeerLinkPhase::Handshaking &&
+          phase != PeerLinkPhase::Dialing) {
+        note(now);
+      }
+      if (const auto resend = link.CarrierResendDueMs()) {
+        note(*resend);
+      }
+      if (phase == PeerLinkPhase::Connected && link.CarrierLaneFailed()) {
+        note(now);
+      }
+      return;
+    }
+    if (!conn || phase != PeerLinkPhase::Connected) {
+      if (conn && conn->PeerUnreachable()) {
+        note(now);
+      }
+      return;
+    }
+    if (conn->IsClosed() || conn->PeerUnreachable()) {
+      note(now);
+      return;
+    }
+    note(conn->LastAuthRxMs() + conn->LivenessWindowMs() + 1); // LooksAlive ends
+    if (link.SuspectSinceMs() != 0) {
+      note(link.SuspectSinceMs() + grace);
+      note(link.LastProbeMs() + std::max<int64_t>(grace / 4, 1));
+    }
+    const auto tier = link.GetKeepaliveTier();
+    if (tier == KeepaliveTier::None) {
+      if (conn->LocalKeepaliveIntervalMs() != 0) {
+        note(now); // StopKeepaliveIfUnheld
+      }
+      return;
+    }
+    const int64_t interval_ms = tier == KeepaliveTier::Hot ? book_.Config().keepalive_hot_interval.count()
+                                                           : book_.Config().keepalive_warm_interval.count();
+    if (interval_ms > 0) {
+      note(link.LastKeepaliveTxMs() == 0 ? now : link.LastKeepaliveTxMs() + interval_ms);
+    }
+  });
+  return due;
+}
+
+int64_t PeerLinkManager::EveryTickDueMsLocked(const int64_t now) const {
+  if (!pending_drops_.empty() || !pending_candidate_retry_.empty() || !pending_alias_adopt_.empty()) {
+    return now;
+  }
+  int64_t due = kNotDue;
+  for (const auto& waiter : channel_open_waiters_) {
+    if (waiter.deadline_ms > 0) {
+      due = std::min(due, waiter.deadline_ms);
+    }
+  }
+  return due;
 }
 
 void PeerLinkManager::TickChannelOpenWaitersLocked(const int64_t now) {

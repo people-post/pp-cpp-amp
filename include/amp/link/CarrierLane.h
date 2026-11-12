@@ -54,6 +54,8 @@ public:
   void OnAck(const LaneAckFields& ack, int64_t now_ms);
   /** Frames to send again now (LaneData wires). */
   std::vector<std::vector<uint8_t>> DueResends(int64_t now_ms);
+  /** When DueResends next has a frame to send (or to give up on); nullopt: nothing in flight. */
+  std::optional<int64_t> NextResendMs() const;
   /** A frame ran out of attempts: the path is gone, the link must go. */
   bool Failed() const { return failed_; }
   size_t InFlight() const { return outstanding_.size(); }

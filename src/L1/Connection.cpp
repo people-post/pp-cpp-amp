@@ -368,7 +368,7 @@ Connection::Roe<void> Connection::Send(QosClass qos, std::span<const uint8_t> pa
   // failed send is then just a lost packet that the retransmit timer resends;
   // dropping it would leave a seq gap the receiver waits on forever.
   outstanding_.push_back(std::move(o));
-  endpoint_->NoteResendPending(id_);
+  endpoint_->NoteResendPending(id_, outstanding_.back().next_rtx_ms);
   endpoint_->NoteReliableSent();
   ++stats_.reliable_sent;
   auto sent = SendPacket(outstanding_.back().type, tx_seq_rel_, payload, now);
@@ -392,6 +392,19 @@ void Connection::NoteRttSample(const int64_t rtt_ms) {
     stats_.rttvar_ms += (error - stats_.rttvar_ms) / 4;
     stats_.srtt_ms += (sample - stats_.srtt_ms) / 8;
   }
+}
+
+std::optional<int64_t> Connection::NextRetransmitMs() const {
+  if (closed_) {
+    return std::nullopt;
+  }
+  std::optional<int64_t> due;
+  for (const auto& o : outstanding_) {
+    if (!due || o.next_rtx_ms < *due) {
+      due = o.next_rtx_ms;
+    }
+  }
+  return due;
 }
 
 void Connection::Tick(int64_t now_ms) {

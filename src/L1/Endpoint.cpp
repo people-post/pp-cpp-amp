@@ -177,6 +177,7 @@ EndpointStats Endpoint::Stats() const {
   s.reliable_lost = reliable_lost_.load(std::memory_order_relaxed);
   s.rtt_samples = rtt_samples_.load(std::memory_order_relaxed);
   s.rtt_sum_ms = rtt_sum_ms_.load(std::memory_order_relaxed);
+  s.rx_errors = rx_errors_.load(std::memory_order_relaxed);
   return s;
 }
 
@@ -189,13 +190,25 @@ void Endpoint::NoteRttSample(const int64_t rtt_ms) {
   }
 }
 
-void Endpoint::Pump(const size_t budget) {
+size_t Endpoint::Pump(const size_t budget) {
   // In batches where the IO can (recvmmsg), each datagram handled in the IO's buffer.
-  (void)io_->RecvBatch(budget, [this](const IpEndpoint& from, const std::span<const uint8_t> datagram) {
-    rx_datagrams_.fetch_add(1, std::memory_order_relaxed);
-    rx_bytes_.fetch_add(datagram.size(), std::memory_order_relaxed);
-    HandleDatagram(from, datagram);
-  });
+  size_t handled = 0;
+  auto received =
+      io_->RecvBatch(budget, [this, &handled](const IpEndpoint& from, const std::span<const uint8_t> datagram) {
+        ++handled;
+        rx_datagrams_.fetch_add(1, std::memory_order_relaxed);
+        rx_bytes_.fetch_add(datagram.size(), std::memory_order_relaxed);
+        HandleDatagram(from, datagram);
+      });
+  if (!received) {
+    // Not "nothing ready" (that is a count of 0): the socket failed. Dropped here, a socket the OS killed kept
+    // failing every round unnoticed (pp-browser #596).
+    rx_errors_.fetch_add(1, std::memory_order_relaxed);
+    if (receive_error_observer_) {
+      receive_error_observer_(received.error());
+    }
+  }
+  return handled;
 }
 
 void Endpoint::Tick() {
@@ -203,6 +216,9 @@ void Endpoint::Tick() {
     return;
   }
   const int64_t now = clock_->NowMs();
+  if (now < resend_due_ms_) {
+    return; // nothing due yet (the earliest resend is known)
+  }
   std::vector<std::shared_ptr<Connection>> snap;
   snap.reserve(resend_pending_.size());
   for (auto it = resend_pending_.begin(); it != resend_pending_.end();) {
@@ -214,12 +230,17 @@ void Endpoint::Tick() {
     snap.push_back(conn->second);
     ++it;
   }
+  int64_t due = kNoResendDue;
   for (auto& c : snap) {
     c->Tick(now);
-    if (!c->HasOutstanding()) {
+    const auto next = c->NextRetransmitMs();
+    if (!c->HasOutstanding() || !next) {
       resend_pending_.erase(c->Id());
+      continue;
     }
+    due = std::min(due, *next);
   }
+  resend_due_ms_ = due;
 }
 
 void Endpoint::HandleDatagram(const IpEndpoint& from, std::span<const uint8_t> datagram) {

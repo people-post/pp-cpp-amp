@@ -187,6 +187,11 @@ public:
   /** First resend of a carrier handshake message after this; each next one waits twice as long, up to the max. */
   static constexpr int64_t kCarrierHandshakeResendMs = 500;
   static constexpr int64_t kCarrierHandshakeResendMaxMs = 1500;
+  /**
+   * Carrier-backed: the earliest Amp-clock ms TickCarrierHandshake or TickCarrierLane has something to send again
+   * (std::nullopt: nothing waits) — the sweep's deadline for this link's resends.
+   */
+  std::optional<int64_t> CarrierResendDueMs() const;
   /** Carrier-backed: a reliable-lane frame ran out of attempts — the path is gone. */
   bool CarrierLaneFailed() const { return lane_ && lane_->Failed(); }
   /** Carrier-backed: the peer speaks the reliable lane (it sent a lane frame). */

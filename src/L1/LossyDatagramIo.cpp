@@ -49,6 +49,9 @@ Roe<void> LossyDatagramIo::SendTo(const IpEndpoint& peer, std::span<const uint8_
 }
 
 Roe<std::optional<std::pair<IpEndpoint, std::vector<uint8_t>>>> LossyDatagramIo::RecvFrom() {
+  if (recv_error_) {
+    return *recv_error_;
+  }
   return inner_->RecvFrom();
 }
 
