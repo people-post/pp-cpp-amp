@@ -87,6 +87,16 @@ Roe<std::string> ChannelWire::DecodeLenUtf8Le(std::span<const uint8_t> wire, siz
   return out;
 }
 
+std::vector<uint8_t> ChannelWire::EncodeData(const ChannelHeader& header, const std::span<const uint8_t> payload) {
+  std::vector<uint8_t> out;
+  out.reserve(kChannelHeaderBytes + payload.size());
+  out.push_back(static_cast<uint8_t>(ChannelFrameType::Data));
+  AppendU32(out, header.channel_id);
+  AppendU32(out, header.channel_seq);
+  out.insert(out.end(), payload.begin(), payload.end());
+  return out;
+}
+
 Roe<std::vector<uint8_t>> ChannelWire::Encode(const ChannelFrame& frame) {
   if (frame.header.frame_type == ChannelFrameType::Frag) {
     return EncodeFrag(frame.header, frame.frag.msg_id, frame.frag.frag_index, frame.frag.frag_count,

@@ -587,6 +587,28 @@ TEST(ChannelMuxTest, BacklogSaysHowLongAChannelsOldestFrameHasWaited) {
   EXPECT_EQ(link.initiator.mux.BacklogOf(*ch).oldest_age_ms, 50) << "the next oldest";
 }
 
+// SendData from the caller's bytes delivers what the vector form does: one frame encoded straight from them, and a
+// message larger than a frame fragmented as before (a relay's fan-out sends one frame to many channels this way).
+TEST(ChannelMuxTest, SendDataFromASpanDeliversTheSameBytes) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  std::vector<std::vector<uint8_t>> received;
+  link.responder.mux.SetDataHandler(
+      *ch, [&](uint32_t, std::vector<uint8_t> payload) { received.push_back(std::move(payload)); });
+  const std::vector<uint8_t> small(300, 0x5a);
+  const std::vector<uint8_t> large(5000, 0xa5);
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::span<const uint8_t>(small))));
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::span<const uint8_t>(large))));
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(small))));
+  ASSERT_EQ(received.size(), 3u);
+  EXPECT_EQ(received[0], small);
+  EXPECT_EQ(received[1], large);
+  EXPECT_EQ(received[2], small);
+}
+
 // A single message larger than the whole window could never be sent before.
 TEST(ChannelMuxTest, MessageLargerThanWholeWindowIsDelivered) {
   auto link_result = test::AmpTestLink::Create();

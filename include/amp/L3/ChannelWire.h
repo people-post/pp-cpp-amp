@@ -43,6 +43,8 @@ struct ChannelFrame {
 class ChannelWire {
 public:
   static Roe<std::vector<uint8_t>> Encode(const ChannelFrame& frame);
+  /** Encode a DATA frame from a payload span: one copy, into the wire (no ChannelFrame::payload in between). */
+  static std::vector<uint8_t> EncodeData(const ChannelHeader& header, std::span<const uint8_t> payload);
   /** Encode a FRAG frame from a payload span (avoids copying into ChannelFragBody::chunk). */
   static Roe<std::vector<uint8_t>> EncodeFrag(const ChannelHeader& header, uint64_t msg_id, uint16_t frag_index,
                                               uint16_t frag_count, uint32_t total_len, std::span<const uint8_t> chunk);

@@ -68,6 +68,11 @@ public:
   uint32_t ChannelId() const { return channel_id_; }
   ChannelMux* Mux() { return mux_; }
   size_t OutboundBacklog() const { return outbound_.size() + (write_inflight_ ? 1 : 0); }
+  /**
+   * EnqueueOutbound from the caller's bytes: with nothing queued ahead it goes to the mux at once, encoded straight
+   * from them (a relay's fan-out: one frame to many channels, no copy per channel); else it is copied into the queue.
+   */
+  bool EnqueueOutbound(std::span<const uint8_t> body);
   /** This channel's reliable frames waiting in its mux for window space (none once closed). */
   ChannelMux::ChannelBacklog MuxBacklog() const {
     return mux_ && !closed_ ? mux_->BacklogOf(channel_id_) : ChannelMux::ChannelBacklog{};
@@ -89,7 +94,8 @@ private:
   ChannelMux* mux_ = nullptr;
   uint32_t channel_id_ = 0;
   ChannelPolicy policy_;
-  FrameHandler on_frame_;
+  /** Shared, so a frame pins it with a reference count (A027) rather than a copy of the callable and its captures. */
+  std::shared_ptr<const FrameHandler> on_frame_;
   ClosedCallback on_closed_;
   std::deque<std::vector<uint8_t>> outbound_;
   bool write_inflight_ = false;

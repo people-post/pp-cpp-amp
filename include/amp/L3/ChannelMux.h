@@ -128,6 +128,8 @@ public:
   void SetRefuseUnhandledOpens(bool refuse) { refuse_unhandled_opens_ = refuse; }
 
   Roe<void> SendData(uint32_t channel_id, std::vector<uint8_t> payload);
+  /** The same from the caller's bytes: a payload that fits one frame is encoded straight from them (one copy). */
+  Roe<void> SendData(uint32_t channel_id, std::span<const uint8_t> payload);
   Roe<void> ResetChannel(uint32_t channel_id, uint32_t code = 1);
   Roe<void> CloseChannel(uint32_t channel_id, std::string reason = {});
 
@@ -190,7 +192,11 @@ private:
     ChannelState state = ChannelState::Closed;
     uint32_t tx_seq = 1;
     uint32_t rx_seq = 1;
-    DataHandler on_data;
+    /**
+     * Shared, so a frame pins it with a reference count rather than a copy (a std::function's copy allocated and
+     * copied its captures on every frame: a busy relay's largest libc cost).
+     */
+    std::shared_ptr<const DataHandler> on_data;
     TerminalHandler on_terminal;
     MessageReassembly reassembly;
     /** Tick time the read_timeout clock last (re)started; -1 = restart on the next Tick. */
