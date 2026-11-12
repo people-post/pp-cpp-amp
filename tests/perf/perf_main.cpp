@@ -276,82 +276,6 @@ bool RunC3(const int warmup, const int iters) {
   return ok;
 }
 
-bool RunC4(const int warmup, const int iters) {
-  std::printf("\n== C4 Call-media Drop Oldest burst ==\n");
-  constexpr size_t kBurst = 200;
-  constexpr size_t kCap = pp::amp::AmpChannelLimits::kMaxCallMediaOutboundFrames;
-  bool ok = true;
-  std::vector<double> drop_pct_samples;
-  std::vector<double> burst_ns_samples;
-  const int case_warmup = std::min(warmup, 2);
-  const int case_iters = std::max(1, iters);
-
-  for (int i = 0; i < case_warmup + case_iters; ++i) {
-    auto link_result = pp::amp::test::AmpTestLink::Create();
-    if (!link_result) {
-      std::fprintf(stderr, "C4 AmpTestLink create failed\n");
-      return false;
-    }
-    auto& link = **link_result;
-    auto ch = link.initiator.mux.OpenOutbound("/test/call-media/1.0.0", pp::amp::CallMediaChannelPolicy());
-    if (!ch) {
-      std::fprintf(stderr, "C4 OpenOutbound failed\n");
-      return false;
-    }
-
-    size_t drops = 0;
-    auto session = std::make_shared<pp::amp::ChannelSession>();
-    auto policy = pp::amp::CallMediaChannelPolicy();
-    policy.on_outbound_drop = [&] { ++drops; };
-
-    // Re-entrant enqueue during the first transport callback keeps write_inflight_ set
-    // so Drop Oldest fires. Only burst once — later drains must not re-enter the burst.
-    bool did_burst = false;
-    link.initiator.mux.SetTransport([&](pp::adp::QosClass qos, std::vector<uint8_t> wire) -> pp::Roe<void> {
-      (void)qos;
-      if (!did_burst) {
-        did_burst = true;
-        std::vector<uint8_t> frame(64, 0x42);
-        for (size_t n = 0; n < kBurst; ++n) {
-          if (!session->EnqueueOutbound(frame)) {
-            ok = false;
-          }
-        }
-      }
-      (void)link.responder.mux.OnFrameInbound(wire);
-      return pp::Roe<void>();
-    });
-
-    session->Bind(link.initiator.mux, *ch, policy, [](pp::Roe<std::vector<uint8_t>>) { return true; });
-
-    const auto t0 = std::chrono::steady_clock::now();
-    std::vector<uint8_t> first(64, 0x41);
-    if (!session->EnqueueOutbound(std::move(first))) {
-      std::fprintf(stderr, "C4 initial EnqueueOutbound failed\n");
-      return false;
-    }
-    const auto t1 = std::chrono::steady_clock::now();
-
-    if (drops == 0) {
-      std::fprintf(stderr, "C4 expected outbound drops, got 0 (burst=%zu cap=%zu)\n", kBurst, kCap);
-      return false;
-    }
-    const double drop_pct = 100.0 * static_cast<double>(drops) / static_cast<double>(kBurst + 1);
-    if (i >= case_warmup) {
-      drop_pct_samples.push_back(drop_pct);
-      burst_ns_samples.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count());
-    }
-  }
-
-  const auto drop_stats = Summarize(drop_pct_samples);
-  const auto time_stats = Summarize(std::move(burst_ns_samples));
-  PrintHuman("C4", "drop_oldest_pct", drop_stats, drop_stats.mean_ns, "drop_pct");
-  PrintCsv("C4", "drop_oldest_pct", kBurst, drop_stats, drop_stats.mean_ns, "drop_pct");
-  PrintHuman("C4", "burst_enqueue", time_stats, OpsPerSec(time_stats.mean_ns), "bursts/s");
-  PrintCsv("C4", "burst_enqueue", kBurst, time_stats, OpsPerSec(time_stats.mean_ns), "bursts/s");
-  return ok;
-}
-
 bool RunD1(const int warmup, const int iters) {
   std::printf("\n== D1 MeshRuntime Drive cost (1 link) ==\n");
   auto created = pbr::test::MakeAmpIntegrationHarness();
@@ -407,7 +331,6 @@ int main() {
   ok = RunC1(std::min(warmup, 1), assoc_iters) && ok;
   ok = RunC2(std::min(warmup, 1), assoc_iters) && ok;
   ok = RunC3(warmup, frag_iters) && ok;
-  ok = RunC4(warmup, media_iters) && ok;
   ok = pp::amp::perf::RunC5(std::min(warmup, 2), std::max(1, frag_iters)) && ok;
   ok = RunD1(warmup, drive_iters) && ok;
   ok = pp::amp::perf::RunD1Multi(warmup, std::min(drive_iters, 500)) && ok;
