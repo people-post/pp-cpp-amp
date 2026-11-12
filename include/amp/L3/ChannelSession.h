@@ -73,10 +73,6 @@ public:
    * from them (a relay's fan-out: one frame to many channels, no copy per channel); else it is copied into the queue.
    */
   bool EnqueueOutbound(std::span<const uint8_t> body);
-  /** This channel's reliable frames waiting in its mux for window space (none once closed). */
-  ChannelMux::ChannelBacklog MuxBacklog() const {
-    return mux_ && !closed_ ? mux_->BacklogOf(channel_id_) : ChannelMux::ChannelBacklog{};
-  }
   bool IsClosed() const { return closed_; }
 
 private:

@@ -133,7 +133,7 @@ Roe<void> ChannelMux::SendWire(const uint32_t channel_id, const adp::QosClass qo
   if (channelQueue.empty()) {
     send_order_.push_back(channel_id);
   }
-  channelQueue.push_back(QueuedFrame{std::move(wire), now_ms_ ? now_ms_() : 0});
+  channelQueue.push_back(QueuedFrame{std::move(wire)});
   return Roe<void>();
 }
 
@@ -177,21 +177,6 @@ size_t ChannelMux::QueuedFrameCount() const {
     count += queue.size();
   }
   return count;
-}
-
-ChannelMux::ChannelBacklog ChannelMux::BacklogOf(const uint32_t channel_id) const {
-  ChannelBacklog backlog;
-  const auto it = send_queues_.find(channel_id);
-  if (it == send_queues_.end() || it->second.empty()) {
-    return backlog;
-  }
-  backlog.frames = it->second.size();
-  for (const auto& frame : it->second) {
-    backlog.bytes += frame.wire.size();
-  }
-  const int64_t now = now_ms_ ? now_ms_() : 0;
-  backlog.oldest_age_ms = std::max<int64_t>(0, now - it->second.front().queued_at_ms);
-  return backlog;
 }
 
 Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,

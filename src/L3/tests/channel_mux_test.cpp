@@ -590,39 +590,6 @@ TEST(ChannelMuxTest, QueuedFramesGoWhenTheTransportHasWindowAgain) {
   EXPECT_EQ(received, large);
 }
 
-// A sender of time-bound data reads how long a channel's frames have waited for window space, so it can drop a
-// frame rather than queue it behind seconds of others (pp-cpp-mesh: call media on a reliable fallback).
-TEST(ChannelMuxTest, BacklogSaysHowLongAChannelsOldestFrameHasWaited) {
-  auto link_result = test::AmpTestLink::Create();
-  ASSERT_TRUE(static_cast<bool>(link_result));
-  auto& link = **link_result;
-  int64_t now_ms = 1000;
-  link.initiator.mux.SetClock([&now_ms] { return now_ms; });
-  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
-  auto other = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
-  ASSERT_TRUE(static_cast<bool>(ch) && static_cast<bool>(other));
-  WindowedTransport transport;
-  transport.window = 0;
-  transport.Attach(link);
-  EXPECT_EQ(link.initiator.mux.BacklogOf(*ch).frames, 0u);
-
-  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(100, 0x01))));
-  now_ms += 250;
-  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(100, 0x02))));
-  now_ms += 50;
-  const auto backlog = link.initiator.mux.BacklogOf(*ch);
-  EXPECT_EQ(backlog.frames, 2u);
-  EXPECT_GT(backlog.bytes, 200u);
-  EXPECT_EQ(backlog.oldest_age_ms, 300) << "the oldest frame's wait, not the newest's";
-  EXPECT_EQ(link.initiator.mux.BacklogOf(*other).frames, 0u) << "per channel";
-
-  transport.window = 1;
-  transport.outstanding = 0;
-  link.initiator.mux.OnTransportCredit();
-  EXPECT_EQ(link.initiator.mux.BacklogOf(*ch).frames, 1u);
-  EXPECT_EQ(link.initiator.mux.BacklogOf(*ch).oldest_age_ms, 50) << "the next oldest";
-}
-
 // SendData from the caller's bytes delivers what the vector form does: one frame encoded straight from them, and a
 // message larger than a frame fragmented as before (a relay's fan-out sends one frame to many channels this way).
 TEST(ChannelMuxTest, SendDataFromASpanDeliversTheSameBytes) {
