@@ -10,6 +10,14 @@ bool IsLinkDropped(const char* reason) {
   return reason && std::string_view(reason) == ChannelMux::kLinkDroppedReason;
 }
 
+bool IsMuxDestroyed(const char* reason) {
+  return reason && std::string_view(reason) == ChannelMux::kMuxDestroyedReason;
+}
+
+std::shared_ptr<const ChannelSession::FrameHandler> SharedFrameHandler(ChannelSession::FrameHandler handler) {
+  return handler ? std::make_shared<const ChannelSession::FrameHandler>(std::move(handler)) : nullptr;
+}
+
 } // namespace
 
 ChannelSession::~ChannelSession() {
@@ -28,21 +36,18 @@ void ChannelSession::InstallMuxHandlers() {
       if (!session || session->closed_) {
         return;
       }
-      FrameHandler frame = session->on_frame_;
+      const auto frame = session->on_frame_;
       if (!frame) {
         return;
       }
-      const bool keep_open = frame(std::move(payload));
+      const bool keep_open = (*frame)(std::move(payload));
       if (!session->closed_ && (!keep_open || session->policy_.read_once)) {
         session->Close();
       }
     });
     mux_->SetTerminalHandler(channel_id_, [weak](uint32_t, const char* reason) {
       if (auto session = weak.lock()) {
-        if (IsLinkDropped(reason)) {
-          session->mux_ = nullptr; // the mux is gone (DetachAllChannels): never touch it again
-        }
-        session->NotifyRemoteTerminal(reason);
+        session->OnMuxTerminal(reason);
       }
     });
     return;
@@ -52,18 +57,28 @@ void ChannelSession::InstallMuxHandlers() {
     if (closed_ || !on_frame_) {
       return;
     }
-    FrameHandler frame = on_frame_;
-    const bool keep_open = frame(std::move(payload));
+    const auto frame = on_frame_;
+    const bool keep_open = (*frame)(std::move(payload));
     if (!closed_ && (!keep_open || policy_.read_once)) {
       Close();
     }
   });
-  mux_->SetTerminalHandler(channel_id_, [this](uint32_t, const char* reason) {
-    if (IsLinkDropped(reason)) {
-      mux_ = nullptr;
+  mux_->SetTerminalHandler(channel_id_, [this](uint32_t, const char* reason) { OnMuxTerminal(reason); });
+}
+
+void ChannelSession::OnMuxTerminal(const char* reason) {
+  if (IsLinkDropped(reason) || IsMuxDestroyed(reason)) {
+    mux_ = nullptr; // the mux is gone (DetachAllChannels, ~ChannelMux): never touch it again
+  }
+  if (IsMuxDestroyed(reason)) {
+    // Its owner is mid-destruction: drop the handlers (often what owns this session), call nothing.
+    if (!closed_) {
+      closed_ = true;
+      FinishClosed(nullptr);
     }
-    NotifyRemoteTerminal(reason);
-  });
+    return;
+  }
+  NotifyRemoteTerminal(reason);
 }
 
 void ChannelSession::Bind(ChannelMux& mux, const uint32_t channel_id, ChannelPolicy policy, FrameHandler on_frame,
@@ -71,7 +86,7 @@ void ChannelSession::Bind(ChannelMux& mux, const uint32_t channel_id, ChannelPol
   mux_ = &mux;
   channel_id_ = channel_id;
   policy_ = std::move(policy);
-  on_frame_ = std::move(on_frame);
+  on_frame_ = SharedFrameHandler(std::move(on_frame));
   on_closed_ = std::move(on_closed);
   closed_ = false;
   outbound_.clear();
@@ -82,7 +97,7 @@ void ChannelSession::Bind(ChannelMux& mux, const uint32_t channel_id, ChannelPol
 }
 
 void ChannelSession::SetFrameHandler(FrameHandler on_frame) {
-  on_frame_ = std::move(on_frame);
+  on_frame_ = SharedFrameHandler(std::move(on_frame));
 }
 
 void ChannelSession::SetClosedCallback(ClosedCallback on_closed) {
@@ -106,6 +121,22 @@ bool ChannelSession::EnqueueOutbound(std::vector<uint8_t> body) {
   }
   outbound_.push_back(std::move(body));
   PumpWrite();
+  return true;
+}
+
+bool ChannelSession::EnqueueOutbound(const std::span<const uint8_t> body) {
+  if (closed_ || !mux_) {
+    return false;
+  }
+  if (!outbound_.empty() || write_inflight_) {
+    return EnqueueOutbound(std::vector<uint8_t>(body.begin(), body.end()));
+  }
+  write_inflight_ = true;
+  auto sent = mux_->SendData(channel_id_, body);
+  write_inflight_ = false;
+  if (!sent) {
+    FailOutbound(sent.error());
+  }
   return true;
 }
 
@@ -149,9 +180,9 @@ void ChannelSession::FinishClosed(const char* reason) {
   mux_ = nullptr;
   // Locals keep both callables alive while the closed callback runs; whatever they own (often
   // this session) goes when they do, so nothing may touch `this` after this call.
-  FrameHandler frame = std::move(on_frame_);
+  auto frame = std::move(on_frame_);
   ClosedCallback closed = std::move(on_closed_);
-  on_frame_ = {};
+  on_frame_ = nullptr;
   on_closed_ = {};
   if (reason && closed) {
     closed(reason);
@@ -177,7 +208,7 @@ void ChannelSession::CloseQuiet() {
 }
 
 void ChannelSession::ReleaseHandlers() {
-  on_frame_ = {};
+  on_frame_ = nullptr;
   on_closed_ = {};
   if (!mux_) {
     return;
@@ -190,7 +221,7 @@ void ChannelSession::ReleaseHandlers() {
 }
 
 void ChannelSession::OrphanFromMux() {
-  on_frame_ = {};
+  on_frame_ = nullptr;
   on_closed_ = {};
   mux_ = nullptr;
   channel_id_ = 0;

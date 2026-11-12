@@ -52,21 +52,19 @@ void Endpoint::Unregister(const AssocId& id) {
   conns_.erase(id);
 }
 
+void Endpoint::Cork(const IpEndpoint& peer, const AssocId& assoc, std::vector<uint8_t> bytes) {
+  tx_datagrams_.fetch_add(1, std::memory_order_relaxed);
+  tx_bytes_.fetch_add(bytes.size(), std::memory_order_relaxed);
+  corked_sends_.push_back(CorkedSend{peer, assoc, std::move(bytes)});
+  if (corked_sends_.size() >= kMaxCorkedSends) {
+    FlushSends();
+    corked_ = true;
+  }
+}
+
 Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram, const AssocId* assoc) {
   if (corked_ && assoc) {
-    CorkedSend send;
-    send.peer = peer;
-    send.assoc = *assoc;
-    send.offset = cork_bytes_.size();
-    send.size = datagram.size();
-    cork_bytes_.insert(cork_bytes_.end(), datagram.begin(), datagram.end());
-    corked_sends_.push_back(send);
-    tx_datagrams_.fetch_add(1, std::memory_order_relaxed);
-    tx_bytes_.fetch_add(datagram.size(), std::memory_order_relaxed);
-    if (corked_sends_.size() >= kMaxCorkedSends) {
-      FlushSends();
-      corked_ = true;
-    }
+    Cork(peer, *assoc, std::vector<uint8_t>(datagram.begin(), datagram.end()));
     return {};
   }
   auto sent = io_->SendTo(peer, datagram);
@@ -75,6 +73,14 @@ Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::span<const uint8_t> dat
     tx_bytes_.fetch_add(datagram.size(), std::memory_order_relaxed);
   }
   return sent;
+}
+
+Roe<void> Endpoint::SendRaw(const IpEndpoint& peer, std::vector<uint8_t>&& datagram, const AssocId* assoc) {
+  if (corked_ && assoc) {
+    Cork(peer, *assoc, std::move(datagram));
+    return {};
+  }
+  return SendRaw(peer, std::span<const uint8_t>(datagram), assoc);
 }
 
 namespace {
@@ -121,7 +127,6 @@ void Endpoint::FlushSends() {
     first = last;
   }
   corked_sends_.clear();
-  cork_bytes_.clear();
 }
 
 void Endpoint::SendRuns(const std::vector<size_t>& order, const size_t first, const size_t last) {
@@ -129,19 +134,19 @@ void Endpoint::SendRuns(const std::vector<size_t>& order, const size_t first, co
   size_t at = first;
   while (at < last) {
     // A run: datagrams of one size, the last of it may be shorter; at most kMaxSegments and kMaxRunBytes.
-    const size_t segment = corked_sends_[order[at]].size;
+    const size_t segment = corked_sends_[order[at]].bytes.size();
     parts.clear();
     size_t bytes = 0;
     size_t end = at;
     while (end < last && parts.size() < DatagramIo::kMaxSegments) {
       const CorkedSend& send = corked_sends_[order[end]];
-      if (send.size > segment || bytes + send.size > kMaxRunBytes) {
+      if (send.bytes.size() > segment || bytes + send.bytes.size() > kMaxRunBytes) {
         break;
       }
-      parts.emplace_back(cork_bytes_.data() + send.offset, send.size);
-      bytes += send.size;
+      parts.emplace_back(send.bytes);
+      bytes += send.bytes.size();
       ++end;
-      if (send.size < segment) {
+      if (send.bytes.size() < segment) {
         break; // a shorter one ends the run
       }
     }

@@ -641,8 +641,10 @@ void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chr
     finish(std::move(fail));
   });
 
+  // The poll reposts itself: the posted task owns it, and it reaches itself only weakly. A strong
+  // self-capture was a cycle that leaked every burst's state and callbacks (LeakSanitizer).
   auto poll = std::make_shared<std::function<void()>>();
-  *poll = [this, state, finish, poll]() {
+  *poll = [this, state, finish, weak_poll = std::weak_ptr<std::function<void()>>(poll)]() {
     if (state->settled.load(std::memory_order_acquire)) {
       return;
     }
@@ -658,9 +660,13 @@ void MeshRuntime::BurstDial(const std::vector<std::string>& multiaddrs, std::chr
     if (state->settled.load(std::memory_order_acquire)) {
       return;
     }
-    PostToIo([poll, state]() {
+    auto self = weak_poll.lock();
+    if (!self) {
+      return;
+    }
+    PostToIo([self = std::move(self), state]() {
       if (!state->settled.load(std::memory_order_acquire)) {
-        (*poll)();
+        (*self)();
       }
     });
   };

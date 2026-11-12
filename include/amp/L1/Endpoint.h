@@ -83,6 +83,8 @@ public:
    * association (a socket probe, a version negotiation reply) goes at once: its caller reads the result.
    */
   Roe<void> SendRaw(const IpEndpoint& peer, std::span<const uint8_t> datagram, const AssocId* assoc = nullptr);
+  /** The same, the datagram handed over: corked, it is kept as it is (no copy). */
+  Roe<void> SendRaw(const IpEndpoint& peer, std::vector<uint8_t>&& datagram, const AssocId* assoc);
 
   /**
    * Queue sends until FlushSends — a driver's round (MeshRuntime::Drive). A hop forwards each frame's packets to
@@ -136,11 +138,11 @@ private:
   struct CorkedSend {
     IpEndpoint peer;
     std::optional<AssocId> assoc;
-    size_t offset = 0;
-    size_t size = 0;
+    std::vector<uint8_t> bytes;
   };
+  /** Queue one corked send (flushing at kMaxCorkedSends). */
+  void Cork(const IpEndpoint& peer, const AssocId& assoc, std::vector<uint8_t> bytes);
   bool corked_ = false;
-  std::vector<uint8_t> cork_bytes_;
   std::vector<CorkedSend> corked_sends_;
 
   std::shared_ptr<DatagramIo> io_;

@@ -4,6 +4,7 @@
 #include "amp/L3/Capability.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace pp::amp {
 
@@ -32,11 +33,33 @@ size_t LocalMaxMessageBytesCeiling(const ChannelClass cls) {
   return cls == ChannelClass::Bulk ? AmpChannelLimits::kMaxBulkFrameBytes : AmpChannelLimits::kMaxChatStreamJsonBytes;
 }
 
+std::shared_ptr<const ChannelMux::DataHandler> SharedHandler(ChannelMux::DataHandler handler) {
+  return handler ? std::make_shared<const ChannelMux::DataHandler>(std::move(handler)) : nullptr;
+}
+
 } // namespace
 
 ChannelMux::ChannelMux(const bool initiator) : now_ms_(DefaultNowMs) {
   // Dual-open on one Session: initiator allocates odd ids, responder even — avoids OPEN glare.
   next_dynamic_id_ = initiator ? 1u : 2u;
+}
+
+ChannelMux::~ChannelMux() {
+  // Taken out first: a handler may end a session whose destructor unbinds another channel here.
+  std::vector<std::pair<uint32_t, TerminalHandler>> handlers;
+  for (auto& [id, channel] : channels_) {
+    if (channel.on_terminal) {
+      handlers.emplace_back(id, std::exchange(channel.on_terminal, nullptr));
+    }
+  }
+  for (auto& [id, handler] : pending_terminal_handlers_) {
+    if (handler) {
+      handlers.emplace_back(id, std::exchange(handler, nullptr));
+    }
+  }
+  for (auto& [id, handler] : handlers) {
+    handler(id, kMuxDestroyedReason);
+  }
 }
 
 void ChannelMux::SetTransport(TransportSend send) {
@@ -197,7 +220,7 @@ Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPo
     return Error("amp mux: channel id already recorded");
   }
   if (auto it = pending_handlers_.find(id); it != pending_handlers_.end()) {
-    channels_.at(id).on_data = std::move(it->second);
+    channels_.at(id).on_data = SharedHandler(std::move(it->second));
     pending_handlers_.erase(it);
   }
   if (auto it = pending_terminal_handlers_.find(id); it != pending_terminal_handlers_.end()) {
@@ -227,7 +250,7 @@ Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPo
 
 void ChannelMux::SetDataHandler(const uint32_t channel_id, DataHandler handler) {
   if (auto* channel = ChannelById(channel_id)) {
-    channel->on_data = std::move(handler);
+    channel->on_data = SharedHandler(std::move(handler));
     return;
   }
   pending_handlers_[channel_id] = std::move(handler);
@@ -282,8 +305,10 @@ std::vector<std::function<void()>> ChannelMux::DetachAllChannels() {
   queued_bytes_ = 0;
   for (auto& [id, channel] : channels_) {
     channel.state = ChannelState::Closed;
-    channel.on_data = {};
-    if (auto handler = std::move(channel.on_terminal)) {
+    channel.on_data = nullptr;
+    // exchange, not move: libc++ leaves a moved-from std::function holding a (cloned) small target, and
+    // ~ChannelMux then told the session the mux died before this notice said the link dropped.
+    if (auto handler = std::exchange(channel.on_terminal, nullptr)) {
       notices.push_back([handler = std::move(handler), channel_id = id]() { handler(channel_id, kLinkDroppedReason); });
     }
   }
@@ -296,8 +321,8 @@ std::vector<std::function<void()>> ChannelMux::DetachAllChannels() {
 Roe<void> ChannelMux::DeliverPayload(ChannelRecord& channel, std::vector<uint8_t> payload) {
   // Copy before invoke ([A027]): parent may unbind / TearDown mid-callback.
   if (channel.on_data) {
-    auto handler = channel.on_data;
-    handler(channel.id, std::move(payload));
+    const auto handler = channel.on_data;
+    (*handler)(channel.id, std::move(payload));
     return Roe<void>();
   }
   return Roe<void>();
@@ -352,7 +377,7 @@ Roe<void> ChannelMux::HandleOpen(ChannelFrame frame) {
   rec.state = ChannelState::Open;
   channels_.emplace(rec.id, std::move(rec));
   if (auto it = pending_handlers_.find(frame.header.channel_id); it != pending_handlers_.end()) {
-    channels_.at(frame.header.channel_id).on_data = std::move(it->second);
+    channels_.at(frame.header.channel_id).on_data = SharedHandler(std::move(it->second));
     pending_handlers_.erase(it);
   }
   if (auto it = pending_terminal_handlers_.find(frame.header.channel_id); it != pending_terminal_handlers_.end()) {
@@ -484,6 +509,37 @@ Roe<void> ChannelMux::OnFrameInbound(const std::span<const uint8_t> wire) {
   return DispatchFrame(std::move(*frame));
 }
 
+void ChannelMux::AdvanceTxSeq(const uint32_t channel_id) {
+  // A transport that delivers at once (tests, loopback) may close the channel during the send — the
+  // peer's RESET, or a read-once reply — and erase its record: look it up again, never keep a pointer.
+  if (auto* channel = ChannelById(channel_id)) {
+    ++channel->tx_seq;
+  }
+}
+
+Roe<void> ChannelMux::SendData(const uint32_t channel_id, const std::span<const uint8_t> payload) {
+  auto* channel = ChannelById(channel_id);
+  if (!channel || channel->state != ChannelState::Open) {
+    return Error("amp mux: send on closed channel");
+  }
+  if (payload.size() > channel->policy.max_message_bytes) {
+    return Error("amp mux: payload too large");
+  }
+  if (payload.size() > max_frame_bytes_ - kChannelHeaderBytes || !transport_) {
+    return SendData(channel_id, std::vector<uint8_t>(payload.begin(), payload.end())); // fragments
+  }
+  ChannelHeader header;
+  header.frame_type = ChannelFrameType::Data;
+  header.channel_id = channel_id;
+  header.channel_seq = channel->tx_seq;
+  auto sent = SendWire(channel_id, QosForClass(channel->policy.cls), ChannelWire::EncodeData(header, payload));
+  if (!sent) {
+    return sent.error();
+  }
+  AdvanceTxSeq(channel_id);
+  return Roe<void>();
+}
+
 Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> payload) {
   auto* channel = ChannelById(channel_id);
   if (!channel || channel->state != ChannelState::Open) {
@@ -504,7 +560,7 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     if (!sent) {
       return sent.error();
     }
-    ++channel->tx_seq;
+    AdvanceTxSeq(channel_id);
     return Roe<void>();
   }
 

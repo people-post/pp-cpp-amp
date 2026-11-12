@@ -72,3 +72,28 @@ jobs:
       - name: Test
         shell: bash
         run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+
+  # AddressSanitizer + LeakSanitizer + UBSan over the whole suite. Use-after-frees and ownership
+  # cycles pass every other job silently: a handshake failure wrote into a freed handshake, and
+  # self-owning closures leaked each burst dial, until a local sanitizer run found them.
+  sanitize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          flags="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug \
+            -DPP_AMP_BUILD_TESTS=ON \
+            -DCMAKE_C_FLAGS="$flags" -DCMAKE_CXX_FLAGS="$flags" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: cmake --build build -j 4
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure --no-tests=error -j 4

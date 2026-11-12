@@ -46,6 +46,10 @@ public:
 
   /** `initiator`: the end that dialed (odd channel ids; the responder's are even). */
   explicit ChannelMux(bool initiator);
+  /** Tells each channel still holding a terminal handler kMuxDestroyedReason (see there). */
+  ~ChannelMux();
+  ChannelMux(const ChannelMux&) = delete;
+  ChannelMux& operator=(const ChannelMux&) = delete;
 
   void SetTransport(TransportSend send);
   void SetTransportCredits(TransportCredits credits);
@@ -91,6 +95,14 @@ public:
 
   /** Terminal reason when the link (and this mux) is being destroyed. */
   static constexpr const char* kLinkDroppedReason = "link-dropped";
+  /**
+   * Terminal reason, from the mux's destructor, for channels a link drop did not detach: the mux
+   * dies with its owner (a PeerLinkManager torn down with links up). A session forgets the mux and
+   * ends quietly — no closed callback, as its owner is mid-destruction. Without it a served session
+   * whose own handlers own it was never told and leaked, and one that outlived the mux kept a
+   * dangling pointer to it.
+   */
+  static constexpr const char* kMuxDestroyedReason = "mux-destroyed";
   /** Terminal reason when a channel's ChannelPolicy::read_timeout expired (the mux reset it). */
   static constexpr const char* kReadTimeoutReason = "read-timeout";
   /**
@@ -128,6 +140,8 @@ public:
   void SetRefuseUnhandledOpens(bool refuse) { refuse_unhandled_opens_ = refuse; }
 
   Roe<void> SendData(uint32_t channel_id, std::vector<uint8_t> payload);
+  /** The same from the caller's bytes: a payload that fits one frame is encoded straight from them (one copy). */
+  Roe<void> SendData(uint32_t channel_id, std::span<const uint8_t> payload);
   Roe<void> ResetChannel(uint32_t channel_id, uint32_t code = 1);
   Roe<void> CloseChannel(uint32_t channel_id, std::string reason = {});
 
@@ -190,7 +204,11 @@ private:
     ChannelState state = ChannelState::Closed;
     uint32_t tx_seq = 1;
     uint32_t rx_seq = 1;
-    DataHandler on_data;
+    /**
+     * Shared, so a frame pins it with a reference count rather than a copy (a std::function's copy allocated and
+     * copied its captures on every frame: a busy relay's largest libc cost).
+     */
+    std::shared_ptr<const DataHandler> on_data;
     TerminalHandler on_terminal;
     MessageReassembly reassembly;
     /** Tick time the read_timeout clock last (re)started; -1 = restart on the next Tick. */
@@ -205,6 +223,7 @@ private:
     int64_t queued_at_ms = 0;
   };
 
+  void AdvanceTxSeq(uint32_t channel_id);
   Roe<void> SendFrame(const ChannelFrame& frame, ChannelRecord& channel);
   /**
    * Send an encoded frame (the link seals it), or queue it: a reliable frame waits while
