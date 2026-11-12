@@ -33,19 +33,12 @@ struct CarrierLaneConfig {
  * Pure logic (no I/O, caller's clock). TX: `Wrap` numbers a frame and keeps it until acked;
  * `DueResends` returns what to send again (adaptive RTO, RFC 6298 estimator, Karn's rule, fast
  * resend on selective acks). RX: `OnData` holds out-of-order frames and releases them in order;
- * every data frame is answered with `Ack` (cumulative + 64 selective bits).
- *
- * Negotiation: both ends announce the lane with probes (`EncodeLaneAck` with nothing acked)
- * during the handshake; a peer that never sends a lane frame is an older build, and frames go
- * to it as before (`PeerSpeaksLane` false).
+ * every data frame is answered with `Ack` (cumulative + 64 selective bits). Every nested link
+ * speaks it: there is no negotiation.
  */
 class CarrierLane {
 public:
   explicit CarrierLane(CarrierLaneConfig config = {});
-
-  // --- negotiation
-  void NotePeerSpeaksLane() { peer_speaks_lane_ = true; }
-  bool PeerSpeaksLane() const { return peer_speaks_lane_; }
 
   // --- TX
   /** LaneData wire for `inner`, kept until acked; nullopt when the window is full. */
@@ -83,7 +76,6 @@ private:
   int64_t BackoffRto(int attempts) const;
 
   CarrierLaneConfig config_;
-  bool peer_speaks_lane_ = false;
   bool failed_ = false;
 
   uint32_t next_tx_seq_ = 1;

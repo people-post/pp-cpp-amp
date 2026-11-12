@@ -13,7 +13,7 @@ TEST(PeerIdTest, TheHookDerivesTheMeshPeerIdOfAnMlDsa65Key) {
 }
 
 TEST(PeerIdTest, FromMultiaddr) {
-  EXPECT_EQ(pp::amp::PeerIdFromMultiaddr("/ip4/10.0.0.1/udp/4001/adp/1.0.0/p2p/QmPeer"), "QmPeer");
+  EXPECT_EQ(pp::amp::PeerIdFromMultiaddr("/ip4/10.0.0.1/udp/4001/adp/2/p2p/QmPeer"), "QmPeer");
   EXPECT_EQ(pp::amp::PeerIdFromMultiaddr("/p2p/QmRelay/p2p-circuit/p2p/QmTarget"), "QmTarget") << "the last one";
   EXPECT_EQ(pp::amp::PeerIdFromMultiaddr("/p2p/QmPeer/extra"), "QmPeer");
   EXPECT_EQ(pp::amp::PeerIdFromMultiaddr("/ip4/10.0.0.1/udp/4001"), "");

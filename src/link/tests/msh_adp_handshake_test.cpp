@@ -7,6 +7,7 @@
 
 #include <deque>
 #include <functional>
+#include <optional>
 #include <gtest/gtest.h>
 
 namespace pp::amp {
@@ -58,7 +59,10 @@ std::vector<uint8_t> RebindPayloadToOtherKemKey(const MshIdentity& identity, std
   return *re_wire;
 }
 
-/** Queues wire deliveries instead of recursing into HandleMsh, matching real async transport. */
+/**
+ * Queues wire deliveries instead of recursing into HandleMsh, matching real async transport. A message too large
+ * for one frame goes in MshChunk pieces; the pump joins them (as PeerLink does) and queues the whole message.
+ */
 class Pump {
 public:
   using Rewrite = std::function<std::vector<uint8_t>(std::vector<uint8_t>)>;
@@ -70,14 +74,18 @@ public:
 
   MshAdpHandshake::SendWire SendToServer(Rewrite rewrite = nullptr) {
     return [this, rewrite](std::vector<uint8_t> wire) -> Roe<void> {
-      queue_.push_back({true, rewrite ? rewrite(std::move(wire)) : std::move(wire)});
+      if (auto whole = Join(to_server_parts_, std::move(wire))) {
+        queue_.push_back({true, rewrite ? rewrite(std::move(*whole)) : std::move(*whole)});
+      }
       return Roe<void>();
     };
   }
 
   MshAdpHandshake::SendWire SendToClient() {
     return [this](std::vector<uint8_t> wire) -> Roe<void> {
-      queue_.push_back({false, std::move(wire)});
+      if (auto whole = Join(to_client_parts_, std::move(wire))) {
+        queue_.push_back({false, std::move(*whole)});
+      }
       return Roe<void>();
     };
   }
@@ -101,8 +109,46 @@ public:
   }
 
 private:
+  struct Parts {
+    MshMessageType type{};
+    std::vector<std::vector<uint8_t>> pieces;
+    size_t have = 0;
+  };
+
+  /** The whole message once `wire` completes it (a single frame is whole already). */
+  static std::optional<std::vector<uint8_t>> Join(Parts& parts, std::vector<uint8_t> wire) {
+    auto kind = AmpAdpCarrier::DecodeKind(wire);
+    if (!kind || *kind != AmpAdpPayloadKind::MshChunk) {
+      return wire;
+    }
+    auto chunk = AmpAdpCarrier::DecodeMshChunk(wire);
+    if (!chunk) {
+      return std::nullopt;
+    }
+    const auto [type, index, count, piece] = *chunk;
+    if (parts.pieces.size() != count) {
+      parts = Parts{type, std::vector<std::vector<uint8_t>>(count), 0};
+    }
+    if (parts.pieces[index].empty()) {
+      parts.pieces[index].assign(piece.begin(), piece.end());
+      ++parts.have;
+    }
+    if (parts.have != count) {
+      return std::nullopt;
+    }
+    std::vector<uint8_t> body;
+    for (const auto& p : parts.pieces) {
+      body.insert(body.end(), p.begin(), p.end());
+    }
+    parts = Parts{};
+    auto whole = AmpAdpCarrier::EncodeMsh(type, body);
+    return whole ? std::optional<std::vector<uint8_t>>(std::move(*whole)) : std::nullopt;
+  }
+
   MshAdpHandshake* to_client_ = nullptr;
   MshAdpHandshake* to_server_ = nullptr;
+  Parts to_server_parts_;
+  Parts to_client_parts_;
   std::deque<std::pair<bool, std::vector<uint8_t>>> queue_;
 };
 
@@ -117,11 +163,11 @@ TEST(MshAdpHandshakeTest, CompletesWithMatchingIdentities) {
   MshAdpHandshake client(
       MshAdpHandshake::Role::Initiator, client_identity, pump.SendToServer(),
       [&](Roe<MshAdpEstablished> result) { client_result = std::move(result); },
-      /*chunked_wire=*/false);
+      /*over_carrier=*/true);
   MshAdpHandshake server(
       MshAdpHandshake::Role::Responder, server_identity, pump.SendToClient(),
       [&](Roe<MshAdpEstablished> result) { server_result = std::move(result); },
-      /*chunked_wire=*/false);
+      /*over_carrier=*/true);
   pump.SetTargets(&client, &server);
 
   auto start = client.Start();
@@ -153,11 +199,11 @@ TEST(MshAdpHandshakeTest, RejectsPayloadKemKeyMismatchingHello) {
         return wire;
       }),
       [&](Roe<MshAdpEstablished>) {},
-      /*chunked_wire=*/false);
+      /*over_carrier=*/true);
   MshAdpHandshake server(
       MshAdpHandshake::Role::Responder, server_identity, pump.SendToClient(),
       [&](Roe<MshAdpEstablished> result) { server_result = std::move(result); },
-      /*chunked_wire=*/false);
+      /*over_carrier=*/true);
   pump.SetTargets(&client, &server);
 
   auto start = client.Start();

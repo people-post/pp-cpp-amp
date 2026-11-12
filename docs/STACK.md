@@ -37,7 +37,7 @@ wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
   `IsConnected` and `GetLinkSnapshot` resolve through it, so a dial in flight under the key never
   hides a live link. Dial state (`EnsureAssociation`, drops, backoff) stays on the key's own link.
 - Handlers: `SetProtocolHandler`, `SetCapabilityHandler` (no `PeerLink&`)
-- Node info (N032): `SetAdvertisedNodeInfo` (node version, features) rides channel 0's extension (leading byte 3, after the v1 offer and reply); `RemoteCapabilityExtension(peer_id)` reads a connected peer's
+- Node info (N032): `SetAdvertisedNodeInfo` (node version, features) rides the capability offer with amp's wire version (channel 0's leading byte 4; the retired 1 and 3 are refused); `RemoteCapability(peer_id)` reads a connected peer's
 - Version negotiation (N032): a datagram of another wire version is answered (rate-limited, never larger than what it answers) with `[0xF0][16 B echo][count][versions]`; a dialer still handshaking fails at once as `VersionMismatch` (`LinkDropReason::VersionMismatch`, "version-mismatch")
 - `SetRefuseUnhandledOpens(true)`: inbound opens for protocols without a handler are refused
   (OpenAck `kOpenAckNoHandler`) — the opener's `WhenChannelOpen` fails at once instead of seeing an
@@ -93,8 +93,8 @@ wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
   nested handshake over a carrier is not a candidate: it always keeps the whole `dial_timeout`, even
   when the peer's record has untried addresses (two long legs through a relay need more than the
   short budget, pp-browser #502).
-- **Multiaddrs may name a host.** Besides `/ip4|ip6/<ip>/udp/<port>/adp/1.0.0/p2p/<id>`, a
-  dial candidate may be `/dns4|dns6|dns/<host>/udp/<port>/adp/1.0.0/p2p/<id>` (`dns4` asks for an
+- **Multiaddrs may name a host.** Besides `/ip4|ip6/<ip>/udp/<port>/adp/<wire>/p2p/<id>`, a
+  dial candidate may be `/dns4|dns6|dns/<host>/udp/<port>/adp/<wire>/p2p/<id>` (`dns4` asks for an
   IPv4 address, `dns6` IPv6, `dns` either; `/dnsaddr` is not supported). The name is resolved when
   the candidate is dialed, on a thread of its own (`HostResolver`) so the strand never blocks; dials
   under the key wait on that one lookup. A name that does not resolve fails the candidate like a
