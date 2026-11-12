@@ -37,7 +37,7 @@ wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
   `IsConnected` and `GetLinkSnapshot` resolve through it, so a dial in flight under the key never
   hides a live link. Dial state (`EnsureAssociation`, drops, backoff) stays on the key's own link.
 - Handlers: `SetProtocolHandler`, `SetCapabilityHandler` (no `PeerLink&`)
-- Node info (N032): `SetAdvertisedNodeInfo` (node version, features) rides channel 0's extension (leading byte 3, after the v1 offer and reply); `RemoteCapabilityExtension(peer_id)` reads a connected peer's
+- Node info (N032): `SetAdvertisedNodeInfo` (node version, features) rides the capability offer with amp's wire version (channel 0's leading byte 4; the retired 1 and 3 are refused); `RemoteCapability(peer_id)` reads a connected peer's
 - Version negotiation (N032): a datagram of another wire version is answered (rate-limited, never larger than what it answers) with `[0xF0][16 B echo][count][versions]`; a dialer still handshaking fails at once as `VersionMismatch` (`LinkDropReason::VersionMismatch`, "version-mismatch")
 - `SetRefuseUnhandledOpens(true)`: inbound opens for protocols without a handler are refused
   (OpenAck `kOpenAckNoHandler`) — the opener's `WhenChannelOpen` fails at once instead of seeing an

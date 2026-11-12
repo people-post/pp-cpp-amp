@@ -113,10 +113,10 @@ public:
 
   void SetLocalListenMultiaddrs(std::vector<std::string> multiaddrs);
   void SetAdvertisedProtocols(std::vector<std::string> protocols);
-  /** What channel 0's extension tells each peer (N032): the node's version and features; amp adds its wire version. */
+  /** What the capability offer tells each peer it runs (N032): the node's version and features; amp adds its wire. */
   void SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features);
-  /** A connected peer's channel-0 extension (N032), or nullopt (not connected, not arrived, or a peer before it). */
-  std::optional<CapabilityExtension> RemoteCapabilityExtension(const std::string& peer_id) const;
+  /** A connected peer's capability offer, or nullopt (not connected, or its offer not arrived yet). */
+  std::optional<CapabilityPayload> RemoteCapability(const std::string& peer_id) const;
   void SetCapabilityHandler(CapabilityHandler handler);
   CapabilityPayload LocalCapability() const;
   /**
@@ -348,7 +348,6 @@ private:
   void OnCh0Data(const std::string& peer_key, std::vector<uint8_t> payload);
   void IngestRemoteCapabilityAddrs(PeerLink& link, const CapabilityPayload& remote);
   /** Once per link, on an open channel 0 (the mux queues only one message while it opens). */
-  void SendCapabilityExtension(PeerLink& link);
   void FinishDial(const std::string& peer_key, LinkHandle handle, LinkRoe result);
   /** Start outbound dial for `peer_key`; waiters must already be queued. Strand-locked. */
   void BeginOutboundDialLocked(const std::string& peer_key);

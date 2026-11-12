@@ -208,13 +208,6 @@ public:
   void RebindDialKey(std::string peer_key) { peer_key_ = std::move(peer_key); }
 
   void ApplyRemoteCapability(CapabilityPayload payload) { remote_capability_ = std::move(payload); }
-  /** The peer's channel-0 extension (N032); null until it arrives, and always from a peer before it. */
-  const CapabilityExtension* RemoteCapabilityExtension() const {
-    return remote_extension_ ? &*remote_extension_ : nullptr;
-  }
-  void ApplyRemoteCapabilityExtension(CapabilityExtension extension) { remote_extension_ = std::move(extension); }
-  bool CapabilityExtensionSent() const { return capability_extension_sent_; }
-  void MarkCapabilityExtensionSent() { capability_extension_sent_ = true; }
   bool CapabilityExchangeStarted() const { return capability_exchange_started_; }
   void MarkCapabilityExchangeStarted() { capability_exchange_started_ = true; }
   bool CapabilityOfferSent() const { return capability_offer_sent_; }
@@ -284,8 +277,6 @@ private:
   bool capability_exchange_started_ = false;
   bool capability_offer_sent_ = false;
   std::optional<CapabilityPayload> remote_capability_;
-  std::optional<CapabilityExtension> remote_extension_;
-  bool capability_extension_sent_ = false;
 
   std::unique_ptr<MshAdpHandshake> handshake_;
   /** Carrier-backed initiator: when the last handshake message goes again, and the wait after that. */

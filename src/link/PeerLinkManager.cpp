@@ -113,27 +113,13 @@ void PeerLinkManager::SetAdvertisedNodeInfo(std::string node_version, std::vecto
   advertised_features_ = std::move(features);
 }
 
-std::optional<CapabilityExtension> PeerLinkManager::RemoteCapabilityExtension(const std::string& peer_id) const {
+std::optional<CapabilityPayload> PeerLinkManager::RemoteCapability(const std::string& peer_id) const {
   std::lock_guard lock(strand_mu_);
   const PeerLink* link = table_.FindByPeerId(peer_id);
-  if (!link || link->Phase() != PeerLinkPhase::Connected || !link->RemoteCapabilityExtension()) {
+  if (!link || link->Phase() != PeerLinkPhase::Connected || !link->RemoteCapability()) {
     return std::nullopt;
   }
-  return *link->RemoteCapabilityExtension();
-}
-
-void PeerLinkManager::SendCapabilityExtension(PeerLink& link) {
-  if (link.CapabilityExtensionSent() || !link.Mux() || link.Mux()->State(kCapabilityChannelId) != ChannelState::Open) {
-    return;
-  }
-  CapabilityExtension extension;
-  extension.amp_wire = adp::kWireVersion;
-  extension.node_version = advertised_node_version_;
-  extension.features = advertised_features_;
-  if (auto encoded = CapabilityCodec::EncodeExtension(extension)) {
-    link.MarkCapabilityExtensionSent();
-    (void)link.Mux()->SendData(kCapabilityChannelId, std::move(*encoded));
-  }
+  return *link->RemoteCapability();
 }
 
 CapabilityPayload PeerLinkManager::LocalCapability() const {
@@ -142,6 +128,9 @@ CapabilityPayload PeerLinkManager::LocalCapability() const {
   payload.local_peer_id = local_peer_id_;
   payload.listen_multiaddrs = local_listen_multiaddrs_;
   payload.protocols = advertised_protocols_;
+  payload.amp_wire = adp::kWireVersion;
+  payload.node_version = advertised_node_version_;
+  payload.features = advertised_features_;
   return payload;
 }
 
@@ -1363,12 +1352,6 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
   if (!link || !link->Mux()) {
     return;
   }
-  if (CapabilityCodec::IsExtension(payload)) {
-    if (auto extension = CapabilityCodec::DecodeExtension(payload)) {
-      link->ApplyRemoteCapabilityExtension(std::move(*extension));
-    }
-    return;
-  }
   auto decoded = CapabilityCodec::Decode(payload);
   if (!decoded) {
     return;
@@ -1385,9 +1368,6 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
       (void)link->Mux()->SendData(kCapabilityChannelId, std::move(*encoded));
     }
   }
-  // After the v1 messages (the responder's reply, or the dialer on that reply): channel 0 is open both ways.
-  SendCapabilityExtension(*link);
-
   if (first) {
     IngestRemoteCapabilityAddrs(*link, *decoded);
     if (capability_handler_) {

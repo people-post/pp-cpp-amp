@@ -469,8 +469,8 @@ void MeshRuntime::SetAdvertisedNodeInfo(std::string node_version, std::vector<st
   links_.SetAdvertisedNodeInfo(std::move(node_version), std::move(features));
 }
 
-std::optional<CapabilityExtension> MeshRuntime::RemoteCapabilityExtension(const std::string& peer_id) const {
-  return links_.RemoteCapabilityExtension(peer_id);
+std::optional<CapabilityPayload> MeshRuntime::RemoteCapability(const std::string& peer_id) const {
+  return links_.RemoteCapability(peer_id);
 }
 
 void MeshRuntime::MarkWarm(const DialKey& peer_key) {

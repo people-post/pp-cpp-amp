@@ -204,8 +204,8 @@ public:
   void SetAdvertisedProtocols(std::vector<std::string> protocols);
   /** See PeerLinkManager::SetAdvertisedNodeInfo (N032). */
   void SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features);
-  /** See PeerLinkManager::RemoteCapabilityExtension (N032). */
-  std::optional<CapabilityExtension> RemoteCapabilityExtension(const std::string& peer_id) const;
+  /** See PeerLinkManager::RemoteCapability (N032). */
+  std::optional<CapabilityPayload> RemoteCapability(const std::string& peer_id) const;
 
   void MarkWarm(const DialKey& peer_key);
   void MarkHot(const DialKey& peer_key);

@@ -2538,8 +2538,8 @@ TEST(MeshLinkTest, CapabilityExchangeAfterAssociation) {
   EXPECT_EQ(seen_on_b.local_peer_id, h.peer_id_a);
 }
 
-// N032: after the v1 exchange each side tells the other its wire version, node version and features (channel 0's
-// extension), and the product reads it by PeerId while the link is up.
+// N032: each side's capability offer tells the other its wire version, node version and features, and the product
+// reads it by PeerId while the link is up.
 TEST(MeshLinkTest, EachSideLearnsTheOthersVersionAndFeaturesOverChannelZero) {
   ASSERT_GE(sodium_init(), 0);
   auto created = pbr::test::AmpMeshHarness::Create();
@@ -2552,22 +2552,20 @@ TEST(MeshLinkTest, EachSideLearnsTheOthersVersionAndFeaturesOverChannelZero) {
   ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
   bool associated = false;
   h.mgr_a().EnsureAssociation("b", [&](PeerLinkManager::LinkRoe result) { associated = static_cast<bool>(result); });
-  h.PumpUntil([&] {
-    return associated && h.mgr_a().RemoteCapabilityExtension(h.peer_id_b) &&
-           h.mgr_b().RemoteCapabilityExtension(h.peer_id_a);
-  });
+  h.PumpUntil(
+      [&] { return associated && h.mgr_a().RemoteCapability(h.peer_id_b) && h.mgr_b().RemoteCapability(h.peer_id_a); });
   ASSERT_TRUE(associated);
 
-  const auto on_a = h.mgr_a().RemoteCapabilityExtension(h.peer_id_b);
+  const auto on_a = h.mgr_a().RemoteCapability(h.peer_id_b);
   ASSERT_TRUE(on_a.has_value()) << "the dialer learned the responder's";
   EXPECT_EQ(on_a->amp_wire, adp::kWireVersion);
   EXPECT_EQ(on_a->node_version, "4.2.0");
   EXPECT_TRUE(on_a->features.empty());
-  const auto on_b = h.mgr_b().RemoteCapabilityExtension(h.peer_id_a);
+  const auto on_b = h.mgr_b().RemoteCapability(h.peer_id_a);
   ASSERT_TRUE(on_b.has_value()) << "the responder learned the dialer's";
   EXPECT_EQ(on_b->node_version, "4.1.0");
   EXPECT_EQ(on_b->features, std::vector<std::string>{"hop_data_lane"});
-  EXPECT_FALSE(h.mgr_a().RemoteCapabilityExtension("QmNobody").has_value());
+  EXPECT_FALSE(h.mgr_a().RemoteCapability("QmNobody").has_value());
 }
 
 // An application's address-disclosure policy: ch0 carries our listen multiaddrs only to peers it
