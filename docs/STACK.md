@@ -93,8 +93,8 @@ wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
   nested handshake over a carrier is not a candidate: it always keeps the whole `dial_timeout`, even
   when the peer's record has untried addresses (two long legs through a relay need more than the
   short budget, pp-browser #502).
-- **Multiaddrs may name a host.** Besides `/ip4|ip6/<ip>/udp/<port>/adp/1.0.0/p2p/<id>`, a
-  dial candidate may be `/dns4|dns6|dns/<host>/udp/<port>/adp/1.0.0/p2p/<id>` (`dns4` asks for an
+- **Multiaddrs may name a host.** Besides `/ip4|ip6/<ip>/udp/<port>/adp/<wire>/p2p/<id>`, a
+  dial candidate may be `/dns4|dns6|dns/<host>/udp/<port>/adp/<wire>/p2p/<id>` (`dns4` asks for an
   IPv4 address, `dns6` IPv6, `dns` either; `/dnsaddr` is not supported). The name is resolved when
   the candidate is dialed, on a thread of its own (`HostResolver`) so the strand never blocks; dials
   under the key wait on that one lookup. A name that does not resolve fails the candidate like a

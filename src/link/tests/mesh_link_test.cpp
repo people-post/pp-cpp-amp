@@ -427,8 +427,7 @@ TEST(MeshLinkTest, AHostnameCandidateIsResolvedThenDialed) {
   ASSERT_TRUE(static_cast<bool>(fixture));
   ManualResolver resolver;
   fixture->mgr_a->SetHostResolver(resolver.fn());
-  ASSERT_TRUE(
-      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/2/p2p/QmBob")));
 
   int answered = 0;
   bool associated = false;
@@ -463,8 +462,7 @@ TEST(MeshLinkTest, AHostnameThatDoesNotResolveFailsLikeADial) {
   ASSERT_TRUE(static_cast<bool>(fixture));
   ManualResolver resolver;
   fixture->mgr_a->SetHostResolver(resolver.fn());
-  ASSERT_TRUE(
-      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/gone.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/gone.test/udp/2000/adp/2/p2p/QmBob")));
   std::optional<PeerLinkManager::LinkRoe> outcome;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { outcome = std::move(r); });
   resolver.answer(Error("amp addr: cannot resolve gone.test"));
@@ -489,8 +487,7 @@ TEST(MeshLinkTest, AFailedDialResolvesTheHostnameAgain) {
   ASSERT_TRUE(static_cast<bool>(fixture));
   ManualResolver resolver;
   fixture->mgr_a->SetHostResolver(resolver.fn());
-  ASSERT_TRUE(
-      static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/1.0.0/p2p/QmBob")));
+  ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoint("bob", "/dns4/bob.test/udp/2000/adp/2/p2p/QmBob")));
   std::optional<PeerLinkManager::LinkRoe> first;
   fixture->mgr_a->EnsureAssociation("bob", [&](PeerLinkManager::LinkRoe r) { first = std::move(r); });
   resolver.answer(adp::IpEndpoint::V4(10, 0, 0, 9, 2000)); // where bob was: nobody answers
@@ -2892,8 +2889,8 @@ TEST(MeshLinkTest, EnsureAssociationOverMemoryIoIpv6) {
 TEST(DialBookTest, RegisterEndpointsKeepsOrderedCandidates) {
   DialBook book({});
   const std::string peer = "QmCand";
-  const std::string bad = "/ip4/10.0.0.99/udp/1/adp/1.0.0/p2p/" + peer;
-  const std::string good = "/ip4/10.0.0.1/udp/2/adp/1.0.0/p2p/" + peer;
+  const std::string bad = "/ip4/10.0.0.99/udp/1/adp/2/p2p/" + peer;
+  const std::string good = "/ip4/10.0.0.1/udp/2/adp/2/p2p/" + peer;
   ASSERT_TRUE(static_cast<bool>(book.RegisterEndpoints("k", {bad, good})));
   ASSERT_EQ(book.Find("k")->candidates.size(), 2u);
   EXPECT_EQ(book.Find("k")->multiaddr, bad);
@@ -2908,8 +2905,8 @@ TEST(DialBookTest, RegisterEndpointsKeepsOrderedCandidates) {
 TEST(DialBookTest, RegisterEndpointPromotesWithoutDroppingPrior) {
   DialBook book({});
   const std::string peer = "QmProm";
-  const std::string a = "/ip4/10.0.0.1/udp/1/adp/1.0.0/p2p/" + peer;
-  const std::string b = "/ip4/10.0.0.2/udp/2/adp/1.0.0/p2p/" + peer;
+  const std::string a = "/ip4/10.0.0.1/udp/1/adp/2/p2p/" + peer;
+  const std::string b = "/ip4/10.0.0.2/udp/2/adp/2/p2p/" + peer;
   ASSERT_TRUE(static_cast<bool>(book.RegisterEndpoint("k", a)));
   ASSERT_TRUE(static_cast<bool>(book.RegisterEndpoint("k", b)));
   ASSERT_EQ(book.Find("k")->candidates.size(), 2u);
@@ -2924,9 +2921,9 @@ TEST(DialBookTest, IngestRemoteAddrsDropsMismatchedPeerId) {
   DialBook book({});
   const std::string real_peer = "QmReal";
   const std::string spoofed_peer = "QmSpoofed";
-  const std::string consistent = "/ip4/10.0.1.1/udp/1/adp/1.0.0/p2p/" + real_peer;
-  const std::string consistent2 = "/ip4/10.0.1.3/udp/3/adp/1.0.0/p2p/" + real_peer;
-  const std::string spoofed = "/ip4/10.0.1.2/udp/2/adp/1.0.0/p2p/" + spoofed_peer;
+  const std::string consistent = "/ip4/10.0.1.1/udp/1/adp/2/p2p/" + real_peer;
+  const std::string consistent2 = "/ip4/10.0.1.3/udp/3/adp/2/p2p/" + real_peer;
+  const std::string spoofed = "/ip4/10.0.1.2/udp/2/adp/2/p2p/" + spoofed_peer;
 
   book.IngestRemoteAddrs(real_peer, {spoofed, consistent, consistent2});
 
@@ -2945,12 +2942,12 @@ TEST(DialBookTest, IngestRemoteAddrsDropsMismatchedPeerId) {
 TEST(DialBookTest, IngestRemoteAddrsDropsUndialableAddresses) {
   DialBook book({});
   const std::string peer = "QmReal";
-  const std::string link_local_v4 = "/ip4/169.254.132.227/udp/55777/adp/1.0.0/p2p/" + peer;
-  const std::string link_local_v6 = "/ip6/fe80::1/udp/55777/adp/1.0.0/p2p/" + peer;
-  const std::string loopback = "/ip4/127.0.0.1/udp/55777/adp/1.0.0/p2p/" + peer;
-  const std::string unspecified = "/ip4/0.0.0.0/udp/55777/adp/1.0.0/p2p/" + peer;
-  const std::string lan = "/ip4/192.168.1.20/udp/55777/adp/1.0.0/p2p/" + peer;
-  const std::string global_v6 = "/ip6/2001:db8::20/udp/55777/adp/1.0.0/p2p/" + peer;
+  const std::string link_local_v4 = "/ip4/169.254.132.227/udp/55777/adp/2/p2p/" + peer;
+  const std::string link_local_v6 = "/ip6/fe80::1/udp/55777/adp/2/p2p/" + peer;
+  const std::string loopback = "/ip4/127.0.0.1/udp/55777/adp/2/p2p/" + peer;
+  const std::string unspecified = "/ip4/0.0.0.0/udp/55777/adp/2/p2p/" + peer;
+  const std::string lan = "/ip4/192.168.1.20/udp/55777/adp/2/p2p/" + peer;
+  const std::string global_v6 = "/ip6/2001:db8::20/udp/55777/adp/2/p2p/" + peer;
 
   book.IngestRemoteAddrs(peer, {link_local_v4, link_local_v6, loopback, unspecified, lan, global_v6});
 
@@ -3133,7 +3130,7 @@ TEST(MeshLinkTest, EnsureAssociationFallsBackToSecondCandidate) {
 
   auto good = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
   ASSERT_TRUE(static_cast<bool>(good));
-  const std::string blackhole = "/ip4/203.0.113.1/udp/59999/adp/1.0.0/p2p/QmBob";
+  const std::string blackhole = "/ip4/203.0.113.1/udp/59999/adp/2/p2p/QmBob";
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoints("bob", {blackhole, *good})));
 
   fixture->mgr_a->Book().Config().dial_attempt_timeout = std::chrono::milliseconds(30);
@@ -3167,7 +3164,7 @@ TEST(MeshLinkTest, ACandidateThatAnswersKeepsTheFullDialBudget) {
 
   auto good = FormatAdpMultiaddr(fixture->addr_b, "QmBob");
   ASSERT_TRUE(static_cast<bool>(good));
-  const std::string blackhole = "/ip4/203.0.113.1/udp/59999/adp/1.0.0/p2p/QmBob";
+  const std::string blackhole = "/ip4/203.0.113.1/udp/59999/adp/2/p2p/QmBob";
   ASSERT_TRUE(static_cast<bool>(fixture->mgr_a->RegisterEndpoints("bob", {*good, blackhole})));
   fixture->mgr_a->Book().Config().dial_attempt_timeout = std::chrono::milliseconds(30);
   fixture->mgr_a->Book().Config().dial_timeout = std::chrono::milliseconds(5000);
@@ -3266,7 +3263,7 @@ TEST(MeshRuntimeDriveTest, BurstDialBlackholeExpiresOnAmpClock) {
   ASSERT_TRUE(static_cast<bool>(created)) << created.error().message;
   auto harness = std::move(*created);
 
-  const std::string blackhole = "/ip4/127.0.0.1/udp/1/adp/1.0.0/p2p/" + harness->peer_id_b;
+  const std::string blackhole = "/ip4/127.0.0.1/udp/1/adp/2/p2p/" + harness->peer_id_b;
   std::optional<BurstDialResult> done;
   harness->runtime_a->BurstDial({blackhole}, std::chrono::milliseconds(100),
                                 [&](BurstDialResult r) { done = std::move(r); });

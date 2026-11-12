@@ -17,7 +17,6 @@ TEST(AdpMultiaddrTest, ParseAndFormatRoundTripIpv4) {
   const std::string multiaddr = "/ip4/127.0.0.1/udp/4001/adp/2/p2p/QmTestPeer";
   auto parsed = ParseAdpMultiaddr(multiaddr);
   ASSERT_TRUE(static_cast<bool>(parsed));
-  EXPECT_EQ(parsed->amp_wire, adp::kWireVersion);
   EXPECT_EQ(parsed->endpoint.family, adp::IpEndpoint::Family::V4);
   EXPECT_EQ(parsed->endpoint.port, 4001u);
   EXPECT_EQ(parsed->peer_id, "QmTestPeer");
@@ -27,15 +26,15 @@ TEST(AdpMultiaddrTest, ParseAndFormatRoundTripIpv4) {
   EXPECT_EQ(*formatted, multiaddr);
 }
 
-// pp-browser N032 item 3: an address says its wire version. This build writes ours; it reads the legacy token as
-// "not said" (dialed: version negotiation decides) and refuses another version, so callers skip it before dialing.
+// pp-browser N032 item 3: an address says its wire version. This build writes ours and parses only ours: another
+// version, or an address that says none (`1.0.0`, from before addresses said it), is refused, so callers skip it
+// before dialing.
 TEST(AdpMultiaddrTest, AnAddressSaysItsWireVersion) {
   EXPECT_EQ(AdpMultiaddrVersionToken(), std::to_string(adp::kWireVersion));
   EXPECT_EQ(AdpUdpSegment(443), "/udp/443/adp/" + std::to_string(adp::kWireVersion));
 
-  auto legacy = ParseAdpMultiaddr("/ip4/127.0.0.1/udp/4001/adp/1.0.0/p2p/QmOld");
-  ASSERT_TRUE(static_cast<bool>(legacy)) << "contacts' and seeds' stored addresses keep working";
-  EXPECT_EQ(legacy->amp_wire, 0);
+  EXPECT_FALSE(static_cast<bool>(ParseAdpMultiaddr("/ip4/127.0.0.1/udp/4001/adp/1.0.0/p2p/QmOld")))
+      << "an address that says no wire version is not dialed";
 
   auto other = ParseAdpMultiaddr("/ip4/127.0.0.1/udp/4001/adp/" + std::to_string(adp::kWireVersion + 1) + "/p2p/QmNew");
   ASSERT_FALSE(static_cast<bool>(other));
@@ -44,13 +43,11 @@ TEST(AdpMultiaddrTest, AnAddressSaysItsWireVersion) {
                           "/ip4/127.0.0.1/udp/4001/adp/2x/p2p/Qm", "/ip4/127.0.0.1/udp/4001/adp//p2p/Qm"}) {
     EXPECT_FALSE(static_cast<bool>(ParseAdpMultiaddr(bad))) << bad;
   }
-  auto dns = ParseAdpMultiaddr("/dns4/relay.example.org/udp/443/adp/2/p2p/QmDns");
-  ASSERT_TRUE(static_cast<bool>(dns));
-  EXPECT_EQ(dns->amp_wire, adp::kWireVersion);
+  EXPECT_TRUE(static_cast<bool>(ParseAdpMultiaddr("/dns4/relay.example.org/udp/443/adp/2/p2p/QmDns")));
 }
 
 TEST(AdpMultiaddrTest, ParseAndFormatRoundTripIpv6) {
-  const std::string multiaddr = "/ip6/2001:db8::1/udp/4001/adp/1.0.0/p2p/QmTestPeer6";
+  const std::string multiaddr = "/ip6/2001:db8::1/udp/4001/adp/2/p2p/QmTestPeer6";
   auto parsed = ParseAdpMultiaddr(multiaddr);
   ASSERT_TRUE(static_cast<bool>(parsed));
   EXPECT_EQ(parsed->endpoint.family, adp::IpEndpoint::Family::V6);
@@ -67,14 +64,14 @@ TEST(AdpMultiaddrTest, ParseAndFormatRoundTripIpv6) {
 }
 
 TEST(AdpMultiaddrTest, ParseIpv6BracketedHost) {
-  auto parsed = ParseAdpMultiaddr("/ip6/[::1]/udp/18517/adp/1.0.0/p2p/QmLoop");
+  auto parsed = ParseAdpMultiaddr("/ip6/[::1]/udp/18517/adp/2/p2p/QmLoop");
   ASSERT_TRUE(static_cast<bool>(parsed));
   EXPECT_EQ(parsed->endpoint.family, adp::IpEndpoint::Family::V6);
   EXPECT_EQ(parsed->endpoint.port, 18517u);
 }
 
 TEST(AdpMultiaddrTest, RejectIpv6ZoneId) {
-  auto parsed = ParseAdpMultiaddr("/ip6/fe80::1%eth0/udp/18517/adp/1.0.0/p2p/QmLinkLocal");
+  auto parsed = ParseAdpMultiaddr("/ip6/fe80::1%eth0/udp/18517/adp/2/p2p/QmLinkLocal");
   EXPECT_FALSE(static_cast<bool>(parsed));
 }
 
@@ -85,7 +82,7 @@ namespace pp::amp {
 namespace {
 
 TEST(AdpMultiaddrTest, ParsesHostnamesWithoutResolvingThem) {
-  auto v4 = ParseAdpMultiaddr("/dns4/relay.example.org/udp/8519/adp/1.0.0/p2p/QmRelay");
+  auto v4 = ParseAdpMultiaddr("/dns4/relay.example.org/udp/8519/adp/2/p2p/QmRelay");
   ASSERT_TRUE(static_cast<bool>(v4)) << v4.error().message;
   EXPECT_TRUE(v4->IsHostname());
   EXPECT_EQ(v4->hostname, "relay.example.org");
@@ -93,20 +90,20 @@ TEST(AdpMultiaddrTest, ParsesHostnamesWithoutResolvingThem) {
   EXPECT_EQ(v4->endpoint.port, 8519u);
   EXPECT_EQ(v4->peer_id, "QmRelay");
 
-  auto v6 = ParseAdpMultiaddr("/dns6/beacon/udp/8517/adp/1.0.0/p2p/QmBeacon");
+  auto v6 = ParseAdpMultiaddr("/dns6/beacon/udp/8517/adp/2/p2p/QmBeacon");
   ASSERT_TRUE(static_cast<bool>(v6));
   EXPECT_EQ(v6->host_family, HostFamily::V6);
-  auto any = ParseAdpMultiaddr("/dns/my-relay-1/udp/8519/adp/1.0.0/p2p/QmRelay");
+  auto any = ParseAdpMultiaddr("/dns/my-relay-1/udp/8519/adp/2/p2p/QmRelay");
   ASSERT_TRUE(static_cast<bool>(any));
   EXPECT_EQ(any->host_family, HostFamily::Any);
-  EXPECT_FALSE(ParseAdpMultiaddr("/ip4/10.0.0.1/udp/1/adp/1.0.0/p2p/QmX")->IsHostname());
+  EXPECT_FALSE(ParseAdpMultiaddr("/ip4/10.0.0.1/udp/1/adp/2/p2p/QmX")->IsHostname());
 
-  for (const char* bad : {"/dns4/-bad/udp/1/adp/1.0.0/p2p/QmX", "/dns4/a..b/udp/1/adp/1.0.0/p2p/QmX",
-                          "/dns4/under_score/udp/1/adp/1.0.0/p2p/QmX", "/dns4/host/udp/0/adp/1.0.0/p2p/QmX",
-                          "/dns4/host/udp/1/adp/1.0.0/p2p/", "/dnsaddr/host/udp/1/adp/1.0.0/p2p/QmX"}) {
+  for (const char* bad :
+       {"/dns4/-bad/udp/1/adp/2/p2p/QmX", "/dns4/a..b/udp/1/adp/2/p2p/QmX", "/dns4/under_score/udp/1/adp/2/p2p/QmX",
+        "/dns4/host/udp/0/adp/2/p2p/QmX", "/dns4/host/udp/1/adp/2/p2p/", "/dnsaddr/host/udp/1/adp/2/p2p/QmX"}) {
     EXPECT_FALSE(static_cast<bool>(ParseAdpMultiaddr(bad))) << bad;
   }
-  EXPECT_FALSE(static_cast<bool>(ParseAdpMultiaddr("/dns4/" + std::string(254, 'a') + "/udp/1/adp/1.0.0/p2p/QmX")));
+  EXPECT_FALSE(static_cast<bool>(ParseAdpMultiaddr("/dns4/" + std::string(254, 'a') + "/udp/1/adp/2/p2p/QmX")));
 }
 
 TEST(HostResolverTest, ResolvesLocalhost) {
