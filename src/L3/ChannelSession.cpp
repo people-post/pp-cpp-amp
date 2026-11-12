@@ -10,6 +10,10 @@ bool IsLinkDropped(const char* reason) {
   return reason && std::string_view(reason) == ChannelMux::kLinkDroppedReason;
 }
 
+bool IsMuxDestroyed(const char* reason) {
+  return reason && std::string_view(reason) == ChannelMux::kMuxDestroyedReason;
+}
+
 std::shared_ptr<const ChannelSession::FrameHandler> SharedFrameHandler(ChannelSession::FrameHandler handler) {
   return handler ? std::make_shared<const ChannelSession::FrameHandler>(std::move(handler)) : nullptr;
 }
@@ -43,10 +47,7 @@ void ChannelSession::InstallMuxHandlers() {
     });
     mux_->SetTerminalHandler(channel_id_, [weak](uint32_t, const char* reason) {
       if (auto session = weak.lock()) {
-        if (IsLinkDropped(reason)) {
-          session->mux_ = nullptr; // the mux is gone (DetachAllChannels): never touch it again
-        }
-        session->NotifyRemoteTerminal(reason);
+        session->OnMuxTerminal(reason);
       }
     });
     return;
@@ -62,12 +63,22 @@ void ChannelSession::InstallMuxHandlers() {
       Close();
     }
   });
-  mux_->SetTerminalHandler(channel_id_, [this](uint32_t, const char* reason) {
-    if (IsLinkDropped(reason)) {
-      mux_ = nullptr;
+  mux_->SetTerminalHandler(channel_id_, [this](uint32_t, const char* reason) { OnMuxTerminal(reason); });
+}
+
+void ChannelSession::OnMuxTerminal(const char* reason) {
+  if (IsLinkDropped(reason) || IsMuxDestroyed(reason)) {
+    mux_ = nullptr; // the mux is gone (DetachAllChannels, ~ChannelMux): never touch it again
+  }
+  if (IsMuxDestroyed(reason)) {
+    // Its owner is mid-destruction: drop the handlers (often what owns this session), call nothing.
+    if (!closed_) {
+      closed_ = true;
+      FinishClosed(nullptr);
     }
-    NotifyRemoteTerminal(reason);
-  });
+    return;
+  }
+  NotifyRemoteTerminal(reason);
 }
 
 void ChannelSession::Bind(ChannelMux& mux, const uint32_t channel_id, ChannelPolicy policy, FrameHandler on_frame,

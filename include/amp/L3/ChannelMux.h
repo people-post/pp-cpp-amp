@@ -46,6 +46,10 @@ public:
 
   /** `initiator`: the end that dialed (odd channel ids; the responder's are even). */
   explicit ChannelMux(bool initiator);
+  /** Tells each channel still holding a terminal handler kMuxDestroyedReason (see there). */
+  ~ChannelMux();
+  ChannelMux(const ChannelMux&) = delete;
+  ChannelMux& operator=(const ChannelMux&) = delete;
 
   void SetTransport(TransportSend send);
   void SetTransportCredits(TransportCredits credits);
@@ -91,6 +95,14 @@ public:
 
   /** Terminal reason when the link (and this mux) is being destroyed. */
   static constexpr const char* kLinkDroppedReason = "link-dropped";
+  /**
+   * Terminal reason, from the mux's destructor, for channels a link drop did not detach: the mux
+   * dies with its owner (a PeerLinkManager torn down with links up). A session forgets the mux and
+   * ends quietly — no closed callback, as its owner is mid-destruction. Without it a served session
+   * whose own handlers own it was never told and leaked, and one that outlived the mux kept a
+   * dangling pointer to it.
+   */
+  static constexpr const char* kMuxDestroyedReason = "mux-destroyed";
   /** Terminal reason when a channel's ChannelPolicy::read_timeout expired (the mux reset it). */
   static constexpr const char* kReadTimeoutReason = "read-timeout";
   /**
@@ -211,6 +223,7 @@ private:
     int64_t queued_at_ms = 0;
   };
 
+  void AdvanceTxSeq(uint32_t channel_id);
   Roe<void> SendFrame(const ChannelFrame& frame, ChannelRecord& channel);
   /**
    * Send an encoded frame (the link seals it), or queue it: a reliable frame waits while

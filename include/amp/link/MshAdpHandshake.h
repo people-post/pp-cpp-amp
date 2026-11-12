@@ -28,6 +28,8 @@ public:
   /**
    * @param chunked_wire When true (ADP datagrams), MSH bodies are AmpAdpCarrier-chunked.
    *        When false (ChannelSession / A024 nested carrier), each MSH is one EncodeMsh frame.
+   * @param on_complete Runs once, success or failure, as the last thing the handshake does: it may
+   *        destroy this handshake (PeerLink drops it on failure).
    */
   MshAdpHandshake(Role role, MshIdentity identity, SendWire send, CompleteHandler on_complete,
                   bool chunked_wire = true);
@@ -64,6 +66,8 @@ private:
   Roe<MshPayload> BuildLocalPayload(const KemState& kem, const ByteVector& remote_kem_pk,
                                     ByteVector& shared_secret_out);
   Roe<void> SendMessage(MshMessageType type, std::span<const uint8_t> body);
+  /** Marks the handshake complete, then runs on_complete_ (which may destroy `this`). */
+  Roe<void> Finish(Roe<MshAdpEstablished> outcome);
   Roe<void> Fail(std::string message);
   Roe<void> MaybeComplete();
   /** Responder: `type` / `body` is the message it last answered, sent again (its reply was lost). */

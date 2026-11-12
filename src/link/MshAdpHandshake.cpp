@@ -158,12 +158,22 @@ bool MshAdpHandshake::IsRepeatOfLastAnswered(const MshMessageType type, const st
   return answered_type_ == type && std::equal(body.begin(), body.end(), answered_body_.begin(), answered_body_.end());
 }
 
-Roe<void> MshAdpHandshake::Fail(const std::string message) {
-  if (on_complete_) {
-    on_complete_(Error(message));
-  }
+Roe<void> MshAdpHandshake::Finish(Roe<MshAdpEstablished> outcome) {
+  // on_complete_ may destroy this handshake (PeerLink::FailAssociation resets it), so the callback
+  // runs from a local, last: nothing here touches `this` after it. A bad message from the remote
+  // reaches Fail, so a member written after the callback was a write into freed memory.
   complete_ = true;
-  return Error(message);
+  CompleteHandler on_complete = std::move(on_complete_);
+  on_complete_ = {};
+  Roe<void> result = outcome ? Roe<void>() : Roe<void>(Error(outcome.error().message));
+  if (on_complete) {
+    on_complete(std::move(outcome));
+  }
+  return result;
+}
+
+Roe<void> MshAdpHandshake::Fail(const std::string message) {
+  return Finish(Error(message));
 }
 
 Roe<void> MshAdpHandshake::Start() {
@@ -394,11 +404,7 @@ Roe<void> MshAdpHandshake::MaybeComplete() {
   if (remote_payload_) {
     established.remote_identity_public_key = remote_payload_->identity_public_key;
   }
-  complete_ = true;
-  if (on_complete_) {
-    on_complete_(established);
-  }
-  return Roe<void>();
+  return Finish(std::move(established));
 }
 
 } // namespace pp::amp

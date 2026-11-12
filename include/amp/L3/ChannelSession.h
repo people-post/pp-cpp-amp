@@ -82,6 +82,8 @@ public:
 private:
   void PumpWrite();
   void FailOutbound(const Error& error);
+  /** The mux's terminal notice for this channel: a CLOSE / RESET, a link drop, or the mux's end. */
+  void OnMuxTerminal(const char* reason);
   void NotifyRemoteTerminal(const char* reason);
   /**
    * The session has just closed: drop both handlers, then deliver `reason` to the closed callback

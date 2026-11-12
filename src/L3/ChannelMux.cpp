@@ -43,6 +43,24 @@ ChannelMux::ChannelMux(const bool initiator) : now_ms_(DefaultNowMs) {
   next_dynamic_id_ = initiator ? 1u : 2u;
 }
 
+ChannelMux::~ChannelMux() {
+  // Taken out first: a handler may end a session whose destructor unbinds another channel here.
+  std::vector<std::pair<uint32_t, TerminalHandler>> handlers;
+  for (auto& [id, channel] : channels_) {
+    if (channel.on_terminal) {
+      handlers.emplace_back(id, std::move(channel.on_terminal));
+    }
+  }
+  for (auto& [id, handler] : pending_terminal_handlers_) {
+    if (handler) {
+      handlers.emplace_back(id, std::move(handler));
+    }
+  }
+  for (auto& [id, handler] : handlers) {
+    handler(id, kMuxDestroyedReason);
+  }
+}
+
 void ChannelMux::SetTransport(TransportSend send) {
   transport_ = std::move(send);
 }
@@ -488,6 +506,14 @@ Roe<void> ChannelMux::OnFrameInbound(const std::span<const uint8_t> wire) {
   return DispatchFrame(std::move(*frame));
 }
 
+void ChannelMux::AdvanceTxSeq(const uint32_t channel_id) {
+  // A transport that delivers at once (tests, loopback) may close the channel during the send — the
+  // peer's RESET, or a read-once reply — and erase its record: look it up again, never keep a pointer.
+  if (auto* channel = ChannelById(channel_id)) {
+    ++channel->tx_seq;
+  }
+}
+
 Roe<void> ChannelMux::SendData(const uint32_t channel_id, const std::span<const uint8_t> payload) {
   auto* channel = ChannelById(channel_id);
   if (!channel || channel->state != ChannelState::Open) {
@@ -507,7 +533,7 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, const std::span<const 
   if (!sent) {
     return sent.error();
   }
-  ++channel->tx_seq;
+  AdvanceTxSeq(channel_id);
   return Roe<void>();
 }
 
@@ -531,7 +557,7 @@ Roe<void> ChannelMux::SendData(const uint32_t channel_id, std::vector<uint8_t> p
     if (!sent) {
       return sent.error();
     }
-    ++channel->tx_seq;
+    AdvanceTxSeq(channel_id);
     return Roe<void>();
   }
 

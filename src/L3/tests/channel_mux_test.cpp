@@ -347,6 +347,42 @@ TEST(ChannelSessionTest, ClosedSessionDropsHandlersThatOwnIt) {
   }
 }
 
+// A mux destroyed with its owner (a PeerLinkManager torn down with links up, no link drop first)
+// ends the sessions still bound to it: a served session whose own handlers own it was never told
+// and leaked. It ends quietly — its owner is mid-destruction, so no closed callback runs — and one
+// kept alive elsewhere forgets the mux instead of calling into it later.
+TEST(ChannelSessionTest, AMuxDestroyedWithItsOwnerEndsTheSessionsBoundToIt) {
+  std::weak_ptr<ChannelSession> owned_by_handlers;
+  std::shared_ptr<ChannelSession> held_elsewhere = std::make_shared<ChannelSession>();
+  bool closed_called = false;
+  {
+    auto link_result = test::AmpTestLink::Create();
+    ASSERT_TRUE(static_cast<bool>(link_result));
+    auto& link = **link_result;
+    auto owned_ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+    auto held_ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+    ASSERT_TRUE(static_cast<bool>(owned_ch));
+    ASSERT_TRUE(static_cast<bool>(held_ch));
+    {
+      auto holder = std::make_shared<std::shared_ptr<ChannelSession>>(std::make_shared<ChannelSession>());
+      owned_by_handlers = *holder;
+      (*holder)->Bind(
+          link.responder.mux, *owned_ch, ControlJsonChannelPolicy(),
+          [holder](Roe<std::vector<uint8_t>>) { return holder != nullptr; }, // owns the session
+          [holder, &closed_called](const char*) { closed_called = true; });
+    }
+    held_elsewhere->Bind(
+        link.responder.mux, *held_ch, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; },
+        [&closed_called](const char*) { closed_called = true; });
+    ASSERT_FALSE(owned_by_handlers.expired());
+  } // both muxes go with the link, no DetachAllChannels first
+  EXPECT_TRUE(owned_by_handlers.expired()) << "the session its handlers own leaked";
+  EXPECT_FALSE(closed_called) << "no closed callback runs while the owner is torn down";
+  EXPECT_TRUE(held_elsewhere->IsClosed());
+  EXPECT_FALSE(held_elsewhere->EnqueueOutbound(std::vector<uint8_t>{'a'})) << "it no longer reaches the mux";
+  held_elsewhere.reset(); // destroying it later touches no freed mux (ASan)
+}
+
 // A closed session forgets its mux: the mux notifies only open channels when its link drops, so a
 // pointer kept past close dangled, and destroying the session afterwards called into the freed
 // mux (pp-node crashed when a dial-back timer released a probe's session after the link dropped).
