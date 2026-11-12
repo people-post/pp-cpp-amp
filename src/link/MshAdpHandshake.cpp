@@ -104,23 +104,17 @@ Roe<MshPayload> MshAdpHandshake::BuildLocalPayload(const KemState& kem, const By
 }
 
 MshAdpHandshake::MshAdpHandshake(const Role role, MshIdentity identity, SendWire send, CompleteHandler on_complete,
-                                 const bool chunked_wire)
+                                 const bool over_carrier)
     : role_(role),
       identity_(std::move(identity)),
       send_(std::move(send)),
       on_complete_(std::move(on_complete)),
-      chunked_wire_(chunked_wire) {}
+      over_carrier_(over_carrier) {}
 
 Roe<void> MshAdpHandshake::SendMessage(const MshMessageType type, const std::span<const uint8_t> body) {
-  if (!chunked_wire_) {
-    auto wire = AmpAdpCarrier::EncodeMsh(type, body);
-    if (!wire) {
-      return wire.error();
-    }
-    last_wire_ = *wire;
+  if (over_carrier_) {
     last_type_ = type;
     last_body_.assign(body.begin(), body.end());
-    return send_(std::move(*wire));
   }
   auto chunks = AmpAdpCarrier::EncodeMshChunked(type, body);
   if (!chunks) {
@@ -148,10 +142,10 @@ Roe<void> MshAdpHandshake::Resend() {
 }
 
 Roe<std::vector<std::vector<uint8_t>>> MshAdpHandshake::LastChunks() const {
-  if (last_wire_.empty()) {
+  if (!last_type_) {
     return Error("amp msh adp: nothing to resend");
   }
-  return AmpAdpCarrier::EncodeMshChunked(last_type_, last_body_);
+  return AmpAdpCarrier::EncodeMshChunked(*last_type_, last_body_);
 }
 
 bool MshAdpHandshake::IsRepeatOfLastAnswered(const MshMessageType type, const std::span<const uint8_t> body) const {
@@ -203,7 +197,7 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
   }
 
   if (role_ == Role::Responder) {
-    if (!chunked_wire_ && IsRepeatOfLastAnswered(type, body)) {
+    if (over_carrier_ && IsRepeatOfLastAnswered(type, body)) {
       return Resend(); // the initiator resent it: our reply was lost
     }
     if (type == MshMessageType::ClientHello || type == MshMessageType::ClientPayload) {
@@ -304,7 +298,7 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
 
   switch (type) {
     case MshMessageType::ServerHello: {
-      if (remote_hello_.has_value() && !chunked_wire_) {
+      if (remote_hello_.has_value() && over_carrier_) {
         return Roe<void>(); // the responder answered a resend of ours: already taken
       }
       if (!started_ || remote_hello_.has_value()) {
@@ -331,7 +325,7 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
       return SendMessage(MshMessageType::ClientPayload, *client_payload);
     }
     case MshMessageType::ServerPayload: {
-      if (remote_payload_.has_value() && !chunked_wire_) {
+      if (remote_payload_.has_value() && over_carrier_) {
         return Roe<void>(); // the responder answered a resend of ours: already taken
       }
       if (!remote_hello_ || client_ss_.empty()) {

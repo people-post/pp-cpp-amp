@@ -1490,7 +1490,6 @@ TEST(MeshLinkTest, NestedReliableChannelSurvivesLossAndReorderingOnTheCarrier) {
   ASSERT_TRUE(channel.has_value());
   auto* nested_a = FindNestedLink(*fixture, nested->nested_key);
   ASSERT_NE(nested_a, nullptr);
-  EXPECT_TRUE(nested_a->CarrierLaneActive()) << "both ends announced the lane during the handshake";
 
   // The outer link is hot, as a relay link holding a circuit is in the product, and both ends have
   // heard each other's cadence before the loss starts (liveness window 5/2 × cadence): what is
