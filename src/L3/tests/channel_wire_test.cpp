@@ -25,7 +25,7 @@ TEST(ChannelWireTest, OpenRoundTrip) {
   EXPECT_EQ(decoded->open.max_message_bytes, frame.open.max_message_bytes);
 }
 
-TEST(ChannelWireTest, OpenDecodesLegacyWithoutMaxMessageBytes) {
+TEST(ChannelWireTest, AnOpenWithoutMaxMessageBytesIsRefused) {
   // Header + len-prefixed "/x" + class + flags; no trailing max_message_bytes u32.
   std::vector<uint8_t> wire = {0, 7, 0, 0, 0, 0, 0, 0, 0};
   wire.push_back(2);
@@ -38,10 +38,7 @@ TEST(ChannelWireTest, OpenDecodesLegacyWithoutMaxMessageBytes) {
   wire.push_back(0);
   wire.push_back(0); // flags = 0
 
-  auto decoded = ChannelWire::Decode(wire);
-  ASSERT_TRUE(static_cast<bool>(decoded));
-  EXPECT_EQ(decoded->open.protocol_id, "/x");
-  EXPECT_EQ(decoded->open.max_message_bytes, 0u);
+  EXPECT_FALSE(static_cast<bool>(ChannelWire::Decode(wire)));
 }
 
 // Type, channel id, channel seq: 9 bytes, no version byte (the packet's first byte carries the wire version; A029 H1).
