@@ -20,16 +20,8 @@ enum class KeepaliveTier {
   Hot = 2,
 };
 
-enum class ChannelDropPolicy {
-  Never,
-  Oldest,
-};
-
 struct ChannelPolicy {
   ChannelClass cls = ChannelClass::Control;
-  ChannelDropPolicy drop = ChannelDropPolicy::Never;
-  size_t max_outbound_frames = 0;
-  bool write_preferred = false;
   bool read_once = false;
   size_t max_message_bytes = AmpChannelLimits::kMaxChatStreamJsonBytes;
   /**
@@ -40,7 +32,6 @@ struct ChannelPolicy {
    * Checked on ChannelMux::Tick, so it fires up to one tick late.
    */
   std::chrono::milliseconds read_timeout{0};
-  std::function<void()> on_outbound_drop;
   /**
    * While this channel is open (bound), its link keeps at least this keepalive tier: a link that must stay
    * alive because of what rides it (a call's standby path) says so by the channel, and the tier goes when
@@ -54,8 +45,6 @@ inline ChannelPolicy ControlJsonChannelPolicy(std::chrono::milliseconds read_tim
                                                   8000}) {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Control;
-  policy.drop = ChannelDropPolicy::Never;
-  policy.max_outbound_frames = AmpChannelLimits::kMaxControlOutboundFrames;
   policy.read_once = true;
   policy.max_message_bytes = AmpChannelLimits::kMaxChatStreamJsonBytes;
   policy.read_timeout = read_timeout;
@@ -65,8 +54,6 @@ inline ChannelPolicy ControlJsonChannelPolicy(std::chrono::milliseconds read_tim
 inline ChannelPolicy CapabilityChannelPolicy() {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Control;
-  policy.drop = ChannelDropPolicy::Never;
-  policy.max_outbound_frames = 1;
   policy.max_message_bytes = AmpChannelLimits::kMaxControlJsonFrameBytes;
   return policy;
 }
@@ -78,8 +65,6 @@ inline ChannelPolicy CapabilityChannelPolicy() {
 inline ChannelPolicy MakeBulkChannelPolicy() {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Bulk;
-  policy.drop = ChannelDropPolicy::Never;
-  policy.max_outbound_frames = AmpChannelLimits::kMaxControlOutboundFrames;
   policy.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
   return policy;
 }
@@ -90,8 +75,8 @@ inline ChannelPolicy BulkChannelPolicy() {
 }
 
 /**
- * Call-media / realtime frames: BestEffort + drop Oldest under outbound burst.
-   * No read timeout by default: a muted or paused stream is legitimately silent. No keepalive tier: carriers
+ * Call-media / realtime frames: BestEffort, each sent to the link as it comes (nothing queues for a best-effort
+ * channel; under overload frames are lost where the bytes wait — the sockets, the network). No read timeout by default: a muted or paused stream is legitimately silent. No keepalive tier: carriers
  * and relay data lanes build on it, and their links' tiers are their owners' (a call's own control channel
  * keeps its path hot — pp-cpp-mesh CallMediaControlChannelPolicy; a carrier's link keeps the tier of the
  * nested link it carries — docs/KEEPALIVE.md).
@@ -99,9 +84,6 @@ inline ChannelPolicy BulkChannelPolicy() {
 inline ChannelPolicy CallMediaChannelPolicy(std::chrono::milliseconds read_timeout = std::chrono::milliseconds{0}) {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Realtime;
-  policy.drop = ChannelDropPolicy::Oldest;
-  policy.max_outbound_frames = AmpChannelLimits::kMaxCallMediaOutboundFrames;
-  policy.write_preferred = true;
   policy.read_once = false;
   policy.max_message_bytes = AmpChannelLimits::kMaxCallMediaFrameBytes;
   policy.read_timeout = read_timeout;

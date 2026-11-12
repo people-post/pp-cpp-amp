@@ -15,8 +15,6 @@ namespace {
 ChannelPolicy TunnelPolicy() {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Bulk;
-  policy.drop = ChannelDropPolicy::Never;
-  policy.max_outbound_frames = AmpChannelLimits::kMaxControlOutboundFrames;
   policy.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
   return policy;
 }
