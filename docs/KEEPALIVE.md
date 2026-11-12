@@ -83,4 +83,4 @@ Tests: `MeshLinkTest.VerifyLinkEvictsASilentLinkAndSaysSo`, `VerifyLinkKeepsALin
 
 ## Integration
 
-Drive via `MeshRuntime::Tick()` / `MeshPump::Tick()`. Tests: `AdpConnTest.KeepaliveAnnouncesCadenceAndEchoes`, `AmpIntegrationTest.HotDialerKeepsColdInboundAlive`, `AmpIntegrationTest.HotLinkEvictedWhenPeerGoesSilent`.
+Drive via `MeshRuntime::Tick()` / `MeshPump::Tick()`; an idle driver wakes for the next keepalive or window end, which the walk reports (`PeerLinkManager::SweepDueMs`, STACK.md § When to drive). Tests: `AdpConnTest.KeepaliveAnnouncesCadenceAndEchoes`, `AmpIntegrationTest.HotDialerKeepsColdInboundAlive`, `AmpIntegrationTest.HotLinkEvictedWhenPeerGoesSilent`.

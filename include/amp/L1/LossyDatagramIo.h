@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <random>
 #include <utility>
 #include <vector>
@@ -14,7 +15,7 @@ namespace pp::adp {
 
 /**
  * Fault-injection decorator over any DatagramIo (Memory or OsUdp).
- * Drop / dup / reorder are applied on SendTo; RecvFrom is pass-through.
+ * Drop / dup / reorder are applied on SendTo; RecvFrom is pass-through unless FailReceives set an error.
  *
  * SetReorderWindow(N): hold up to N datagrams; when a send would exceed N,
  * deliver one randomly chosen buffered datagram. Call FlushReorder() to drain.
@@ -33,6 +34,8 @@ public:
   void SetReorderWindow(size_t n) { reorder_window_ = n; }
   void SetRngSeed(uint32_t seed) { rng_.seed(seed); }
   void DropNext(size_t n) { drop_next_ = n; }
+  /** Every receive fails with `error` (a socket the OS killed) until called with nullopt. */
+  void FailReceives(std::optional<Error> error) { recv_error_ = std::move(error); }
   void FlushReorder();
 
   DatagramIo& Inner() { return *inner_; }
@@ -48,6 +51,7 @@ private:
   size_t drop_next_ = 0;
   std::mt19937 rng_{1};
   std::deque<std::pair<IpEndpoint, std::vector<uint8_t>>> pending_reorder_;
+  std::optional<Error> recv_error_;
 };
 
 } // namespace pp::adp

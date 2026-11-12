@@ -173,6 +173,11 @@ public:
    * window space (drive periodically).
    */
   void Tick(int64_t now_ms);
+  /**
+   * The earliest Amp-clock ms Tick has something to do: a FRAG partial's or a read_timeout's expiry, a read clock
+   * to start (now), reliable frames waiting (now: Tick flushes them as window frees). nullopt: nothing waits on time.
+   */
+  std::optional<int64_t> NextTickDueMs(int64_t now_ms) const;
 
   /** Reliable frames waiting for transport window space (all channels). */
   size_t QueuedFrameCount() const;

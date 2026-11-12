@@ -53,6 +53,34 @@ wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
   work and handlers run, so nothing there may wait for posted io work. `Stop()` releases the claim.
   Unclaimed runtimes are driven by any thread, one at a time (harnesses driving by hand).
   `IsDriving()` may be read from any thread.
+- **When to drive.** Each `Drive()` returns a `DriveResult`: datagrams read, whether it worked
+  (posted or deferred work, timers, a change another thread made on the lane) and `next_due` — how
+  soon the next turn has something to do: posted work (now), the earliest timer, the earliest
+  resend (`Endpoint::NextResendDueMs`), queued link work and channel-open deadlines, the link walk's
+  deadline and the io ticks'. The walk (`PeerLinkManager::Tick(sweep)`) reports the earliest
+  time-bound step on any link (`SweepDueMs`: a handshake timeout, keepalive, liveness window end,
+  network-change probe or grace, FRAG or read timeout, nested-carrier resend). While the lane is
+  active the walk and the io ticks still run every housekeeping interval (50 ms), and once after
+  the activity; idle, only when due — never more often than the interval. `NextDueIn()` asks from
+  any thread. A driver waits until `next_due` (capped) or a datagram (`Endpoint::WaitReadable`).
+  `SetWakeHandler(fn)` ends that wait early: it is called, under the io lock, when a thread other
+  than the one driving lets go of the lane having made something due before the planned wake (a
+  post, a sooner timer, a reliable send's resend), or while the driver waits longer than the
+  interval (any change: a dial or a mark is then looked at within the interval, as when drivers
+  polled). The lane's lock (`IoLaneMutex`) reports each outermost release for this. Io ticks:
+  `AddIoDueTick(fn)` runs `fn` when it asked (its result; `kIoTickIdle`: only after activity);
+  `AddIoTick(fn)` keeps the fixed interval (an idle driver then wakes that often).
+- Receive errors: `Endpoint::Pump` returns the datagrams it handled; a receive that fails (not
+  "nothing ready") is counted (`EndpointStats::rx_errors`) and handed to
+  `SetReceiveErrorObserver` — the owner checks the socket (pp-cpp-mesh reopens a dead one). Before,
+  they were dropped.
+- `OsUdpDatagramIo::WaitReadable` never says "ready" for ever: a socket the poll reports hung up or
+  invalid (POLLHUP / POLLNVAL — a shutdown, iOS's defunct socket, an fd closed under it) leaves the
+  poll and reads fail until `Reopen`; one polled readable that reads nothing twice running (an error
+  pending that reading does not clear) leaves the poll for 50 ms, doubling to 1 s, and the read says
+  so once; a wake pipe that hangs up is replaced; a failed poll waits out its timeout. Transient
+  receive errors (a signal, an earlier send's ICMP error; Windows' `WSAECONNRESET`, also switched off
+  with `SIO_UDP_CONNRESET`) are not errors.
 - PeerId: `amp/link/PeerId.h` — links name peers by the mesh PeerId of their ML-DSA-65 identity key
   (pp-cpp-crypto's `PeerIdFromMlDsaPublicKey`, the one derivation every embedder uses): set
   `PeerLinkConfig::peer_id_from_identity = PeerIdFromIdentityKey`. `PeerIdFromMultiaddr` reads the

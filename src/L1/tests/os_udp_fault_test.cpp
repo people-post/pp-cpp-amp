@@ -8,12 +8,35 @@
 #include <gtest/gtest.h>
 #include <sodium.h>
 
+#if !defined(_WIN32)
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include <chrono>
 #include <optional>
 #include <span>
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace pp::adp {
+
+/** What the fault tests break behind an OsUdpDatagramIo's back. */
+struct OsUdpDatagramIoTestPeer {
+  static int SocketFd(const OsUdpDatagramIo& io) { return io.fd_; }
+  static int WakeWriteFd(const OsUdpDatagramIo& io) { return io.wake_fds_[1]; }
+  static uint64_t WakeHandleReplacements(const OsUdpDatagramIo& io) {
+    return io.wake_handle_replacements_.load(std::memory_order_relaxed);
+  }
+  static uint64_t SocketPollPauses(const OsUdpDatagramIo& io) {
+    return io.socket_poll_pauses_.load(std::memory_order_relaxed);
+  }
+};
+
+} // namespace pp::adp
 
 namespace {
 
@@ -427,5 +450,136 @@ TEST(AdpOsUdpReopenTest, InMemoryIoHasNoSocketToReopen) {
   pp::adp::MemoryDatagramIo memory(hub, pp::adp::IpEndpoint::V4(10, 0, 0, 1, 1));
   EXPECT_FALSE(static_cast<bool>(memory.Reopen()));
 }
+
+#if !defined(_WIN32)
+// The states that made an idle reader's wait return at once, forever, while its read found nothing — a driver
+// waiting there spun at 100 % of a core (pp-browser #596). Each test reads as a pump does (wait, then read) for a
+// while and counts the rounds: a waiting reader does a handful, a spinning one thousands.
+
+using Peer = pp::adp::OsUdpDatagramIoTestPeer;
+
+struct ReadRounds {
+  int rounds = 0;
+  int errors = 0;
+  size_t datagrams = 0;
+};
+
+/** Wait (`wait` each) and read, as a pump does, for `span`. */
+ReadRounds ReadFor(pp::adp::OsUdpDatagramIo& io, const std::chrono::milliseconds span,
+                   const std::chrono::milliseconds wait = std::chrono::milliseconds(50)) {
+  ReadRounds out;
+  const auto until = std::chrono::steady_clock::now() + span;
+  const auto count = [&out](const pp::adp::IpEndpoint&, std::span<const uint8_t>) { ++out.datagrams; };
+  while (std::chrono::steady_clock::now() < until && out.rounds < 100'000) {
+    (void)io.WaitReadable(wait);
+    if (!io.RecvBatch(64, count)) {
+      ++out.errors;
+    }
+    ++out.rounds;
+  }
+  return out;
+}
+
+/** The reopened (or healthy) socket still hears a datagram. */
+void ExpectHears(pp::adp::OsUdpDatagramIo& io) {
+  auto sender = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  ASSERT_TRUE(static_cast<bool>(sender));
+  ASSERT_TRUE(static_cast<bool>((*sender)->SendTo(io.LocalEndpoint(), std::vector<uint8_t>{7, 7})));
+  const auto got = ReadFor(io, std::chrono::milliseconds(300));
+  EXPECT_GE(got.datagrams, 1u);
+}
+
+// Someone closed the wake pipe's write end (it hangs up for good): the handle is replaced, the waits wait again, and
+// a wake still ends one.
+TEST(OsUdpWaitFaultTest, AWakePipeThatHungUpIsReplaced) {
+  auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  if (!bound) {
+    GTEST_SKIP() << "OsUdp Bind failed — skip in restricted environments";
+  }
+  auto& io = **bound;
+  ASSERT_GE(Peer::WakeWriteFd(io), 0);
+  ::close(Peer::WakeWriteFd(io));
+  const auto rounds = ReadFor(io, std::chrono::milliseconds(300));
+  EXPECT_LE(rounds.rounds, 12) << "each wait waited (6 of 50 ms in 300 ms), not a spin";
+  EXPECT_GE(Peer::WakeHandleReplacements(io), 1u);
+
+  std::thread waker([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    io.WakeWaiter();
+  });
+  const auto began = std::chrono::steady_clock::now();
+  EXPECT_FALSE(io.WaitReadable(std::chrono::seconds(5)));
+  EXPECT_LT(std::chrono::steady_clock::now() - began, std::chrono::seconds(2)) << "the new handle wakes";
+  waker.join();
+}
+
+// A socket shut down under the reader (as iOS defuncts a suspended app's socket: readable at end of file, reads
+// fail, for good) is reported, not polled again, and works after a reopen.
+TEST(OsUdpWaitFaultTest, AHungUpSocketIsReportedNotPolledForEverAndReopens) {
+  auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  if (!bound) {
+    GTEST_SKIP() << "OsUdp Bind failed — skip in restricted environments";
+  }
+  auto& io = **bound;
+  const int fd = Peer::SocketFd(io);
+  (void)::shutdown(fd, SHUT_RDWR); // an unconnected socket says ENOTCONN, and Linux shuts it down all the same
+  pollfd probe{fd, POLLIN, 0};
+  if (::poll(&probe, 1, 0) <= 0) {
+    GTEST_SKIP() << "this OS does not shut down an unconnected UDP socket";
+  }
+  const auto rounds = ReadFor(io, std::chrono::milliseconds(300));
+  EXPECT_LE(rounds.rounds, 12) << "each wait waited, not a spin";
+  EXPECT_GE(rounds.errors, 1) << "the reader is told";
+  ASSERT_TRUE(static_cast<bool>(io.Reopen()));
+  ExpectHears(io);
+}
+
+// A socket closed under the reader (the poll says invalid; reads fail EBADF): reported, not polled for ever, and a
+// reopen does not close the number again (it may be another file's by then).
+TEST(OsUdpWaitFaultTest, ASocketClosedUnderTheReaderIsReportedAndReopens) {
+  auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  if (!bound) {
+    GTEST_SKIP() << "OsUdp Bind failed — skip in restricted environments";
+  }
+  auto& io = **bound;
+  ::close(Peer::SocketFd(io));
+  const auto rounds = ReadFor(io, std::chrono::milliseconds(300));
+  EXPECT_LE(rounds.rounds, 12) << "each wait waited, not a spin";
+  EXPECT_GE(rounds.errors, 1) << "the reader is told";
+  ASSERT_TRUE(static_cast<bool>(io.Reopen()));
+  ExpectHears(io);
+}
+
+#if defined(__linux__)
+// An error the read does not clear: with IP_RECVERR an ICMP error waits on the socket's error queue, the poll says
+// POLLERR as long as it does, and a plain read finds nothing. The socket is left out of the poll for a while (it is
+// still read), told once, and datagrams still get through.
+TEST(OsUdpWaitFaultTest, AnErrorTheReadDoesNotClearDoesNotSpin) {
+  auto bound = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+  if (!bound) {
+    GTEST_SKIP() << "OsUdp Bind failed — skip in restricted environments";
+  }
+  auto& io = **bound;
+  const int on = 1;
+  ASSERT_EQ(::setsockopt(Peer::SocketFd(io), SOL_IP, IP_RECVERR, &on, sizeof(on)), 0);
+  pp::adp::IpEndpoint closed_port;
+  {
+    auto gone = pp::adp::OsUdpDatagramIo::Bind(pp::adp::IpEndpoint::V4(127, 0, 0, 1, 0));
+    ASSERT_TRUE(static_cast<bool>(gone));
+    closed_port = (*gone)->LocalEndpoint();
+  }
+  ASSERT_TRUE(static_cast<bool>(io.SendTo(closed_port, std::vector<uint8_t>{1}))); // ICMP port unreachable back
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  pollfd probe{Peer::SocketFd(io), POLLIN, 0};
+  ASSERT_EQ(::poll(&probe, 1, 0), 1);
+  ASSERT_NE(probe.revents & POLLERR, 0) << "the error waits on the queue";
+  const auto rounds = ReadFor(io, std::chrono::milliseconds(500));
+  EXPECT_LE(rounds.rounds, 30) << "not a spin";
+  EXPECT_GE(Peer::SocketPollPauses(io), 1u);
+  EXPECT_GE(rounds.errors, 1) << "told: the socket polls readable and reads nothing";
+  ExpectHears(io);
+}
+#endif
+#endif
 
 } // namespace

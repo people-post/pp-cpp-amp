@@ -79,6 +79,16 @@ std::vector<std::vector<uint8_t>> CarrierLane::DueResends(const int64_t now_ms) 
   return out;
 }
 
+std::optional<int64_t> CarrierLane::NextResendMs() const {
+  std::optional<int64_t> due;
+  for (const auto& frame : outstanding_) {
+    if (!due || frame.next_resend_ms < *due) {
+      due = frame.next_resend_ms;
+    }
+  }
+  return due;
+}
+
 CarrierLane::Received CarrierLane::OnData(const uint32_t seq, const std::span<const uint8_t> inner) {
   Received out;
   if (seq > rx_cumulative_ && !rx_hold_.contains(seq) && seq - rx_cumulative_ <= config_.window) {

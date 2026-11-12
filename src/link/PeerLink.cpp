@@ -390,6 +390,20 @@ void PeerLink::TickCarrierHandshake(const int64_t now_ms) {
   }
 }
 
+std::optional<int64_t> PeerLink::CarrierResendDueMs() const {
+  std::optional<int64_t> due;
+  if (IsCarrierBacked() && outbound_ && phase_ == PeerLinkPhase::Handshaking && handshake_ &&
+      carrier_msh_resend_at_ms_ != 0) {
+    due = carrier_msh_resend_at_ms_;
+  }
+  if (lane_ && phase_ == PeerLinkPhase::Connected) {
+    if (const auto lane_due = lane_->NextResendMs(); lane_due && (!due || *lane_due < *due)) {
+      due = lane_due;
+    }
+  }
+  return due;
+}
+
 void PeerLink::TickCarrierLane(const int64_t now_ms) {
   if (!lane_ || phase_ != PeerLinkPhase::Connected) {
     return;

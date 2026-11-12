@@ -7,6 +7,7 @@
 #include "amp/L2/Types.h"
 #include "amp/link/CodedFailure.h"
 #include "amp/link/DialBook.h"
+#include "amp/link/IoLaneMutex.h"
 #include "amp/link/LinkEvents.h"
 #include "amp/link/LinkIdentity.h"
 #include "amp/link/LinkTable.h"
@@ -16,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -79,7 +81,7 @@ public:
   PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id,
                   PeerLinkConfig config = {});
   PeerLinkManager(adp::Endpoint& endpoint, MshIdentity local_identity, std::string local_peer_id, PeerLinkConfig config,
-                  std::recursive_mutex& strand_mu);
+                  IoLaneMutex& strand_mu);
   ~PeerLinkManager();
 
   PeerLinkManager(const PeerLinkManager&) = delete;
@@ -319,6 +321,19 @@ public:
    * node's cost grow with its links times its datagram rate.
    */
   void Tick(bool sweep = true);
+  /**
+   * Amp-clock ms by which the walk must run again (kNotDue: nothing on any link waits on time), as the last walk
+   * found it: the earliest handshake timeout, keepalive, liveness window end, network-change probe or grace,
+   * FRAG / read timeout, nested-carrier resend. What happens after that walk (a datagram, a dial, a channel) is the
+   * caller's to notice: MeshRuntime walks again at its cadence after any activity. Io lane.
+   */
+  int64_t SweepDueMs() const { return sweep_due_ms_; }
+  /**
+   * Amp-clock ms by which Tick must run again for the work it does every call: queued drops, retries and alias
+   * adoption (now), channel-open waiters' deadlines. kNotDue: none. Requires the strand.
+   */
+  int64_t EveryTickDueMsLocked(int64_t now) const;
+  static constexpr int64_t kNotDue = std::numeric_limits<int64_t>::max();
 
   /** Project manager capabilities into PeerLink's host ports (composition root). */
   PeerLinkHostPorts MakeHostPorts();
@@ -326,6 +341,10 @@ public:
 private:
   /** Tick's walk over every link (requires strand_mu_). */
   void SweepLinksLocked(int64_t now);
+  /** After the walk: the earliest time-bound step any link waits for (requires strand_mu_). */
+  int64_t ComputeSweepDueLocked(int64_t now);
+  /** The handshake budget of a dialing / handshaking link (the walk's timeout). */
+  int64_t HandshakeBudgetMsLocked(const PeerLink& link) const;
   /** Tick's channel-open waiters (requires strand_mu_). */
   void TickChannelOpenWaitersLocked(int64_t now);
   void InstallAcceptHandler();
@@ -466,9 +485,11 @@ private:
     std::function<void(bool)> done;
   };
   std::vector<ChannelOpenWaiter> channel_open_waiters_;
+  /** SweepDueMs: what the last walk found. */
+  int64_t sweep_due_ms_ = kNotDue;
 
-  std::recursive_mutex owned_mu_;
-  std::recursive_mutex& strand_mu_;
+  IoLaneMutex owned_mu_;
+  IoLaneMutex& strand_mu_;
 };
 
 } // namespace pp::amp
