@@ -3,6 +3,7 @@
 #include "amp/L1/Endpoint.h"
 #include "amp/link/MeshPump.h"
 #include "amp/link/HostResolver.h"
+#include "amp/link/IoLaneMutex.h"
 #include "amp/link/PeerLinkManager.h"
 #include "amp/L2/Types.h"
 #include "amp/L3/ChannelPolicy.h"
@@ -46,9 +47,16 @@ struct BurstDialResult {
  * - PostDeferred — teardown lane (Abort, Close, DropLink, on_done). Runs after Tick
  *   and work drain so mux/session frames are off the stack.
  * - PostAfter — Amp-clock timers (sync windows, deadlines). Fired each Drive turn.
+ *
+ * Idle driver: each Drive says how soon the next turn has something to do (DriveResult::next_due — timers, resends,
+ * the walks' deadlines, io ticks), and the driver waits until then or a datagram (Endpoint::WaitReadable). A change
+ * another thread makes on the lane that is due sooner wakes it (SetWakeHandler): a post, an earlier timer, a
+ * reliable send, anything at all while it waits longer than the housekeeping interval.
  */
 /**
- * The cadence of MeshRuntime's walks over every link and of the io ticks: their deadlines are seconds long
+ * The most often MeshRuntime walks every link and runs an io tick — while the lane is active (datagrams, posted work,
+ * timers, other threads' calls), and once after it; idle, a walk waits for the earliest deadline the last one found
+ * and a tick for the time it asked for. Their deadlines are seconds long
  * (handshake and liveness timeouts, keepalives, FRAG sweeps, nested-carrier resends from 500 ms). What must be
  * prompt is not on it: resends of ADP reliable packets (Endpoint::Tick, every round, only connections with packets
  * in flight) and queued sends (flushed when an ack frees window). Walked every 5 ms, a node with 6k idle parked
@@ -56,9 +64,26 @@ struct BurstDialResult {
  */
 inline constexpr std::chrono::milliseconds kDefaultHousekeepingInterval{50};
 
+/** One Drive turn: what it did and when the next one is due. */
+struct DriveResult {
+  /** Datagrams handled. */
+  size_t received = 0;
+  /**
+   * It did more than read: ran posted or deferred work, fired a timer, or followed a change another thread made on
+   * the lane. A wait that ended early followed by a turn that neither read nor worked was woken for nothing.
+   */
+  bool worked = false;
+  /** How soon the next turn has something to do (0: at once; kNothingDue: nothing waits on time). */
+  std::chrono::milliseconds next_due{0};
+  static constexpr std::chrono::milliseconds kNothingDue = std::chrono::milliseconds::max();
+};
+
 class MeshRuntime {
 public:
   using IoTask = std::function<void()>;
+  /** An io tick that says how soon it wants to run again (kIoTickIdle: not before the lane is active again). */
+  using IoDueTick = std::function<std::chrono::milliseconds()>;
+  static constexpr std::chrono::milliseconds kIoTickIdle = std::chrono::milliseconds::max();
   using IoTickId = uint64_t;
   using TimerId = uint64_t;
   using BurstDialCb = std::function<void(BurstDialResult)>;
@@ -106,7 +131,22 @@ public:
 
   void Pump();
   void Tick();
-  void Drive();
+  /**
+   * One turn: io ticks that are due, the UDP drain, resends, the walk when due, posted work, deferred work, timers.
+   * Returns what it did and when the next turn is due; a refused drive (nested, or not the claimed driver) does
+   * nothing and says the housekeeping interval.
+   */
+  DriveResult Drive();
+  /** How soon a Drive has something to do now (as Drive's next_due). Any thread. */
+  std::chrono::milliseconds NextDueIn() const;
+  /**
+   * Any thread: how to end the driver's idle wait (MeshPumpThread::Wake). Called with the io lock held, by a thread
+   * other than the one driving, when its change on the lane is due before the wake the last Drive planned
+   * (next_due) — work posted, a timer sooner, a resend sooner — or when the driver waits longer than the
+   * housekeeping interval (whatever it changed is then looked at within that interval, as before). Must not block or
+   * take the io lock again. Unset: no wake (a driver of its own polls).
+   */
+  void SetWakeHandler(std::function<void()> wake);
 
   /** Work lane — drained during Drive (after io ticks / before or with pump). */
   void PostToIo(IoTask task);
@@ -151,10 +191,16 @@ public:
   }
 
   /**
-   * `tick` runs on the io lane on the housekeeping cadence (SetHousekeepingInterval), not every round: io ticks are
-   * deadline sweeps.
+   * `tick` runs on the io lane at the housekeeping cadence (SetHousekeepingInterval) whether or not anything is due:
+   * an idle driver then wakes that often. Prefer AddIoDueTick.
    */
   IoTickId AddIoTick(IoTask tick);
+  /**
+   * `tick` runs on the io lane when it asked to (its result: how soon it runs again), and at the housekeeping cadence
+   * while the lane is active — never more often than that cadence. A deadline sweep returns its earliest deadline;
+   * one that polls state other events change (a link gone, a session closed) is run soon after those events anyway.
+   */
+  IoTickId AddIoDueTick(IoDueTick tick);
   /**
    * How often the walks run — over every connection, every link and the io ticks (default
    * kDefaultHousekeepingInterval; 0: every round). Datagrams, posted tasks and timers are every round whatever this
@@ -204,8 +250,8 @@ public:
   void SetAdvertisedProtocols(std::vector<std::string> protocols);
   /** See PeerLinkManager::SetAdvertisedNodeInfo (N032). */
   void SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features);
-  /** See PeerLinkManager::RemoteCapabilityExtension (N032). */
-  std::optional<CapabilityExtension> RemoteCapabilityExtension(const std::string& peer_id) const;
+  /** See PeerLinkManager::RemoteCapability (N032). */
+  std::optional<CapabilityPayload> RemoteCapability(const std::string& peer_id) const;
 
   void MarkWarm(const DialKey& peer_key);
   void MarkHot(const DialKey& peer_key);
@@ -240,17 +286,37 @@ public:
 private:
   bool BeginDriveLocked();
   void EndDriveLocked();
-  void PumpLocked();
+  /** Runs the io ticks that are due, then drains posted work and the socket: datagrams handled; `ran` += tasks. */
+  size_t PumpLocked(size_t& ran);
   void TickLocked();
-  void DrainPostedIoLocked();
-  void DrainDeferredLocked();
-  void FireTimersLocked();
+  size_t RunDueIoTicksLocked(int64_t now);
+  size_t DrainPostedIoLocked();
+  size_t DrainDeferredLocked();
+  size_t FireTimersLocked();
   TimerId ArmTimerLocked(int64_t deadline_ms_abs, IoTask task);
+  /** The lane was active: walk and tick again within the housekeeping interval (not later than their due). */
+  void PullHousekeepingLocked();
+  /** What a post, a timer, a resend or a link's queued work makes due (cheap: no walk). */
+  int64_t FastDueMsLocked(int64_t now) const;
+  /** FastDueMsLocked, the walk's due and the io ticks'. */
+  int64_t NextDueMsLocked(int64_t now) const;
+  static std::chrono::milliseconds DueIn(int64_t due_ms, int64_t now);
+  /** IoLaneMutex hook: a thread let go of the lane. */
+  static void OnLaneRelease(void* self);
+  void OnLaneReleaseLocked();
 
   struct IoTickEntry {
     IoTickId id = 0;
     IoTask tick;
+    IoDueTick due_tick;
+    /** When it runs next (Amp clock); INT64_MIN: at the next turn. */
+    int64_t due_ms = std::numeric_limits<int64_t>::min();
+    /** When it last ran; INT64_MIN: never. */
+    int64_t last_ms = std::numeric_limits<int64_t>::min();
   };
+  static constexpr int64_t kNotDue = std::numeric_limits<int64_t>::max();
+  /** pump_idle_until_ms_ when no Drive has planned a wake. */
+  static constexpr int64_t kNotWaiting = std::numeric_limits<int64_t>::min();
 
   struct TimerEntry {
     TimerId id = 0;
@@ -259,7 +325,7 @@ private:
   };
 
   adp::Endpoint& endpoint_;
-  mutable std::recursive_mutex io_mu_;
+  mutable IoLaneMutex io_mu_;
   PeerLinkManager links_;
   MeshPump pump_;
   std::deque<IoTask> io_queue_;
@@ -267,11 +333,18 @@ private:
   std::vector<TimerEntry> timers_;
   std::vector<IoTickEntry> io_ticks_;
   int64_t housekeeping_interval_ms_ = kDefaultHousekeepingInterval.count();
-  /** When the io ticks / the link sweep last ran (endpoint clock); INT64_MIN: never. */
-  int64_t last_io_ticks_ms_ = std::numeric_limits<int64_t>::min();
+  /** When the link walk last ran (endpoint clock; INT64_MIN: never) and when it runs next. */
   int64_t last_sweep_ms_ = std::numeric_limits<int64_t>::min();
-  /** True when `last` is at least the interval behind `now`; then `last` becomes `now`. */
-  bool HousekeepingDueLocked(int64_t& last);
+  int64_t sweep_due_ms_ = std::numeric_limits<int64_t>::min();
+  /** The earliest timer deadline (may be early after a cancel: the next fire looks again). */
+  int64_t timers_due_ms_ = kNotDue;
+  /** A thread other than the driver changed the lane since the last turn. */
+  bool touched_ = false;
+  /** EndDriveLocked to the lock's release: that release is the drive's own. */
+  bool ending_drive_ = false;
+  /** When the last Drive's next_due ends (Amp clock), until a wake; kNotWaiting: none. */
+  int64_t pump_idle_until_ms_ = kNotWaiting;
+  std::function<void()> wake_;
   IoTickId next_io_tick_id_ = 1;
   TimerId next_timer_id_ = 1;
   bool started_ = false;

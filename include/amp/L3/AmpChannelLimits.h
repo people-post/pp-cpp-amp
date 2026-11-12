@@ -5,7 +5,7 @@
 namespace pp::amp {
 
 /**
- * Shared AMP channel I/O budgets (frame sizes + outbound queue caps).
+ * Shared AMP channel I/O budgets (frame sizes, channel count).
  * Formerly `Libp2pExecutorLimits` under `base/p2p` — kept in mesh so L3 does not
  * depend on product p2p (pp-cpp-amp extract readiness).
  */
@@ -23,14 +23,6 @@ struct AmpChannelLimits {
   static constexpr size_t kMaxMediaDataFrameBytes = 256 * 1024;
   /** Call-media encrypted Opus / H264 video_lo frames (V034; was 16 KiB audio-only). */
   static constexpr size_t kMaxCallMediaFrameBytes = 128 * 1024;
-  /** Call-media outbound queue cap. */
-  static constexpr size_t kMaxCallMediaOutboundFrames = 64;
-  /** Media-relay hop fanout: audio + latest video. */
-  static constexpr size_t kMaxMediaRelayOutboundFrames = 2;
-  /** Media-relay client (phone→hop): subscribe JSON + audio + IDR headroom. */
-  static constexpr size_t kMaxMediaRelayClientOutboundFrames = 6;
-  /** Control JSON (chat / history): one request or ack queued. */
-  static constexpr size_t kMaxControlOutboundFrames = 1;
   /**
    * Concurrent channel records (any state) a single ChannelMux will hold. Closed channels are
    * erased promptly, so this mainly bounds how many channels a peer can have Open at once — not

@@ -26,13 +26,13 @@ public:
   using CompleteHandler = std::function<void(Roe<MshAdpEstablished>)>;
 
   /**
-   * @param chunked_wire When true (ADP datagrams), MSH bodies are AmpAdpCarrier-chunked.
-   *        When false (ChannelSession / A024 nested carrier), each MSH is one EncodeMsh frame.
+   * Each MSH message goes as AmpAdpCarrier::EncodeMshChunked pieces (one frame when it fits).
+   * @param over_carrier True over a ChannelSession (A024 nested carrier): this handshake resends (below).
    * @param on_complete Runs once, success or failure, as the last thing the handshake does: it may
    *        destroy this handshake (PeerLink drops it on failure).
    */
   MshAdpHandshake(Role role, MshIdentity identity, SendWire send, CompleteHandler on_complete,
-                  bool chunked_wire = true);
+                  bool over_carrier = false);
 
   /** Begin handshake (initiator only). */
   Roe<void> Start();
@@ -43,17 +43,14 @@ public:
   bool IsComplete() const { return complete_; }
 
   /**
-   * Over a carrier (chunked_wire false) nothing below resends a lost message: the initiator resends its last one
-   * on a timer (PeerLink::TickCarrierHandshake), and the responder answers a repeat of the message it last
-   * answered by resending its reply (HandleMsh). A first send is one frame, as it always was (the outer link
-   * fragments it); a resend goes as MshChunk pieces that each fit one outer frame, which the receiver keeps
-   * across resends: a lost fragment no longer loses the whole message on every try. A peer from before this
-   * ignores the pieces, as it got no resend before. LastChunks is the last message in pieces; LastWire is it
-   * whole (the responder's Finished once complete, for a repeated Finished that arrives after it).
+   * Over a carrier nothing below resends a lost message: the initiator resends its last one on a timer
+   * (PeerLink::TickCarrierHandshake), and the responder answers a repeat of the message it last answered by
+   * resending its reply (HandleMsh). Each send goes as pieces that each fit one outer frame, which the receiver
+   * keeps across resends: a lost piece does not lose the whole message on every try. LastChunks is the last
+   * message sent, in its pieces (the responder's Finished once complete, for a repeated Finished after it).
    */
   Roe<void> Resend();
   Roe<std::vector<std::vector<uint8_t>>> LastChunks() const;
-  const std::vector<uint8_t>& LastWire() const { return last_wire_; }
 
 private:
   struct KemState {
@@ -77,7 +74,7 @@ private:
   MshIdentity identity_;
   SendWire send_;
   CompleteHandler on_complete_;
-  bool chunked_wire_ = true;
+  bool over_carrier_ = false;
   bool complete_ = false;
   bool started_ = false;
 
@@ -87,9 +84,8 @@ private:
   std::vector<ByteVector> transcript_;
   ByteVector client_ss_;
   ByteVector master_ikm_;
-  /** Over a carrier only: the last message sent, as it went on the wire, and its type and body. */
-  std::vector<uint8_t> last_wire_;
-  MshMessageType last_type_{};
+  /** Over a carrier only: the last message sent, its type and body. */
+  std::optional<MshMessageType> last_type_;
   ByteVector last_body_;
   /** Responder: the last message it answered. */
   std::optional<MshMessageType> answered_type_;

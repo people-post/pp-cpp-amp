@@ -180,6 +180,8 @@ public:
 
   /** Drive retransmits / close drain. */
   void Tick(int64_t now_ms);
+  /** When Tick next has a packet to resend or give up on (Amp-clock ms); nullopt: none in flight. */
+  std::optional<int64_t> NextRetransmitMs() const;
 
   /** Called after HMAC+decode success, or once a sealed packet opened. */
   void HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& from, int64_t now_ms);

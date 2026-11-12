@@ -14,7 +14,8 @@ class MeshPump {
 public:
   MeshPump(adp::Endpoint& endpoint, PeerLinkManager& links);
 
-  void Pump();
+  /** Datagrams handled. */
+  size_t Pump();
   /** Housekeeping: resends every call; with `sweep` also the walk over every link (PeerLinkManager::Tick). */
   void Tick(bool sweep = true);
 

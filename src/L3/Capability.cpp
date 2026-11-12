@@ -44,25 +44,32 @@ Roe<std::vector<std::string>> ReadStringList(std::span<const uint8_t>& wire) {
 
 Roe<std::vector<uint8_t>> CapabilityCodec::Encode(const CapabilityPayload& payload) {
   std::vector<uint8_t> out;
-  out.push_back(1); // cap version
+  out.push_back(kCapabilityOfferVersion);
   auto peer = ChannelWire::EncodeLenUtf8Le(payload.local_peer_id);
   if (!peer) {
     return peer.error();
   }
   out.insert(out.end(), peer->begin(), peer->end());
-  auto addrs_ok = AppendStringList(out, payload.listen_multiaddrs);
-  if (!addrs_ok) {
-    return addrs_ok.error();
+  if (auto addrs = AppendStringList(out, payload.listen_multiaddrs); !addrs) {
+    return addrs.error();
   }
-  auto protos_ok = AppendStringList(out, payload.protocols);
-  if (!protos_ok) {
-    return protos_ok.error();
+  if (auto protocols = AppendStringList(out, payload.protocols); !protocols) {
+    return protocols.error();
+  }
+  out.push_back(payload.amp_wire);
+  auto version = ChannelWire::EncodeLenUtf8Le(payload.node_version);
+  if (!version) {
+    return version.error();
+  }
+  out.insert(out.end(), version->begin(), version->end());
+  if (auto features = AppendStringList(out, payload.features); !features) {
+    return features.error();
   }
   return out;
 }
 
 Roe<CapabilityPayload> CapabilityCodec::Decode(std::span<const uint8_t> wire) {
-  if (wire.empty() || wire[0] != 1) {
+  if (wire.empty() || wire[0] != kCapabilityOfferVersion) {
     return Error("amp cap: bad version");
   }
   auto span = wire.subspan(1);
@@ -80,37 +87,12 @@ Roe<CapabilityPayload> CapabilityCodec::Decode(std::span<const uint8_t> wire) {
   if (!protocols) {
     return protocols.error();
   }
-  if (!span.empty()) {
-    return Error("amp cap: trailing bytes");
+  if (span.empty()) {
+    return Error("amp cap: missing wire version");
   }
   CapabilityPayload out;
-  out.local_peer_id = std::move(*peer);
-  out.listen_multiaddrs = std::move(*addrs);
-  out.protocols = std::move(*protocols);
-  return out;
-}
-
-Roe<std::vector<uint8_t>> CapabilityCodec::EncodeExtension(const CapabilityExtension& extension) {
-  std::vector<uint8_t> out = {kCapabilityExtensionTag, extension.amp_wire};
-  auto version = ChannelWire::EncodeLenUtf8Le(extension.node_version);
-  if (!version) {
-    return version.error();
-  }
-  out.insert(out.end(), version->begin(), version->end());
-  if (auto features = AppendStringList(out, extension.features); !features) {
-    return features.error();
-  }
-  return out;
-}
-
-Roe<CapabilityExtension> CapabilityCodec::DecodeExtension(std::span<const uint8_t> wire) {
-  if (wire.size() < 2 || wire[0] != kCapabilityExtensionTag) {
-    return Error("amp cap: not a capability extension");
-  }
-  CapabilityExtension out;
-  out.amp_wire = wire[1];
-  auto span = wire.subspan(2);
-  size_t consumed = 0;
+  out.amp_wire = span[0];
+  span = span.subspan(1);
   auto version = ChannelWire::DecodeLenUtf8Le(span, consumed);
   if (!version) {
     return version.error();
@@ -120,6 +102,9 @@ Roe<CapabilityExtension> CapabilityCodec::DecodeExtension(std::span<const uint8_
   if (!features) {
     return features.error();
   }
+  out.local_peer_id = std::move(*peer);
+  out.listen_multiaddrs = std::move(*addrs);
+  out.protocols = std::move(*protocols);
   out.node_version = std::move(*version);
   out.features = std::move(*features);
   return out; // bytes past these are a later version's fields

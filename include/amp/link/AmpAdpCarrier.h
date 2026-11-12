@@ -18,7 +18,7 @@ enum class AmpAdpPayloadKind : uint8_t {
   MshChunk = 2,
   /** Carrier reliable lane (CarrierLane): [seq u32][inner Sealed wire]. */
   LaneData = 3,
-  /** Carrier reliable lane ack: [cumulative u32][selective u64]; cumulative 0 + no bits = probe. */
+  /** Carrier reliable lane ack: [cumulative u32][selective u64]. */
   LaneAck = 4,
   /** Like Sealed, reliable (its own packet space): what the carrier lane carries. */
   SealedReliable = 5,

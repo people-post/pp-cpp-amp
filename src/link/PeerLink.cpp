@@ -114,13 +114,10 @@ void PeerLink::StartHandshakeCommon(const MshAdpHandshake::Role role, CompleteCb
   establish_cb_ = std::move(on_established);
   phase_ = PeerLinkPhase::Handshaking;
   handshake_started_ms_ = host_.now_ms ? host_.now_ms() : 0;
-  const bool chunked = !IsCarrierBacked();
   handshake_ = std::make_unique<MshAdpHandshake>(
       role, identity_,
       [this](std::vector<uint8_t> payload) {
         if (IsCarrierBacked()) {
-          // Every handshake message carries a lane probe, so both ends know at Connected.
-          SendLaneProbe();
           if (outbound_) {
             carrier_msh_resend_interval_ms_ = kCarrierHandshakeResendMs;
             carrier_msh_resend_at_ms_ = NowMs() + carrier_msh_resend_interval_ms_;
@@ -137,7 +134,7 @@ void PeerLink::StartHandshakeCommon(const MshAdpHandshake::Role role, CompleteCb
         }
         return Roe<void>();
       },
-      [this](Roe<MshAdpEstablished> established) { OnHandshakeComplete(std::move(established)); }, chunked);
+      [this](Roe<MshAdpEstablished> established) { OnHandshakeComplete(std::move(established)); }, IsCarrierBacked());
 }
 
 void PeerLink::StartOutboundHandshake(CompleteCb on_established) {
@@ -164,9 +161,10 @@ void PeerLink::HandleCarrierFrame(const std::span<const uint8_t> payload) {
     auto kind = AmpAdpCarrier::DecodeKind(payload);
     if (kind && *kind == AmpAdpPayloadKind::Msh) {
       // The initiator resent its Finished: ours was lost.
-      if (const auto msh = AmpAdpCarrier::DecodeMshType(payload);
-          msh && *msh == MshMessageType::Finished && !carrier_final_msh_.empty()) {
-        (void)SendCarrierWire(carrier_final_msh_);
+      if (const auto msh = AmpAdpCarrier::DecodeMshType(payload); msh && *msh == MshMessageType::Finished) {
+        for (const auto& piece : carrier_final_msh_) {
+          (void)SendCarrierWire(piece);
+        }
       }
       return;
     }
@@ -181,7 +179,7 @@ void PeerLink::HandleCarrierFrame(const std::span<const uint8_t> payload) {
   }
   auto kind = AmpAdpCarrier::DecodeKind(payload);
   if (kind && *kind == AmpAdpPayloadKind::MshChunk) {
-    HandleCarrierMshChunk(payload); // a resend, in pieces
+    HandleCarrierMshChunk(payload); // a message too large for one frame, in pieces
     return;
   }
   if (!kind || *kind != AmpAdpPayloadKind::Msh) {
@@ -277,7 +275,6 @@ void PeerLink::HandleLaneFrame(const AmpAdpPayloadKind kind, const std::span<con
   if (!lane_) {
     return;
   }
-  lane_->NotePeerSpeaksLane();
   if (kind == AmpAdpPayloadKind::LaneAck) {
     if (auto ack = AmpAdpCarrier::DecodeLaneAck(payload)) {
       lane_->OnAck(*ack, NowMs());
@@ -379,12 +376,6 @@ Roe<std::vector<uint8_t>> PeerLink::SealCarrierFrame(const adp::QosClass qos, co
   return out;
 }
 
-void PeerLink::SendLaneProbe() {
-  if (lane_) {
-    (void)SendCarrierWire(AmpAdpCarrier::EncodeLaneAck({}));
-  }
-}
-
 void PeerLink::TickCarrierHandshake(const int64_t now_ms) {
   if (!IsCarrierBacked() || !outbound_ || phase_ != PeerLinkPhase::Handshaking || !handshake_ ||
       carrier_msh_resend_at_ms_ == 0 || now_ms < carrier_msh_resend_at_ms_) {
@@ -392,12 +383,25 @@ void PeerLink::TickCarrierHandshake(const int64_t now_ms) {
   }
   carrier_msh_resend_interval_ms_ = std::min(carrier_msh_resend_interval_ms_ * 2, kCarrierHandshakeResendMaxMs);
   carrier_msh_resend_at_ms_ = now_ms + carrier_msh_resend_interval_ms_;
-  SendLaneProbe();
   if (auto chunks = handshake_->LastChunks()) {
     for (auto& chunk : *chunks) {
       (void)SendCarrierWire(std::move(chunk));
     }
   }
+}
+
+std::optional<int64_t> PeerLink::CarrierResendDueMs() const {
+  std::optional<int64_t> due;
+  if (IsCarrierBacked() && outbound_ && phase_ == PeerLinkPhase::Handshaking && handshake_ &&
+      carrier_msh_resend_at_ms_ != 0) {
+    due = carrier_msh_resend_at_ms_;
+  }
+  if (lane_ && phase_ == PeerLinkPhase::Connected) {
+    if (const auto lane_due = lane_->NextResendMs(); lane_due && (!due || *lane_due < *due)) {
+      due = lane_due;
+    }
+  }
+  return due;
 }
 
 void PeerLink::TickCarrierLane(const int64_t now_ms) {
@@ -542,7 +546,9 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
   mux_->SetClock([this]() { return host_.now_ms ? host_.now_ms() : 0; });
   AttachMuxTransport();
   if (IsCarrierBacked() && !outbound_ && handshake_) {
-    carrier_final_msh_ = handshake_->LastWire();
+    if (auto pieces = handshake_->LastChunks()) {
+      carrier_final_msh_ = std::move(*pieces);
+    }
   }
   handshake_.reset();
   phase_ = PeerLinkPhase::Connected;
@@ -575,7 +581,6 @@ void PeerLink::FinishEstablishment(MshAdpEstablished established) {
     establish_cb_ = nullptr;
   }
   if (lane_) {
-    SendLaneProbe(); // a peer that lost every handshake-time probe still learns of the lane
     FlushLaneBacklog();
   }
 }
@@ -625,7 +630,7 @@ void PeerLink::DemoteForScheduledDrop() {
 
 void PeerLink::AttachMuxTransport() {
   mux_->SetTransportCredits([this]() -> size_t {
-    if (CarrierLaneActive()) {
+    if (IsCarrierBacked() && lane_) {
       return lane_->Credits();
     }
     if (IsCarrierBacked() || !connection_) {
@@ -639,8 +644,8 @@ void PeerLink::AttachMuxTransport() {
       if (!wire) {
         return wire.error();
       }
-      // Reliable-class frames ride the lane when the peer speaks it; best-effort (media) as is.
-      if (qos == adp::QosClass::Reliable && CarrierLaneActive()) {
+      // Reliable-class frames ride the lane; best-effort (media) as is.
+      if (qos == adp::QosClass::Reliable && lane_) {
         auto laned = lane_->Wrap(*wire, NowMs());
         if (!laned) {
           return Error("amp link: carrier lane window full");

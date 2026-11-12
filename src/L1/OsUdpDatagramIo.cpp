@@ -121,6 +121,25 @@ void CloseFd(int fd) {
 #endif
 }
 
+/**
+ * The receive error just returned (errno / WSAGetLastError) says nothing about the socket: a signal, or an ICMP
+ * error for an earlier send (Windows reports one as WSAECONNRESET on the next receive unless told not to). The read
+ * goes on; such an error is never "the socket failed".
+ */
+bool TransientReceiveError() {
+#if defined(_WIN32)
+  const int err = WSAGetLastError();
+  return err == WSAECONNRESET || err == WSAENETRESET || err == WSAEINTR;
+#else
+  return errno == EINTR || errno == ECONNREFUSED;
+#endif
+}
+
+/** Reads of one datagram that may hit a transient error before giving up for this call. */
+constexpr int kTransientRetries = 8;
+/** Error::code of a read that hit a transient error (RecvOneAttempt; never leaves this file). */
+constexpr int32_t kTransientReceive = -2;
+
 } // namespace
 
 #if defined(__linux__)
@@ -138,26 +157,38 @@ struct OsUdpDatagramIo::RecvBatchBuffers {
 struct OsUdpDatagramIo::RecvBatchBuffers {};
 #endif
 
+bool UdpSegmentSupported(const int fd) {
+#if defined(__linux__)
+  // A kernel before 4.18 sends a run as one datagram nobody can read: it takes the UDP_SEGMENT cmsg
+  // without a word (ip_cmsg_send skips a level it does not know), so a failed send never told
+  // (pp-browser #597: Android, kernel 4.9). It refuses the option by name here (ENOPROTOOPT).
+  int size = 0;
+  socklen_t len = sizeof(size);
+  return fd >= 0 && ::getsockopt(fd, SOL_UDP, UDP_SEGMENT, &size, &len) == 0;
+#else
+  (void)fd;
+  return false;
+#endif
+}
+
 OsUdpDatagramIo::OsUdpDatagramIo(int fd, IpEndpoint local, UdpSocketOptions options)
-    : fd_(fd), local_(local), options_(options) {
-  OpenWakeHandle();
+    : fd_(fd), local_(local), options_(options), gso_ok_(UdpSegmentSupported(fd)) {
+  std::lock_guard lock(wake_mu_);
+  OpenWakeHandleLocked();
 }
 
 OsUdpDatagramIo::~OsUdpDatagramIo() {
   CloseSocket();
+  std::lock_guard lock(wake_mu_);
   for (int& w : wake_fds_) {
     if (w >= 0) {
-#if defined(_WIN32)
       CloseFd(w);
-#else
-      ::close(w);
-#endif
       w = -1;
     }
   }
 }
 
-void OsUdpDatagramIo::OpenWakeHandle() {
+void OsUdpDatagramIo::OpenWakeHandleLocked() {
   // Without one, a wake waits out the poll's timeout: slower, never wrong.
 #if defined(_WIN32)
   // WSAPoll takes sockets only: the wake is a datagram to a loopback socket of our own.
@@ -192,7 +223,9 @@ void OsUdpDatagramIo::OpenWakeHandle() {
 }
 
 void OsUdpDatagramIo::WakeWaiter() {
+  DatagramIo::WakeWaiter(); // a wait that cannot poll (no handle left, a failed poll) waits on the base's
   const char byte = 1;
+  std::lock_guard lock(wake_mu_);
 #if defined(_WIN32)
   if (wake_fds_[0] >= 0) {
     sockaddr_storage ss{};
@@ -207,24 +240,53 @@ void OsUdpDatagramIo::WakeWaiter() {
 #endif
 }
 
-void OsUdpDatagramIo::DrainWakeHandle() {
+bool OsUdpDatagramIo::DrainWakeHandle() {
   char buf[64];
+  for (;;) {
 #if defined(_WIN32)
-  while (wake_fds_[0] >= 0 && ::recv(static_cast<SOCKET>(wake_fds_[0]), buf, sizeof(buf), 0) > 0) {
-  }
+    const int n = wake_fds_[0] >= 0 ? ::recv(static_cast<SOCKET>(wake_fds_[0]), buf, sizeof(buf), 0) : -1;
+    if (n < 0) {
+      return WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAECONNRESET;
+    }
 #else
-  while (wake_fds_[0] >= 0 && ::read(wake_fds_[0], buf, sizeof(buf)) > 0) {
-  }
+    const auto n = wake_fds_[0] >= 0 ? ::read(wake_fds_[0], buf, sizeof(buf)) : -1;
+    if (n == 0) {
+      return false; // end of file: every write end is closed, the pipe can never wake us again
+    }
+    if (n < 0) {
+      return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+    }
 #endif
+  }
+}
+
+void OsUdpDatagramIo::ReplaceWakeHandle(const bool read_end_invalid) {
+  wake_handle_replacements_.fetch_add(1, std::memory_order_relaxed);
+  std::lock_guard lock(wake_mu_);
+  // The read end is ours to close unless the poll called it invalid (its number may be another file's then). A pipe
+  // whose read end hangs up has no write end left: someone closed ours, and its number is not ours to close (or
+  // write) any more. A failed Windows wake socket is ours.
+  if (!read_end_invalid && wake_fds_[0] >= 0) {
+    CloseFd(wake_fds_[0]);
+  }
+  wake_fds_[0] = -1;
+  wake_fds_[1] = -1;
+  OpenWakeHandleLocked();
+}
+
+bool OsUdpDatagramIo::SocketPollable(const std::chrono::steady_clock::time_point now) const {
+  return fd_ >= 0 && socket_fault_.load(std::memory_order_relaxed) == SocketFault::None && now >= socket_paused_until_;
 }
 
 bool OsUdpDatagramIo::WaitReadable(const std::chrono::milliseconds timeout) {
   const int ms = static_cast<int>(std::clamp<int64_t>(timeout.count(), 0, 60000));
+  const bool poll_socket = SocketPollable(std::chrono::steady_clock::now());
 #if defined(_WIN32)
   WSAPOLLFD fds[2] = {};
   ULONG count = 0;
   int socket_at = -1;
-  if (fd_ >= 0) {
+  int wake_at = -1;
+  if (poll_socket) {
     fds[count].fd = static_cast<SOCKET>(fd_);
     fds[count].events = POLLRDNORM;
     socket_at = static_cast<int>(count++);
@@ -232,32 +294,70 @@ bool OsUdpDatagramIo::WaitReadable(const std::chrono::milliseconds timeout) {
   if (wake_fds_[0] >= 0) {
     fds[count].fd = static_cast<SOCKET>(wake_fds_[0]);
     fds[count].events = POLLRDNORM;
-    ++count;
+    wake_at = static_cast<int>(count++);
   }
   if (count == 0) {
-    std::this_thread::sleep_for(timeout);
-    return false;
+    return DatagramIo::WaitReadable(timeout);
   }
   const int n = ::WSAPoll(fds, count, ms);
-  if (n <= 0) {
-    return false;
+  if (n < 0) {
+    return DatagramIo::WaitReadable(timeout); // the poll itself failed: never return at once over and over
   }
-  DrainWakeHandle();
-  return socket_at >= 0 && (fds[socket_at].revents & (POLLRDNORM | POLLERR)) != 0;
+  constexpr short kReadable = POLLRDNORM;
 #else
-  // A negative fd is ignored by poll(): no socket (a failed reopen) or no wake handle.
+  // A negative fd is ignored by poll(): no socket (a failed reopen, a fault) or no wake handle.
   pollfd fds[2] = {};
-  fds[0].fd = fd_;
-  fds[0].events = POLLIN;
-  fds[1].fd = wake_fds_[0];
-  fds[1].events = POLLIN;
-  const int n = ::poll(fds, 2, ms);
-  if (n <= 0) {
+  int count = 0;
+  int socket_at = -1;
+  int wake_at = -1;
+  if (poll_socket) {
+    fds[count].fd = fd_;
+    fds[count].events = POLLIN;
+    socket_at = count++;
+  }
+  if (wake_fds_[0] >= 0) {
+    fds[count].fd = wake_fds_[0];
+    fds[count].events = POLLIN;
+    wake_at = count++;
+  }
+  if (count == 0) {
+    return DatagramIo::WaitReadable(timeout);
+  }
+  const int n = ::poll(fds, static_cast<nfds_t>(count), ms);
+  if (n < 0) {
+    if (errno == EINTR) {
+      return false; // a signal: once, not a state
+    }
+    return DatagramIo::WaitReadable(timeout); // the poll itself failed: never return at once over and over
+  }
+  constexpr short kReadable = POLLIN;
+#endif
+  if (n == 0) {
     return false;
   }
-  DrainWakeHandle();
-  return fd_ >= 0 && (fds[0].revents & (POLLIN | POLLERR)) != 0;
-#endif
+  if (wake_at >= 0) {
+    const short revents = fds[wake_at].revents;
+    if ((revents & (POLLHUP | POLLERR | POLLNVAL)) != 0 || ((revents & kReadable) != 0 && !DrainWakeHandle())) {
+      ReplaceWakeHandle((revents & POLLNVAL) != 0);
+    }
+  }
+  if (socket_at < 0) {
+    return false;
+  }
+  const short revents = fds[socket_at].revents;
+  if ((revents & POLLNVAL) != 0) {
+    socket_fault_.store(SocketFault::Closed, std::memory_order_relaxed); // closed under us: RecvBatch says so
+    return true;
+  }
+  if ((revents & POLLHUP) != 0) {
+    socket_fault_.store(SocketFault::HungUp, std::memory_order_relaxed); // shut down / defunct: it reads no more
+    return true;
+  }
+  if ((revents & (kReadable | POLLERR)) != 0) {
+    ready_reported_ = true;
+    return true;
+  }
+  return false;
 }
 
 void OsUdpDatagramIo::CloseSocket() {
@@ -357,6 +457,11 @@ static Roe<std::pair<int, IpEndpoint>> OpenSocket(const IpEndpoint& local, const
 #if defined(_WIN32)
   u_long mode = 1;
   ioctlsocket(fd, FIONBIO, &mode);
+  // An ICMP port unreachable for one send must not fail the next receive (WSAECONNRESET): UDP has no connection.
+  BOOL report_reset = FALSE;
+  DWORD returned = 0;
+  (void)WSAIoctl(static_cast<SOCKET>(fd), _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &report_reset,
+                 sizeof(report_reset), nullptr, 0, &returned, nullptr, nullptr);
 #else
   const int flags = fcntl(fd, F_GETFL, 0);
   fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -404,12 +509,22 @@ Roe<std::unique_ptr<OsUdpDatagramIo>> OsUdpDatagramIo::Bind(const IpEndpoint& lo
 }
 
 Roe<void> OsUdpDatagramIo::Reopen() {
+  // A socket the poll called closed is not ours to close any more (its number may be another file's).
+  if (socket_fault_.load(std::memory_order_relaxed) == SocketFault::Closed) {
+    fd_ = -1;
+  }
   CloseSocket(); // first: the new socket takes the same port
+  socket_fault_.store(SocketFault::None, std::memory_order_relaxed);
+  ready_reported_ = false;
+  ready_misses_ = 0;
+  poll_pause_ = std::chrono::milliseconds(0);
+  socket_paused_until_ = {};
   auto opened = OpenSocket(local_, options_);
   if (!opened) {
     return opened.error();
   }
   fd_ = opened->first;
+  gso_ok_ = UdpSegmentSupported(fd_);
   receive_drops_.store(-1, std::memory_order_relaxed);
   return {};
 }
@@ -519,6 +634,16 @@ Roe<std::optional<std::pair<IpEndpoint, size_t>>> OsUdpDatagramIo::RecvOneInto(c
   if (fd_ < 0) {
     return Error("adp udp: no socket (a reopen failed)");
   }
+  for (int attempt = 0; attempt < kTransientRetries; ++attempt) {
+    auto got = RecvOneAttempt(buf);
+    if (got || got.error().code != kTransientReceive) {
+      return got;
+    }
+  }
+  return std::optional<std::pair<IpEndpoint, size_t>>{}; // nothing but transient errors: nothing read now
+}
+
+Roe<std::optional<std::pair<IpEndpoint, size_t>>> OsUdpDatagramIo::RecvOneAttempt(const std::span<uint8_t> buf) {
   sockaddr_storage ss{};
   socklen_t len = sizeof(ss);
 #if defined(__linux__)
@@ -559,6 +684,9 @@ Roe<std::optional<std::pair<IpEndpoint, size_t>>> OsUdpDatagramIo::RecvOneInto(c
       return std::optional<std::pair<IpEndpoint, size_t>>{};
     }
 #endif
+    if (TransientReceiveError()) {
+      return Error(kTransientReceive, "adp udp: transient receive error");
+    }
     return IoErr("recvfrom");
   }
   return std::optional<std::pair<IpEndpoint, size_t>>{{FromSockAddr(ss), static_cast<size_t>(n)}};
@@ -586,6 +714,7 @@ Roe<size_t> OsUdpDatagramIo::RecvMany(const size_t max, const DatagramVisitor& v
   }
   auto& b = *batch_;
   size_t total = 0;
+  int transient = 0;
   while (total < max) {
     const auto want = static_cast<unsigned>(std::min(kRecvBatch, max - total));
     for (unsigned i = 0; i < want; ++i) {
@@ -606,8 +735,11 @@ Roe<size_t> OsUdpDatagramIo::RecvMany(const size_t max, const DatagramVisitor& v
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         break;
       }
-      if (total > 0) {
-        break; // reported by the next call
+      if (TransientReceiveError() && ++transient < kTransientRetries) {
+        continue;
+      }
+      if (TransientReceiveError() || total > 0) {
+        break; // transient: nothing more now; else reported by the next call
       }
       return IoErr("recvmmsg");
     }
@@ -642,29 +774,61 @@ Roe<size_t> OsUdpDatagramIo::RecvBatch(const size_t max, const DatagramVisitor& 
   if (fd_ < 0) {
     return Error("adp udp: no socket (a reopen failed)");
   }
+  if (const SocketFault fault = socket_fault_.load(std::memory_order_relaxed); fault != SocketFault::None) {
+    ready_reported_ = false;
+    return Error(fault == SocketFault::Closed ? "adp udp: socket closed under us (poll: invalid)"
+                                              : "adp udp: socket hung up (poll: shut down or defunct)");
+  }
+  return ReceiveReady(max, visit);
+}
+
+Roe<size_t> OsUdpDatagramIo::ReceiveReady(const size_t max, const DatagramVisitor& visit) {
+  const bool was_ready = std::exchange(ready_reported_, false);
 #if defined(__linux__)
-  return RecvMany(max, visit);
+  auto got = RecvMany(max, visit);
 #else
-  if (recv_scratch_.size() < kRecvBufferBytes) {
-    recv_scratch_.resize(kRecvBufferBytes);
-  }
-  size_t total = 0;
-  while (total < max) {
-    auto got = RecvOneInto(recv_scratch_);
-    if (!got) {
-      if (total > 0) {
-        break; // reported by the next call
+  auto got = [&]() -> Roe<size_t> {
+    if (recv_scratch_.size() < kRecvBufferBytes) {
+      recv_scratch_.resize(kRecvBufferBytes);
+    }
+    size_t total = 0;
+    while (total < max) {
+      auto one = RecvOneInto(recv_scratch_);
+      if (!one) {
+        if (total > 0) {
+          break; // reported by the next call
+        }
+        return one.error();
       }
-      return got.error();
+      if (!*one) {
+        break;
+      }
+      visit((*one)->first, std::span<const uint8_t>(recv_scratch_.data(), (*one)->second));
+      ++total;
     }
-    if (!*got) {
-      break;
-    }
-    visit((*got)->first, std::span<const uint8_t>(recv_scratch_.data(), (*got)->second));
-    ++total;
-  }
-  return total;
+    return total;
+  }();
 #endif
+  if (got && *got > 0) {
+    ready_misses_ = 0;
+    poll_pause_ = std::chrono::milliseconds(0);
+    return got;
+  }
+  if (!was_ready || ++ready_misses_ < kReadyMissLimit) {
+    return got;
+  }
+  // "Readable" again and again with nothing to read: an error the read does not clear, a socket that will not read.
+  // Polled, it ends every wait at once. Left out of the poll for a while (a reader still reads it on its own
+  // schedule), and said once, so the owner can check the socket.
+  ready_misses_ = 0;
+  poll_pause_ = poll_pause_.count() == 0 ? kFirstPollPause : std::min(poll_pause_ * 2, kMaxPollPause);
+  socket_paused_until_ = std::chrono::steady_clock::now() + poll_pause_;
+  socket_poll_pauses_.fetch_add(1, std::memory_order_relaxed);
+  if (!got) {
+    return got;
+  }
+  return Error("adp udp: socket polls readable but reads nothing; out of the poll for " +
+               std::to_string(poll_pause_.count()) + " ms");
 }
 
 } // namespace pp::adp

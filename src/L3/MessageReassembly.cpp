@@ -78,6 +78,16 @@ Roe<std::optional<std::vector<uint8_t>>> MessageReassembly::Push(const ChannelFr
   return std::optional<std::vector<uint8_t>>{std::move(out)};
 }
 
+std::optional<int64_t> MessageReassembly::OldestStartedMs() const {
+  std::optional<int64_t> oldest;
+  for (const auto& [_, partial] : partial_) {
+    if (!oldest || partial.started_ms < *oldest) {
+      oldest = partial.started_ms;
+    }
+  }
+  return oldest;
+}
+
 void MessageReassembly::SweepExpired(const int64_t now_ms, const int64_t timeout_ms) {
   for (auto it = partial_.begin(); it != partial_.end();) {
     if (now_ms - it->second.started_ms > timeout_ms) {

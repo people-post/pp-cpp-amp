@@ -14,9 +14,6 @@ namespace {
 ChannelPolicy TestRealtimePolicy() {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Realtime;
-  policy.drop = ChannelDropPolicy::Oldest;
-  policy.max_outbound_frames = AmpChannelLimits::kMaxCallMediaOutboundFrames;
-  policy.write_preferred = true;
   policy.max_message_bytes = AmpChannelLimits::kMaxCallMediaFrameBytes;
   return policy;
 }
@@ -24,8 +21,6 @@ ChannelPolicy TestRealtimePolicy() {
 ChannelPolicy TestBulkPolicy() {
   ChannelPolicy policy;
   policy.cls = ChannelClass::Bulk;
-  policy.drop = ChannelDropPolicy::Never;
-  policy.max_outbound_frames = AmpChannelLimits::kMaxControlOutboundFrames;
   policy.max_message_bytes = AmpChannelLimits::kMaxBulkFrameBytes;
   return policy;
 }
@@ -590,39 +585,6 @@ TEST(ChannelMuxTest, QueuedFramesGoWhenTheTransportHasWindowAgain) {
   EXPECT_EQ(received, large);
 }
 
-// A sender of time-bound data reads how long a channel's frames have waited for window space, so it can drop a
-// frame rather than queue it behind seconds of others (pp-cpp-mesh: call media on a reliable fallback).
-TEST(ChannelMuxTest, BacklogSaysHowLongAChannelsOldestFrameHasWaited) {
-  auto link_result = test::AmpTestLink::Create();
-  ASSERT_TRUE(static_cast<bool>(link_result));
-  auto& link = **link_result;
-  int64_t now_ms = 1000;
-  link.initiator.mux.SetClock([&now_ms] { return now_ms; });
-  auto ch = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
-  auto other = link.initiator.mux.OpenOutbound("/test/chat-blob/1.0.0", TestBulkPolicy());
-  ASSERT_TRUE(static_cast<bool>(ch) && static_cast<bool>(other));
-  WindowedTransport transport;
-  transport.window = 0;
-  transport.Attach(link);
-  EXPECT_EQ(link.initiator.mux.BacklogOf(*ch).frames, 0u);
-
-  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(100, 0x01))));
-  now_ms += 250;
-  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, std::vector<uint8_t>(100, 0x02))));
-  now_ms += 50;
-  const auto backlog = link.initiator.mux.BacklogOf(*ch);
-  EXPECT_EQ(backlog.frames, 2u);
-  EXPECT_GT(backlog.bytes, 200u);
-  EXPECT_EQ(backlog.oldest_age_ms, 300) << "the oldest frame's wait, not the newest's";
-  EXPECT_EQ(link.initiator.mux.BacklogOf(*other).frames, 0u) << "per channel";
-
-  transport.window = 1;
-  transport.outstanding = 0;
-  link.initiator.mux.OnTransportCredit();
-  EXPECT_EQ(link.initiator.mux.BacklogOf(*ch).frames, 1u);
-  EXPECT_EQ(link.initiator.mux.BacklogOf(*ch).oldest_age_ms, 50) << "the next oldest";
-}
-
 // SendData from the caller's bytes delivers what the vector form does: one frame encoded straight from them, and a
 // message larger than a frame fragmented as before (a relay's fan-out sends one frame to many channels this way).
 TEST(ChannelMuxTest, SendDataFromASpanDeliversTheSameBytes) {
@@ -741,6 +703,40 @@ TEST(ChannelMuxTest, BestEffortFramesNeverQueue) {
   ASSERT_TRUE(static_cast<bool>(link.initiator.mux.SendData(*ch, {'o'})));
   EXPECT_EQ(transport.sends, 1u);
   EXPECT_EQ(link.initiator.mux.QueuedFrameCount(), 0u);
+}
+
+// A best-effort channel's session sends each payload as it comes: none waits, none is dropped by the session (it
+// once kept a 64-frame drop-oldest queue that never filled: the send runs to the link in the same call). A payload
+// sent from inside a send goes right after it, in order — from the span form too, which left it for the next send.
+TEST(ChannelSessionTest, ABestEffortSessionSendsEveryPayloadAtOnceInOrder) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/test/call-media/1.0.0", TestRealtimePolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  ChannelSession session;
+  session.Bind(link.initiator.mux, *ch, TestRealtimePolicy(), [](Roe<std::vector<uint8_t>>) { return true; });
+  std::vector<uint8_t> sent; // each frame's last byte: the payload's mark
+  bool reentered = false;
+  link.initiator.mux.SetTransport([&](adp::QosClass qos, std::vector<uint8_t> frame) {
+    EXPECT_EQ(qos, adp::QosClass::BestEffort);
+    sent.push_back(frame.back());
+    if (frame.back() == 3 && !reentered) {
+      reentered = true;
+      EXPECT_TRUE(session.EnqueueOutbound(std::vector<uint8_t>{0xEE})) << "from inside the send of 3";
+      EXPECT_EQ(sent.size(), 4u) << "not sent inside the send that caused it";
+    }
+    return Roe<void>();
+  });
+  for (int i = 0; i < 200; ++i) {
+    const std::vector<uint8_t> payload{static_cast<uint8_t>(i)};
+    ASSERT_TRUE(session.EnqueueOutbound(std::span<const uint8_t>(payload))); // a relay's fan-out form
+    ASSERT_EQ(sent.back(), i == 3 ? 0xEE : static_cast<uint8_t>(i)) << "sent at once, not with the next send";
+  }
+  ASSERT_EQ(sent.size(), 201u) << "every payload, past the old cap of 64";
+  EXPECT_EQ(sent[3], 3);
+  EXPECT_EQ(sent[4], 0xEE) << "right after the send it came from";
+  EXPECT_EQ(sent[5], 4);
 }
 
 TEST(ChannelMuxTest, ResetDropsQueuedFrames) {

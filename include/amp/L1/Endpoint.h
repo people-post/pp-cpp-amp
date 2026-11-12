@@ -6,8 +6,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -35,6 +37,11 @@ struct EndpointStats {
   /** Round trips measured (Ack of a never-retransmitted Reliable packet — Karn) and their sum. */
   uint64_t rtt_samples = 0;
   uint64_t rtt_sum_ms = 0;
+  /**
+   * Receives that failed with an error other than "nothing ready" (the socket's, or the IO's own: no socket, a
+   * socket the poll saw hung up). Each is also handed to the receive error observer (SetReceiveErrorObserver).
+   */
+  uint64_t rx_errors = 0;
 };
 
 class Endpoint {
@@ -56,12 +63,19 @@ public:
   std::shared_ptr<Connection> Find(const AssocId& id) const;
 
   /**
-   * Drains up to `budget` datagrams (default kDefaultPumpBudget), not until EAGAIN: an
+   * Drains up to `budget` datagrams (default kDefaultPumpBudget), not until EAGAIN, and returns how many: an
    * unbounded drain under a packet flood could hold a caller-shared lock (MeshRuntime's io_mu_)
    * for as long as packets keep arriving, starving every other PeerLinkManager op. The caller's
    * own loop (Tick cadence) picks up any remainder on the next call.
    */
-  void Pump(size_t budget = kDefaultPumpBudget);
+  size_t Pump(size_t budget = kDefaultPumpBudget);
+  /**
+   * Told each receive error (an error from DatagramIo::RecvBatch: counted in EndpointStats::rx_errors), on the
+   * reading thread. Its owner checks the socket (mesh's MeshHost reopens a dead one); before, Pump dropped them and
+   * a socket that kept failing went unnoticed. Set before traffic starts.
+   */
+  using ReceiveErrorObserver = std::function<void(const Error& error)>;
+  void SetReceiveErrorObserver(ReceiveErrorObserver observer) { receive_error_observer_ = std::move(observer); }
   /**
    * The reading thread: block until a datagram may be ready, `timeout` passes, or WakeIdleWait() (DatagramIo::
    * WaitReadable). A driver waits here between pumps instead of sleeping blind.
@@ -74,8 +88,17 @@ public:
    * walk over every association each round was a busy node's largest cost (pp-browser STRESS_LAB, 2026-11-07).
    */
   void Tick();
-  /** `id` has a reliable packet in flight: Tick looks at it until none is left. Io thread. */
-  void NoteResendPending(const AssocId& id) { resend_pending_.insert(id); }
+  /** `id` has a reliable packet in flight, to resend at `due_ms` (Amp clock): Tick looks at it until none is left. */
+  void NoteResendPending(const AssocId& id, int64_t due_ms) {
+    resend_pending_.insert(id);
+    resend_due_ms_ = std::min(resend_due_ms_, due_ms);
+  }
+  /**
+   * When Tick next has a resend to make (Amp-clock ms; kNoResendDue: no reliable packet in flight). Exact after
+   * each Tick; earlier sends lower it. Under the driver's lock (a sender on another thread holds it too).
+   */
+  int64_t NextResendDueMs() const { return resend_pending_.empty() ? kNoResendDue : resend_due_ms_; }
+  static constexpr int64_t kNoResendDue = std::numeric_limits<int64_t>::max();
 
   /**
    * Send one datagram. An association's (`assoc` set) is queued for FlushSends while corked — Ok then means queued,
@@ -150,6 +173,9 @@ private:
   std::unordered_map<AssocId, std::shared_ptr<Connection>, AssocIdHash> conns_;
   /** Connections with reliable packets in flight (Tick's set). */
   std::unordered_set<AssocId, AssocIdHash> resend_pending_;
+  /** The earliest resend among resend_pending_ (NextResendDueMs). */
+  int64_t resend_due_ms_ = kNoResendDue;
+  ReceiveErrorObserver receive_error_observer_;
   std::optional<PeerKey> accept_key_;
   bool accept_enabled_ = false;
   AcceptHandler accept_handler_;
@@ -167,6 +193,7 @@ private:
   std::atomic<uint64_t> reliable_lost_{0};
   std::atomic<uint64_t> rtt_samples_{0};
   std::atomic<uint64_t> rtt_sum_ms_{0};
+  std::atomic<uint64_t> rx_errors_{0};
   RttObserver rtt_observer_;
   AdpTuning tuning_{};
 };

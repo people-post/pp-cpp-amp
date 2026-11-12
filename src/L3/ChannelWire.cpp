@@ -194,14 +194,11 @@ Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
         return flags.error();
       }
       frame.open.flags = *flags;
-      // Optional trailing u32 for forward/backward decode: absent → 0 (peer default).
-      if (!body.empty()) {
-        auto max_bytes = ReadU32(body);
-        if (!max_bytes) {
-          return max_bytes.error();
-        }
-        frame.open.max_message_bytes = *max_bytes;
+      auto max_bytes = ReadU32(body);
+      if (!max_bytes) {
+        return max_bytes.error();
       }
+      frame.open.max_message_bytes = *max_bytes;
       if (auto trailing = ExpectEmpty(body); !trailing) {
         return trailing.error();
       }

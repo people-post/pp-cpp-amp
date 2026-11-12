@@ -88,10 +88,14 @@ MeshRuntime::MeshRuntime(adp::Endpoint& endpoint, MshIdentity local_identity, st
   });
   io_executor_ = std::make_shared<IoLaneExecutor>(
       io_lifetime_.Bind([this](const std::function<void(MeshRuntime&)>& fn) { fn(*this); }));
+  io_mu_.SetReleaseHook(this, &MeshRuntime::OnLaneRelease);
 }
 
 MeshRuntime::~MeshRuntime() {
   io_lifetime_.InvalidateAndWait();
+  std::lock_guard lock(io_mu_);
+  io_mu_.SetReleaseHook(nullptr, nullptr); // the members it reads go before the lock does
+  wake_ = nullptr;
 }
 
 void MeshRuntime::Start() {
@@ -111,6 +115,11 @@ void MeshRuntime::Stop() {
   deferred_queue_.clear();
   timers_.clear();
   io_ticks_.clear();
+  timers_due_ms_ = kNotDue;
+  last_sweep_ms_ = std::numeric_limits<int64_t>::min();
+  sweep_due_ms_ = std::numeric_limits<int64_t>::min();
+  pump_idle_until_ms_ = kNotWaiting;
+  touched_ = false;
 }
 
 bool MeshRuntime::BeginDriveLocked() {
@@ -131,6 +140,7 @@ bool MeshRuntime::BeginDriveLocked() {
 void MeshRuntime::EndDriveLocked() {
   driving_thread_.store(std::thread::id{}, std::memory_order_release);
   driving_.store(false, std::memory_order_release);
+  ending_drive_ = true; // the release that follows is this drive's own (OnLaneReleaseLocked)
 }
 
 void MeshRuntime::ClaimDriver() {
@@ -150,60 +160,153 @@ bool MeshRuntime::OnDriverThread() const {
   return driving_thread_.load(std::memory_order_acquire) == self;
 }
 
-bool MeshRuntime::HousekeepingDueLocked(int64_t& last) {
-  const int64_t now = endpoint_.GetClock().NowMs();
-  if (housekeeping_interval_ms_ > 0 && last != std::numeric_limits<int64_t>::min() &&
-      now - last < housekeeping_interval_ms_) {
-    return false;
-  }
-  last = now;
-  return true;
-}
-
 void MeshRuntime::SetHousekeepingInterval(const std::chrono::milliseconds interval) {
   std::lock_guard lock(io_mu_);
   housekeeping_interval_ms_ = std::max<int64_t>(0, interval.count());
 }
 
-void MeshRuntime::PumpLocked() {
-  if (!HousekeepingDueLocked(last_io_ticks_ms_)) {
-    DrainPostedIoLocked();
-    pump_.Pump();
+void MeshRuntime::SetWakeHandler(std::function<void()> wake) {
+  std::lock_guard lock(io_mu_);
+  wake_ = std::move(wake);
+}
+
+void MeshRuntime::OnLaneRelease(void* self) {
+  static_cast<MeshRuntime*>(self)->OnLaneReleaseLocked();
+}
+
+void MeshRuntime::OnLaneReleaseLocked() {
+  if (std::exchange(ending_drive_, false)) {
+    return; // a Drive letting go: it planned its wake with everything it did
+  }
+  // Another thread (or the driver between turns): what it did is seen by the next turn. Wake an idle driver when that
+  // turn is needed before the one it planned. While it waits longer than the housekeeping interval any change wakes
+  // it, so a change only the walk acts on (a dial, a mark, a network change) is looked at within the interval — as
+  // when the driver polled every few ms.
+  touched_ = true;
+  if (!wake_ || pump_idle_until_ms_ == kNotWaiting) {
     return;
   }
-  std::vector<IoTickId> ids;
-  ids.reserve(io_ticks_.size());
+  const int64_t now = endpoint_.GetClock().NowMs();
+  if (pump_idle_until_ms_ <= now) {
+    return; // already due (or woken): the driver is on its way
+  }
+  if (pump_idle_until_ms_ - now <= housekeeping_interval_ms_ && FastDueMsLocked(now) >= pump_idle_until_ms_) {
+    return;
+  }
+  pump_idle_until_ms_ = now; // one wake per wait
+  wake_();
+}
+
+void MeshRuntime::PullHousekeepingLocked() {
+  if (last_sweep_ms_ != std::numeric_limits<int64_t>::min()) {
+    sweep_due_ms_ = std::min(sweep_due_ms_, last_sweep_ms_ + housekeeping_interval_ms_);
+  }
+  for (auto& entry : io_ticks_) {
+    if (entry.last_ms != std::numeric_limits<int64_t>::min()) {
+      entry.due_ms = std::min(entry.due_ms, entry.last_ms + housekeeping_interval_ms_);
+    }
+  }
+}
+
+int64_t MeshRuntime::FastDueMsLocked(const int64_t now) const {
+  if (!io_queue_.empty() || !deferred_queue_.empty()) {
+    return now;
+  }
+  return std::min({timers_due_ms_, endpoint_.NextResendDueMs(), links_.EveryTickDueMsLocked(now)});
+}
+
+int64_t MeshRuntime::NextDueMsLocked(const int64_t now) const {
+  int64_t due = std::min(FastDueMsLocked(now), sweep_due_ms_);
   for (const auto& entry : io_ticks_) {
-    ids.push_back(entry.id);
+    due = std::min(due, entry.due_ms);
+  }
+  return due;
+}
+
+std::chrono::milliseconds MeshRuntime::DueIn(const int64_t due_ms, const int64_t now) {
+  if (due_ms == kNotDue) {
+    return DriveResult::kNothingDue;
+  }
+  return std::chrono::milliseconds(due_ms <= now ? 0 : due_ms - now);
+}
+
+std::chrono::milliseconds MeshRuntime::NextDueIn() const {
+  std::lock_guard lock(io_mu_);
+  const int64_t now = endpoint_.GetClock().NowMs();
+  return DueIn(NextDueMsLocked(now), now);
+}
+
+size_t MeshRuntime::RunDueIoTicksLocked(const int64_t now) {
+  std::vector<IoTickId> ids;
+  for (const auto& entry : io_ticks_) {
+    if (housekeeping_interval_ms_ == 0 || entry.due_ms <= now) {
+      ids.push_back(entry.id);
+    }
   }
   for (const IoTickId id : ids) {
+    // A copy: the tick may remove itself (or another) from io_ticks_.
+    IoTask tick;
+    IoDueTick due_tick;
     for (const auto& entry : io_ticks_) {
-      if (entry.id == id && entry.tick) {
-        entry.tick();
+      if (entry.id == id) {
+        tick = entry.tick;
+        due_tick = entry.due_tick;
+        break;
+      }
+    }
+    std::chrono::milliseconds again{housekeeping_interval_ms_};
+    if (due_tick) {
+      again = due_tick();
+    } else if (tick) {
+      tick();
+    }
+    for (auto& entry : io_ticks_) {
+      if (entry.id == id) {
+        entry.last_ms = now;
+        // Never more often than the housekeeping interval: a busy node runs its ticks at that cadence, as before.
+        entry.due_ms =
+            again == kIoTickIdle ? kNotDue : now + std::max<int64_t>(again.count(), housekeeping_interval_ms_);
         break;
       }
     }
   }
-  DrainPostedIoLocked();
-  pump_.Pump();
+  return ids.size();
+}
+
+size_t MeshRuntime::PumpLocked(size_t& ran) {
+  // An io tick that ran is not activity by itself (it would keep itself at the cadence); what it posts is.
+  (void)RunDueIoTicksLocked(endpoint_.GetClock().NowMs());
+  ran += DrainPostedIoLocked();
+  return pump_.Pump();
 }
 
 void MeshRuntime::TickLocked() {
-  pump_.Tick(HousekeepingDueLocked(last_sweep_ms_));
+  const int64_t now = endpoint_.GetClock().NowMs();
+  const bool sweep = housekeeping_interval_ms_ == 0 || now >= sweep_due_ms_;
+  pump_.Tick(sweep);
+  if (sweep) {
+    last_sweep_ms_ = now;
+    // The earliest deadline the walk found, but not sooner than the interval: a busy node always has one due.
+    const int64_t found = links_.SweepDueMs();
+    sweep_due_ms_ = found == PeerLinkManager::kNotDue ? kNotDue : std::max(found, now + housekeeping_interval_ms_);
+  }
 }
 
-void MeshRuntime::DrainPostedIoLocked() {
-  for (size_t budget = 0; budget < 32 && !io_queue_.empty(); ++budget) {
+size_t MeshRuntime::DrainPostedIoLocked() {
+  size_t budget = 0;
+  for (; budget < 32 && !io_queue_.empty(); ++budget) {
     auto task = std::move(io_queue_.front());
     io_queue_.pop_front();
     if (task) {
       task();
     }
   }
+  return budget;
 }
 
-void MeshRuntime::DrainDeferredLocked() {
+size_t MeshRuntime::DrainDeferredLocked() {
   // Drain all deferred posted this turn (teardown must not wait on a budget).
+  size_t ran = 0;
   while (!deferred_queue_.empty()) {
     auto batch = std::move(deferred_queue_);
     deferred_queue_.clear();
@@ -211,13 +314,19 @@ void MeshRuntime::DrainDeferredLocked() {
       if (task) {
         task();
       }
+      ++ran;
     }
   }
+  return ran;
 }
 
-void MeshRuntime::FireTimersLocked() {
+size_t MeshRuntime::FireTimersLocked() {
   const int64_t now = endpoint_.GetClock().NowMs();
+  if (now < timers_due_ms_) {
+    return 0; // none due (the earliest is known)
+  }
   std::vector<IoTask> due;
+  int64_t next = kNotDue;
   for (auto it = timers_.begin(); it != timers_.end();) {
     if (it->deadline_ms <= now) {
       if (it->task) {
@@ -225,14 +334,17 @@ void MeshRuntime::FireTimersLocked() {
       }
       it = timers_.erase(it);
     } else {
+      next = std::min(next, it->deadline_ms);
       ++it;
     }
   }
+  timers_due_ms_ = next; // before the tasks: a timer they arm lowers it
   for (auto& task : due) {
     if (task) {
       task();
     }
   }
+  return due.size();
 }
 
 MeshRuntime::TimerId MeshRuntime::ArmTimerLocked(int64_t deadline_ms_abs, IoTask task) {
@@ -244,6 +356,7 @@ MeshRuntime::TimerId MeshRuntime::ArmTimerLocked(int64_t deadline_ms_abs, IoTask
     next_timer_id_ = 1;
   }
   timers_.push_back(TimerEntry{id, deadline_ms_abs, std::move(task)});
+  timers_due_ms_ = std::min(timers_due_ms_, deadline_ms_abs);
   return id;
 }
 
@@ -252,8 +365,13 @@ void MeshRuntime::Pump() {
   if (!BeginDriveLocked()) {
     return;
   }
-  PumpLocked();
-  DrainDeferredLocked();
+  touched_ = false;
+  size_t ran = 0;
+  const size_t received = PumpLocked(ran);
+  ran += DrainDeferredLocked();
+  if (received > 0 || ran > 0) {
+    PullHousekeepingLocked();
+  }
   EndDriveLocked();
 }
 
@@ -262,32 +380,55 @@ void MeshRuntime::Tick() {
   if (!BeginDriveLocked()) {
     return;
   }
+  touched_ = false;
   TickLocked();
   // Dial timeout / WhenChannelOpen completions are PostToIo'd from Tick; drain so a
   // single Pump→Tick cycle (harness AdvanceMs / Drive) observes waiter callbacks.
-  DrainPostedIoLocked();
-  DrainDeferredLocked();
-  FireTimersLocked();
-  DrainDeferredLocked();
+  size_t ran = DrainPostedIoLocked();
+  ran += DrainDeferredLocked();
+  ran += FireTimersLocked();
+  ran += DrainDeferredLocked();
+  if (ran > 0) {
+    PullHousekeepingLocked();
+  }
   EndDriveLocked();
 }
 
-void MeshRuntime::Drive() {
+DriveResult MeshRuntime::Drive() {
   std::lock_guard lock(io_mu_);
   if (!BeginDriveLocked()) {
-    return;
+    return DriveResult{0, false, std::chrono::milliseconds(std::max<int64_t>(housekeeping_interval_ms_, 1))};
   }
   // Turn order: work ticks → UDP pump → mux Tick → work drain → deferred → timers → deferred. What the round sends
   // goes out at its end, grouped by peer (a hop's fan-out of one frame to a member is one GSO send).
+  const bool touched = std::exchange(touched_, false);
   endpoint_.CorkSends();
-  PumpLocked();
+  size_t ran = 0;
+  const size_t received = PumpLocked(ran);
+  // Activity before the walk: it runs in this turn if its interval has passed (it sees what changed), else soon.
+  const bool active = touched || ran > 0 || received > 0;
+  if (active) {
+    PullHousekeepingLocked();
+  }
   TickLocked();
-  DrainPostedIoLocked();
-  DrainDeferredLocked();
-  FireTimersLocked();
-  DrainDeferredLocked();
+  size_t ran_after = DrainPostedIoLocked();
+  ran_after += DrainDeferredLocked();
+  ran_after += FireTimersLocked();
+  ran_after += DrainDeferredLocked();
+  if (ran_after > 0) {
+    PullHousekeepingLocked(); // work the walk did not see: the next walk within the interval
+  }
+  if ((active || ran_after > 0) && housekeeping_interval_ms_ > 0) {
+    // Ticks that the activity made due (their interval passed) run now rather than in a turn of their own.
+    (void)RunDueIoTicksLocked(endpoint_.GetClock().NowMs());
+  }
   endpoint_.FlushSends();
+  const bool worked = touched || ran > 0 || ran_after > 0;
+  const int64_t now = endpoint_.GetClock().NowMs();
+  const int64_t due = NextDueMsLocked(now);
+  pump_idle_until_ms_ = due == kNotDue ? std::numeric_limits<int64_t>::max() - 1 : due;
   EndDriveLocked();
+  return DriveResult{received, worked, DueIn(due, now)};
 }
 
 void MeshRuntime::PostToIo(IoTask task) {
@@ -346,7 +487,26 @@ MeshRuntime::IoTickId MeshRuntime::AddIoTick(IoTask tick) {
   if (next_io_tick_id_ == 0) {
     next_io_tick_id_ = 1;
   }
-  io_ticks_.push_back(IoTickEntry{id, std::move(tick)});
+  IoTickEntry entry;
+  entry.id = id;
+  entry.tick = std::move(tick);
+  io_ticks_.push_back(std::move(entry));
+  return id;
+}
+
+MeshRuntime::IoTickId MeshRuntime::AddIoDueTick(IoDueTick tick) {
+  if (!tick) {
+    return 0;
+  }
+  std::lock_guard lock(io_mu_);
+  const IoTickId id = next_io_tick_id_++;
+  if (next_io_tick_id_ == 0) {
+    next_io_tick_id_ = 1;
+  }
+  IoTickEntry entry;
+  entry.id = id;
+  entry.due_tick = std::move(tick);
+  io_ticks_.push_back(std::move(entry));
   return id;
 }
 
@@ -469,8 +629,8 @@ void MeshRuntime::SetAdvertisedNodeInfo(std::string node_version, std::vector<st
   links_.SetAdvertisedNodeInfo(std::move(node_version), std::move(features));
 }
 
-std::optional<CapabilityExtension> MeshRuntime::RemoteCapabilityExtension(const std::string& peer_id) const {
-  return links_.RemoteCapabilityExtension(peer_id);
+std::optional<CapabilityPayload> MeshRuntime::RemoteCapability(const std::string& peer_id) const {
+  return links_.RemoteCapability(peer_id);
 }
 
 void MeshRuntime::MarkWarm(const DialKey& peer_key) {

@@ -37,7 +37,11 @@ public:
   /** Replace the terminal/close callback after Bind. */
   void SetClosedCallback(ClosedCallback on_closed);
 
-  /** Queue an L4 payload. Returns false if session closed or queue full (drop policy applied). */
+  /**
+   * Send an L4 payload: to the mux at once, which sends a best-effort frame to the link and holds a reliable one for
+   * window space. Nothing waits here, but a payload sent from inside a write (its call chain), which goes right after
+   * it. False once the session is closed; a write that fails closes it.
+   */
   bool EnqueueOutbound(std::vector<uint8_t> body);
 
   /**
@@ -67,20 +71,16 @@ public:
 
   uint32_t ChannelId() const { return channel_id_; }
   ChannelMux* Mux() { return mux_; }
-  size_t OutboundBacklog() const { return outbound_.size() + (write_inflight_ ? 1 : 0); }
   /**
-   * EnqueueOutbound from the caller's bytes: with nothing queued ahead it goes to the mux at once, encoded straight
-   * from them (a relay's fan-out: one frame to many channels, no copy per channel); else it is copied into the queue.
+   * EnqueueOutbound from the caller's bytes, encoded straight from them (a relay's fan-out: one frame to many
+   * channels, no copy per channel); copied only when sent from inside a write.
    */
   bool EnqueueOutbound(std::span<const uint8_t> body);
-  /** This channel's reliable frames waiting in its mux for window space (none once closed). */
-  ChannelMux::ChannelBacklog MuxBacklog() const {
-    return mux_ && !closed_ ? mux_->BacklogOf(channel_id_) : ChannelMux::ChannelBacklog{};
-  }
   bool IsClosed() const { return closed_; }
 
 private:
-  void PumpWrite();
+  /** The payloads sent from inside a write, after it. */
+  void SendReentrant();
   void FailOutbound(const Error& error);
   /** The mux's terminal notice for this channel: a CLOSE / RESET, a link drop, or the mux's end. */
   void OnMuxTerminal(const char* reason);
@@ -99,7 +99,7 @@ private:
   /** Shared, so a frame pins it with a reference count (A027) rather than a copy of the callable and its captures. */
   std::shared_ptr<const FrameHandler> on_frame_;
   ClosedCallback on_closed_;
-  std::deque<std::vector<uint8_t>> outbound_;
+  std::deque<std::vector<uint8_t>> reentrant_;
   bool write_inflight_ = false;
   bool closed_ = false;
 };

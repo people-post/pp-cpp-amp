@@ -133,7 +133,7 @@ Roe<void> ChannelMux::SendWire(const uint32_t channel_id, const adp::QosClass qo
   if (channelQueue.empty()) {
     send_order_.push_back(channel_id);
   }
-  channelQueue.push_back(QueuedFrame{std::move(wire), now_ms_ ? now_ms_() : 0});
+  channelQueue.push_back(QueuedFrame{std::move(wire)});
   return Roe<void>();
 }
 
@@ -177,21 +177,6 @@ size_t ChannelMux::QueuedFrameCount() const {
     count += queue.size();
   }
   return count;
-}
-
-ChannelMux::ChannelBacklog ChannelMux::BacklogOf(const uint32_t channel_id) const {
-  ChannelBacklog backlog;
-  const auto it = send_queues_.find(channel_id);
-  if (it == send_queues_.end() || it->second.empty()) {
-    return backlog;
-  }
-  backlog.frames = it->second.size();
-  for (const auto& frame : it->second) {
-    backlog.bytes += frame.wire.size();
-  }
-  const int64_t now = now_ms_ ? now_ms_() : 0;
-  backlog.oldest_age_ms = std::max<int64_t>(0, now - it->second.front().queued_at_ms);
-  return backlog;
 }
 
 Roe<uint32_t> ChannelMux::OpenOutbound(const std::string& protocol_id, ChannelPolicy policy,
@@ -744,6 +729,29 @@ void ChannelMux::ExpireIdleReaders(const int64_t now_ms) {
       handler(id, kReadTimeoutReason);
     }
   }
+}
+
+std::optional<int64_t> ChannelMux::NextTickDueMs(const int64_t now_ms) const {
+  std::optional<int64_t> due;
+  const auto note = [&due](const int64_t at) {
+    if (!due || at < *due) {
+      due = at;
+    }
+  };
+  if (!send_queues_.empty()) {
+    note(now_ms);
+  }
+  for (const auto& [_, channel] : channels_) {
+    if (const auto started = channel.reassembly.OldestStartedMs()) {
+      const int64_t timeout =
+          channel.reassembly.Lossy() ? kLossyFragAssemblyTimeoutMs : tuning_.frag_assembly_timeout_ms;
+      note(*started + timeout + 1); // SweepExpired drops a partial older than the timeout
+    }
+    if (channel.policy.read_timeout.count() > 0 && channel.state != ChannelState::Closed) {
+      note(channel.read_clock_ms < 0 ? now_ms : channel.read_clock_ms + channel.policy.read_timeout.count());
+    }
+  }
+  return due;
 }
 
 void ChannelMux::Tick(const int64_t now_ms) {

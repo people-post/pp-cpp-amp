@@ -187,10 +187,13 @@ public:
   /** First resend of a carrier handshake message after this; each next one waits twice as long, up to the max. */
   static constexpr int64_t kCarrierHandshakeResendMs = 500;
   static constexpr int64_t kCarrierHandshakeResendMaxMs = 1500;
+  /**
+   * Carrier-backed: the earliest Amp-clock ms TickCarrierHandshake or TickCarrierLane has something to send again
+   * (std::nullopt: nothing waits) — the sweep's deadline for this link's resends.
+   */
+  std::optional<int64_t> CarrierResendDueMs() const;
   /** Carrier-backed: a reliable-lane frame ran out of attempts — the path is gone. */
   bool CarrierLaneFailed() const { return lane_ && lane_->Failed(); }
-  /** Carrier-backed: the peer speaks the reliable lane (it sent a lane frame). */
-  bool CarrierLaneActive() const { return lane_ && lane_->PeerSpeaksLane(); }
 
   int64_t HandshakeStartedMs() const { return handshake_started_ms_; }
   void FailHandshakeTimeout();
@@ -210,13 +213,6 @@ public:
   void RebindDialKey(std::string peer_key) { peer_key_ = std::move(peer_key); }
 
   void ApplyRemoteCapability(CapabilityPayload payload) { remote_capability_ = std::move(payload); }
-  /** The peer's channel-0 extension (N032); null until it arrives, and always from a peer before it. */
-  const CapabilityExtension* RemoteCapabilityExtension() const {
-    return remote_extension_ ? &*remote_extension_ : nullptr;
-  }
-  void ApplyRemoteCapabilityExtension(CapabilityExtension extension) { remote_extension_ = std::move(extension); }
-  bool CapabilityExtensionSent() const { return capability_extension_sent_; }
-  void MarkCapabilityExtensionSent() { capability_extension_sent_ = true; }
   bool CapabilityExchangeStarted() const { return capability_exchange_started_; }
   void MarkCapabilityExchangeStarted() { capability_exchange_started_ = true; }
   bool CapabilityOfferSent() const { return capability_offer_sent_; }
@@ -239,7 +235,7 @@ private:
   void AttachMuxTransport();
   void AttachCarrierFrameHandler();
   void HandleCarrierFrame(std::span<const uint8_t> payload);
-  /** A carrier handshake resend's piece (MshChunk): kept across resends until its message is whole. */
+  /** A carrier handshake message's piece (MshChunk): kept across resends until its message is whole. */
   void HandleCarrierMshChunk(std::span<const uint8_t> payload);
   void HandleLaneFrame(AmpAdpPayloadKind kind, std::span<const uint8_t> payload);
   void DeliverSealedCarrierWire(std::span<const uint8_t> wire);
@@ -250,8 +246,6 @@ private:
   /** A carrier-backed link's frame budget: what one outer DATA frame carries, less the inner packet's wrapping. */
   size_t CarrierMaxFrameBytes() const;
   void FlushLaneBacklog();
-  /** Announce the reliable lane (an ack with nothing acked); older peers drop the unknown kind. */
-  void SendLaneProbe();
   int64_t NowMs() const { return host_.now_ms ? host_.now_ms() : 0; }
   void StartHandshakeCommon(MshAdpHandshake::Role role, CompleteCb on_established);
 
@@ -288,8 +282,6 @@ private:
   bool capability_exchange_started_ = false;
   bool capability_offer_sent_ = false;
   std::optional<CapabilityPayload> remote_capability_;
-  std::optional<CapabilityExtension> remote_extension_;
-  bool capability_extension_sent_ = false;
 
   std::unique_ptr<MshAdpHandshake> handshake_;
   /** Carrier-backed initiator: when the last handshake message goes again, and the wait after that. */
@@ -299,7 +291,7 @@ private:
    * Carrier-backed responder, once Connected: its Finished, sent again if the initiator's Finished comes again (ours
    * was lost). Cleared at the first sealed frame from the peer, which it sends only once it has ours.
    */
-  std::vector<uint8_t> carrier_final_msh_;
+  std::vector<std::vector<uint8_t>> carrier_final_msh_;
   /** Shared with the connection, which seals and opens with it (adp::IPacketProtection). */
   std::shared_ptr<Session> session_;
   /** Carrier-backed only: inner packet numbers, per space (the nonce's), and their replay windows. */

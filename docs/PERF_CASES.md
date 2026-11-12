@@ -22,7 +22,7 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 | **B2** | BestEffort flood at the largest payload | **scaffold** |
 | **B3** | Media ~40 B proc latency (50 pps clock) | **scaffold** |
 | **OsUdp** | Loopback Reliable ~76 KiB | **scaffold** |
-| **C1–C4** | Assoc / open+data / FRAG / Drop Oldest | **scaffold** |
+| **C1–C3** | Assoc / open+data / FRAG | **scaffold** |
 | **D1** | Drive 1-link + hub fan-in 1/4/8/16 (+32/48 via env) | **scaffold** |
 | **D2** | Hub fan-in data 4×64 KiB | **scaffold** |
 | **E1** | Paced 512 KiB bulk (900 B frames) | **scaffold** |
@@ -39,7 +39,7 @@ Correctness coverage lives under `src/*/tests/` and `tests/integration/`. This d
 ```
 tests/perf/
   perf_timer.h / perf_report.h
-  perf_main.cpp    # A1–A2, C1–C4, D1(1-link)
+  perf_main.cpp    # A1–A2, C1–C3, D1(1-link)
   perf_more.cpp    # A3, B*, OsUdp, D1 multi, D2, E1–E3, F
   perf_finish.cpp  # C5, D3, E4, OsUdpAmp
 ```
@@ -53,7 +53,7 @@ tests/perf/
 | `PP_AMP_PERF_ITERS` | `2000` | A1/A2/A3 |
 | `PP_AMP_PERF_FRAG_ITERS` | `8` | C3/C5 |
 | `PP_AMP_PERF_ASSOC_ITERS` | `3` | C1/C2/E4 |
-| `PP_AMP_PERF_MEDIA_ITERS` | `8` | B3/C4/E2 |
+| `PP_AMP_PERF_MEDIA_ITERS` | `8` | B3/E2 |
 | `PP_AMP_PERF_DRIVE_ITERS` | `2000` | D1 1-link |
 | `PP_AMP_PERF_XFER_ITERS` | `3` | B1/B2/OsUdp/D2/D3/E1/E3/F/OsUdpAmp |
 | `PP_AMP_PERF_MAX_LINKS` | `16` | D1 multi ladder cap (`32` / `48` optional) |

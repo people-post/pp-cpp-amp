@@ -136,22 +136,19 @@ Roe<ParsedAdpMultiaddr> ParseAdpMultiaddr(const std::string_view multiaddr) {
     return Error("amp addr: unsupported multiaddr layout");
   }
   int amp_wire = 0;
-  if (parts[5] != kAdpMultiaddrLegacyVersion) {
-    const auto* begin = parts[5].data();
-    const auto* end = begin + parts[5].size();
-    const auto res = std::from_chars(begin, end, amp_wire);
-    if (res.ec != std::errc{} || res.ptr != end || amp_wire <= 0 || amp_wire >= adp::kVersionNegotiationNibble) {
-      return Error("amp addr: unsupported multiaddr layout");
-    }
-    if (amp_wire != adp::kWireVersion) {
-      return Error("amp addr: wire v" + std::to_string(amp_wire) + ", not ours");
-    }
+  const auto* begin = parts[5].data();
+  const auto* end = begin + parts[5].size();
+  const auto res = std::from_chars(begin, end, amp_wire);
+  if (res.ec != std::errc{} || res.ptr != end || amp_wire <= 0 || amp_wire >= adp::kVersionNegotiationNibble) {
+    return Error("amp addr: unsupported multiaddr layout");
+  }
+  if (amp_wire != adp::kWireVersion) {
+    return Error("amp addr: wire v" + std::to_string(amp_wire) + ", not ours");
   }
   if (parts[7].empty()) {
     return Error("amp addr: missing peer id");
   }
   ParsedAdpMultiaddr out;
-  out.amp_wire = amp_wire;
   if (dns) {
     if (!IsDnsName(parts[1])) {
       return Error("amp addr: bad hostname");

@@ -16,17 +16,15 @@ struct ParsedAdpMultiaddr {
   /** `/dns|dns4|dns6/<hostname>`: resolved when dialed, not when parsed. Empty for an IP. */
   std::string hostname;
   HostFamily host_family = HostFamily::Any;
-  /** The wire version the address says (`/adp/<N>/`, N032); 0 for the legacy `/adp/1.0.0/`, which says none. */
-  int amp_wire = 0;
 
   bool IsHostname() const { return !hostname.empty(); }
 };
 
 /**
- * Parse `/ip4|ip6|dns|dns4|dns6/<host>/udp/<port>/adp/<wire>/p2p/<PeerId>`. `<wire>` is our wire version, or the
- * legacy `1.0.0` (no version said: dialed, and version negotiation decides); an address of another wire version is
- * refused, so every caller skips it as it skips an unparsable one (N032). A hostname is checked as a DNS name (labels
- * of letters, digits and hyphens, at most 253 characters), not resolved.
+ * Parse `/ip4|ip6|dns|dns4|dns6/<host>/udp/<port>/adp/<wire>/p2p/<PeerId>`. `<wire>` must be our wire version: an
+ * address of another one, or one that says none (`/adp/1.0.0/`, from before addresses said it), is refused, so every
+ * caller skips it as it skips an unparsable one (N032). A hostname is checked as a DNS name (labels of letters,
+ * digits and hyphens, at most 253 characters), not resolved.
  */
 Roe<ParsedAdpMultiaddr> ParseAdpMultiaddr(std::string_view multiaddr);
 

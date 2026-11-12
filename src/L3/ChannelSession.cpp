@@ -89,7 +89,7 @@ void ChannelSession::Bind(ChannelMux& mux, const uint32_t channel_id, ChannelPol
   on_frame_ = SharedFrameHandler(std::move(on_frame));
   on_closed_ = std::move(on_closed);
   closed_ = false;
-  outbound_.clear();
+  reentrant_.clear();
   write_inflight_ = false;
   // Align mux reassembly / send limits with L4 policy (OPEN may have omitted or understated max).
   (void)mux_->ApplyChannelPolicy(channel_id_, policy_);
@@ -108,19 +108,18 @@ bool ChannelSession::EnqueueOutbound(std::vector<uint8_t> body) {
   if (closed_ || !mux_) {
     return false;
   }
-  if (policy_.max_outbound_frames > 0 && outbound_.size() >= policy_.max_outbound_frames) {
-    if (policy_.drop == ChannelDropPolicy::Never) {
-      return false;
-    }
-    if (policy_.drop == ChannelDropPolicy::Oldest && !outbound_.empty()) {
-      outbound_.pop_front();
-      if (policy_.on_outbound_drop) {
-        policy_.on_outbound_drop();
-      }
-    }
+  if (write_inflight_) {
+    reentrant_.push_back(std::move(body)); // sent from inside a write: right after it, in order
+    return true;
   }
-  outbound_.push_back(std::move(body));
-  PumpWrite();
+  write_inflight_ = true;
+  auto sent = mux_->SendData(channel_id_, std::move(body));
+  write_inflight_ = false;
+  if (!sent) {
+    FailOutbound(sent.error()); // the last use of `this`
+    return true;
+  }
+  SendReentrant();
   return true;
 }
 
@@ -128,33 +127,32 @@ bool ChannelSession::EnqueueOutbound(const std::span<const uint8_t> body) {
   if (closed_ || !mux_) {
     return false;
   }
-  if (!outbound_.empty() || write_inflight_) {
-    return EnqueueOutbound(std::vector<uint8_t>(body.begin(), body.end()));
+  if (write_inflight_) {
+    reentrant_.emplace_back(body.begin(), body.end());
+    return true;
   }
   write_inflight_ = true;
   auto sent = mux_->SendData(channel_id_, body);
   write_inflight_ = false;
   if (!sent) {
     FailOutbound(sent.error());
+    return true;
   }
+  SendReentrant();
   return true;
 }
 
-void ChannelSession::PumpWrite() {
-  if (write_inflight_ || closed_ || !mux_ || outbound_.empty()) {
-    return;
-  }
-  write_inflight_ = true;
-  auto body = std::move(outbound_.front());
-  outbound_.pop_front();
-  auto sent = mux_->SendData(channel_id_, std::move(body));
-  write_inflight_ = false;
-  if (!sent) {
-    FailOutbound(sent.error());
-    return;
-  }
-  if (!outbound_.empty()) {
-    PumpWrite();
+void ChannelSession::SendReentrant() {
+  while (!reentrant_.empty() && !closed_ && mux_) {
+    auto body = std::move(reentrant_.front());
+    reentrant_.pop_front();
+    write_inflight_ = true;
+    auto sent = mux_->SendData(channel_id_, std::move(body));
+    write_inflight_ = false;
+    if (!sent) {
+      FailOutbound(sent.error());
+      return;
+    }
   }
 }
 
@@ -226,7 +224,7 @@ void ChannelSession::OrphanFromMux() {
   mux_ = nullptr;
   channel_id_ = 0;
   closed_ = true;
-  outbound_.clear();
+  reentrant_.clear();
   write_inflight_ = false;
 }
 

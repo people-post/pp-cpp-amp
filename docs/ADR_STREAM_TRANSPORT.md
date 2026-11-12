@@ -26,7 +26,7 @@ The layering separates what is UDP-specific (as of wire v2):
 | L3 channel mux | No. It sends frames up to the link's budget (`ChannelMux::SetMaxFrameBytes`) and fragments past it |
 | `PeerLink` | Two transports already: `TransportClass::Adp` and `::Carrier` (A024: MSH, then inner packets it numbers and seals itself, no ADP) |
 | `PeerLinkManager` | One ADP `Endpoint` for dial / accept / clock / liveness |
-| Multiaddr | Only `/ip4\|ip6\|dns4\|dns6\|dns/…/udp/<port>/adp/1.0.0/p2p/<id>` (names resolved at dial time). An address that does not parse is skipped (`DialBook`, `MeshRuntime`), so new forms are additive |
+| Multiaddr | Only `/ip4\|ip6\|dns4\|dns6\|dns/…/udp/<port>/adp/<wire>/p2p/<id>` (names resolved at dial time; `<wire>` is ours, `2`, or the address is refused). An address that does not parse is skipped (`DialBook`, `MeshRuntime`), so new forms are additive |
 | `MeshRuntime` (product API) | No — dial keys and multiaddr strings |
 
 ## Decision (proposed)
