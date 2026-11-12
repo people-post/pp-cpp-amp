@@ -583,3 +583,26 @@ TEST(OsUdpWaitFaultTest, AnErrorTheReadDoesNotClearDoesNotSpin) {
 #endif
 
 } // namespace
+
+#if defined(__linux__)
+namespace pp::adp {
+namespace {
+
+// pp-browser #597: a kernel before UDP GSO (4.18) took a run's UDP_SEGMENT without a word and sent it as
+// one datagram nobody could read, so no handshake ever completed. The socket now asks the kernel at open;
+// a socket that does not name the option (a TCP one answers as such a kernel does) gets one by one.
+TEST(OsUdpGsoTest, SegmentingIsAskedOfTheKernelNotAssumed) {
+  const int udp = ::socket(AF_INET, SOCK_DGRAM, 0);
+  const int tcp = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(udp, 0);
+  ASSERT_GE(tcp, 0);
+  EXPECT_TRUE(UdpSegmentSupported(udp)) << "this kernel (4.18+) segments UDP";
+  EXPECT_FALSE(UdpSegmentSupported(tcp)) << "an option the socket does not name means no GSO";
+  EXPECT_FALSE(UdpSegmentSupported(-1));
+  ::close(udp);
+  ::close(tcp);
+}
+
+} // namespace
+} // namespace pp::adp
+#endif

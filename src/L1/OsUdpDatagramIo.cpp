@@ -157,8 +157,22 @@ struct OsUdpDatagramIo::RecvBatchBuffers {
 struct OsUdpDatagramIo::RecvBatchBuffers {};
 #endif
 
+bool UdpSegmentSupported(const int fd) {
+#if defined(__linux__)
+  // A kernel before 4.18 sends a run as one datagram nobody can read: it takes the UDP_SEGMENT cmsg
+  // without a word (ip_cmsg_send skips a level it does not know), so a failed send never told
+  // (pp-browser #597: Android, kernel 4.9). It refuses the option by name here (ENOPROTOOPT).
+  int size = 0;
+  socklen_t len = sizeof(size);
+  return fd >= 0 && ::getsockopt(fd, SOL_UDP, UDP_SEGMENT, &size, &len) == 0;
+#else
+  (void)fd;
+  return false;
+#endif
+}
+
 OsUdpDatagramIo::OsUdpDatagramIo(int fd, IpEndpoint local, UdpSocketOptions options)
-    : fd_(fd), local_(local), options_(options) {
+    : fd_(fd), local_(local), options_(options), gso_ok_(UdpSegmentSupported(fd)) {
   std::lock_guard lock(wake_mu_);
   OpenWakeHandleLocked();
 }
@@ -510,6 +524,7 @@ Roe<void> OsUdpDatagramIo::Reopen() {
     return opened.error();
   }
   fd_ = opened->first;
+  gso_ok_ = UdpSegmentSupported(fd_);
   receive_drops_.store(-1, std::memory_order_relaxed);
   return {};
 }

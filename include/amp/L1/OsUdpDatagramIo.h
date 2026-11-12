@@ -23,6 +23,12 @@ struct UdpSocketOptions {
   size_t send_buffer_bytes = 0;
 };
 
+/**
+ * Whether the kernel segments UDP sends (UDP GSO, Linux 4.18+) on `fd`: getsockopt names UDP_SEGMENT.
+ * Always false off Linux. An older kernel ignores the send's UDP_SEGMENT instead of refusing it.
+ */
+bool UdpSegmentSupported(int fd);
+
 class OsUdpDatagramIo final : public DatagramIo {
 public:
   static Roe<std::unique_ptr<OsUdpDatagramIo>> Bind(const IpEndpoint& local, const UdpSocketOptions& options = {});
@@ -102,8 +108,9 @@ private:
   IpEndpoint local_;
   UdpSocketOptions options_;
   std::vector<uint8_t> recv_scratch_;
-  /** UDP GSO worked or was not tried yet; false once the kernel refused it (SendSegments then loops SendTo). */
-  bool gso_ok_ = true;
+  /** The kernel segments UDP (UdpSegmentSupported at open) and has not refused a run since; false: SendSegments
+   *  loops SendTo. */
+  bool gso_ok_ = false;
   /**
    * POSIX: the pipe's read and write ends. Windows: [0] a loopback UDP socket, [1] unused. -1: none. Written under
    * wake_mu_ (WakeWaiter, any thread, writes through it); [0] read by the waiting thread, the only one replacing it.
