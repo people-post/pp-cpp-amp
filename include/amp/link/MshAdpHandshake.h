@@ -22,6 +22,15 @@ class MshAdpHandshake {
 public:
   enum class Role { Initiator, Responder };
 
+  /**
+   * Error::code of a failed handshake's result (on_complete's error; -1 for any other failure). Both fail the
+   * handshake at once (release compatibility T9 / U4) instead of leaving it to time out.
+   */
+  /** The peer's hello names an MSH version we do not speak (RemoteHelloVersion has it). */
+  static constexpr int32_t kErrUnsupportedVersion = 1;
+  /** The peer sent an MSH message type this release does not know (IsKnownMshMessageType). */
+  static constexpr int32_t kErrUnknownMessageType = 2;
+
   using SendWire = std::function<Roe<void>(std::vector<uint8_t> adp_payload)>;
   using CompleteHandler = std::function<void(Roe<MshAdpEstablished>)>;
 
@@ -41,6 +50,8 @@ public:
   Roe<void> HandleMsh(MshMessageType type, std::span<const uint8_t> body);
 
   bool IsComplete() const { return complete_; }
+  /** The version byte of the peer's hello once one arrived (also when it failed as kErrUnsupportedVersion). */
+  std::optional<uint8_t> RemoteHelloVersion() const { return remote_hello_version_; }
 
   /**
    * Over a carrier nothing below resends a lost message: the initiator resends its last one on a timer
@@ -66,6 +77,9 @@ private:
   /** Marks the handshake complete, then runs on_complete_ (which may destroy `this`). */
   Roe<void> Finish(Roe<MshAdpEstablished> outcome);
   Roe<void> Fail(std::string message);
+  Roe<void> Fail(int32_t code, std::string message);
+  /** A hello that did not decode: kErrUnsupportedVersion when it names another version, else a plain failure. */
+  Roe<void> FailHello(std::span<const uint8_t> body, const Error& error);
   Roe<void> MaybeComplete();
   /** Responder: `type` / `body` is the message it last answered, sent again (its reply was lost). */
   bool IsRepeatOfLastAnswered(MshMessageType type, std::span<const uint8_t> body) const;
@@ -80,6 +94,7 @@ private:
 
   std::optional<KemState> local_kem_;
   std::optional<MshHello> remote_hello_;
+  std::optional<uint8_t> remote_hello_version_;
   std::optional<MshPayload> remote_payload_;
   std::vector<ByteVector> transcript_;
   ByteVector client_ss_;

@@ -40,6 +40,14 @@ public:
   };
   static Roe<VersionNegotiation> DecodeVersionNegotiation(std::span<const uint8_t> datagram);
 
+  /** A Close packet's payload: empty for Unspecified (as v6.0.0 sends), else the reason byte and its fields. */
+  static std::vector<uint8_t> EncodeClosePayload(CloseReason reason, std::span<const uint8_t> versions = {});
+  /**
+   * Never fails: an empty payload is Unspecified, bytes past the known fields are ignored, and a truncated version
+   * list keeps the versions present.
+   */
+  static ClosePayload DecodeClosePayload(std::span<const uint8_t> payload);
+
   /** A sealed packet's clear header (kSealedHeaderBytes): the AEAD's associated data. */
   static std::array<uint8_t, kSealedHeaderBytes> EncodeSealedHeader(const SealedHeader& header);
   /** The clear header of a sealed datagram; its body (ciphertext + tag) follows kSealedHeaderBytes in. */

@@ -490,6 +490,17 @@ PeerLink::LinkRoe PeerLink::SendCarrierWire(std::vector<uint8_t> payload) {
 
 void PeerLink::OnHandshakeComplete(Roe<MshAdpEstablished> established) {
   if (!established) {
+    if (established.error().code == MshAdpHandshake::kErrUnsupportedVersion) {
+      // The peer's hello names another MSH version: an update, not a broken peer (U4 / U5).
+      std::vector<uint8_t> theirs;
+      if (handshake_) {
+        if (const auto version = handshake_->RemoteHelloVersion()) {
+          theirs.push_back(*version);
+        }
+      }
+      FailMshVersionMismatch(std::move(theirs), "its hello");
+      return;
+    }
     FailAssociationMessage(established.error(), Err::HandshakeFailed);
     return;
   }
@@ -602,21 +613,84 @@ void PeerLink::FailHandshakeTimeout() {
   FailAssociation(Failure::Of(Err::DialTimeout, "amp link: dial timeout"));
 }
 
-void PeerLink::FailRefused() {
-  FailAssociation(Failure::Of(Err::TransportFailed, "amp link: refused by the peer (its link table is full)"));
+void PeerLink::FailRefused(const adp::ClosePayload& close) {
+  switch (close.reason) {
+    case adp::CloseReason::Unspecified:
+      // No reason: a v6.0.0 peer, whose refusals are all a reasonless Close (most often a full table).
+      FailAssociation(Failure::Of(Err::TransportFailed,
+                                  "amp link: refused by the peer (no reason given; a v6.0.0 "
+                                  "peer's link table is full or its admission refused us)"));
+      return;
+    case adp::CloseReason::TableFull:
+      FailAssociation(Failure::Of(Err::TransportFailed, "amp link: refused by the peer (its link table is full)"));
+      return;
+    case adp::CloseReason::Admission:
+      FailAssociation(Failure::Of(Err::TransportFailed, "amp link: refused by the peer (its admission policy)"));
+      return;
+    case adp::CloseReason::HandshakeFailed:
+      FailAssociation(Failure::Of(Err::HandshakeFailed, "amp link: the peer failed the handshake"));
+      return;
+    case adp::CloseReason::UnsupportedMshVersion:
+      FailMshVersionMismatch(close.versions, "its Close");
+      return;
+    case adp::CloseReason::Shutdown:
+      FailAssociation(Failure::Of(Err::TransportFailed, "amp link: refused by the peer (it is shutting down)"));
+      return;
+  }
+  FailAssociation(Failure::Of(Err::TransportFailed, "amp link: refused by the peer (reason " +
+                                                        std::to_string(static_cast<unsigned>(close.reason)) + ")"));
 }
 
 void PeerLink::FailUnreachable() {
   FailAssociation(Failure::Of(Err::TransportFailed, "amp link: no route to the peer"));
 }
 
-void PeerLink::FailVersionMismatch(const std::vector<uint8_t>& versions) {
+namespace {
+
+std::string SpokenVersions(const std::vector<uint8_t>& versions) {
   std::string spoken;
   for (const uint8_t v : versions) {
     spoken += (spoken.empty() ? "v" : ", v") + std::to_string(v);
   }
-  FailAssociation(Failure::Of(Err::VersionMismatch, "amp link: the peer speaks wire " + spoken + ", not v" +
-                                                        std::to_string(adp::kWireVersion)));
+  return spoken.empty() ? "an unnamed version" : spoken;
+}
+
+const char* WhoUpdates(const VersionSkew skew) {
+  switch (skew) {
+    case VersionSkew::PeerNewer:
+      return " (the peer is newer: this side must update)";
+    case VersionSkew::PeerOlder:
+      return " (the peer is older: it must update)";
+    case VersionSkew::Unknown:
+      break;
+  }
+  return "";
+}
+
+} // namespace
+
+void PeerLink::FailVersionMismatch(const std::vector<uint8_t>& versions) {
+  VersionMismatchInfo info;
+  info.layer = VersionLayer::Wire;
+  info.ours = adp::kWireVersion;
+  info.theirs = versions;
+  info.skew = CompareVersions(info.ours, info.theirs);
+  const std::string message = "amp link: the peer speaks wire " + SpokenVersions(versions) + ", not v" +
+                              std::to_string(adp::kWireVersion) + WhoUpdates(info.skew);
+  version_mismatch_ = std::move(info);
+  FailAssociation(Failure::Of(Err::VersionMismatch, message));
+}
+
+void PeerLink::FailMshVersionMismatch(std::vector<uint8_t> versions, const char* source) {
+  VersionMismatchInfo info;
+  info.layer = VersionLayer::Msh;
+  info.ours = kMshVersion;
+  info.theirs = std::move(versions);
+  info.skew = CompareVersions(info.ours, info.theirs);
+  const std::string message = std::string("amp link: the peer speaks MSH ") + SpokenVersions(info.theirs) + " (" +
+                              source + "), not v" + std::to_string(kMshVersion) + WhoUpdates(info.skew);
+  version_mismatch_ = std::move(info);
+  FailAssociation(Failure::Of(Err::VersionMismatch, message));
 }
 
 void PeerLink::DemoteForScheduledDrop() {

@@ -119,6 +119,13 @@ public:
   void SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features);
   /** A connected peer's capability offer, or nullopt (not connected, or its offer not arrived yet). */
   std::optional<CapabilityPayload> RemoteCapability(const std::string& peer_id) const;
+  /**
+   * A connected peer's offer that did not decode (U6: most likely a newer release's), or nullopt. This side
+   * answered it with its own offer all the same; RemoteCapability stays nullopt for that peer.
+   */
+  std::optional<UnreadableCapabilityOffer> UnreadableCapability(const std::string& peer_id) const;
+  /** Test hook: what this side sends as a dialer's offer on channel 0 instead of its own (a later release's, U6). */
+  void SetCapabilityOfferBytesForTest(std::vector<uint8_t> raw) { capability_offer_bytes_for_test_ = std::move(raw); }
   void SetCapabilityHandler(CapabilityHandler handler);
   CapabilityPayload LocalCapability() const;
   /**
@@ -366,6 +373,10 @@ private:
   void OnCapabilityData(const std::string& peer_key, std::vector<uint8_t> payload);
   void OnCh0Data(const std::string& peer_key, std::vector<uint8_t> payload);
   void IngestRemoteCapabilityAddrs(PeerLink& link, const CapabilityPayload& remote);
+  /** The responder's one reply on channel 0: its own offer, whether or not the dialer's decoded (U6). */
+  void ReplyCapabilityOnce(PeerLink& link);
+  /** DropLinkNow's Close to the peer, carrying the reason the drop gives it (U4). */
+  static void CloseWithReason(adp::Connection& conn, const PeerLink& link, LinkDropReason reason);
   /** Once per link, on an open channel 0 (the mux queues only one message while it opens). */
   void FinishDial(const std::string& peer_key, LinkHandle handle, LinkRoe result);
   /** Start outbound dial for `peer_key`; waiters must already be queued. Strand-locked. */
@@ -435,6 +446,7 @@ private:
   std::string advertised_node_version_;
   std::vector<std::string> advertised_features_;
   CapabilityHandler capability_handler_;
+  std::optional<std::vector<uint8_t>> capability_offer_bytes_for_test_;
   ListenAddrDisclosure listen_addr_disclosure_;
   /** LocalCapability for `link`: listen multiaddrs only when the disclosure policy allows its peer. */
   CapabilityPayload CapabilityFor(const PeerLink& link) const;

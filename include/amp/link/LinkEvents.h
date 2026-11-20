@@ -7,6 +7,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace pp::amp {
 
@@ -79,6 +80,67 @@ inline const char* LinkDropReasonName(const LinkDropReason reason) {
 }
 
 /**
+ * Which side of a version mismatch is older, so the product can say who must update (release compatibility U5).
+ */
+enum class VersionSkew : uint8_t {
+  /** Not known: the peer named no versions, or some above ours and some below. */
+  Unknown = 0,
+  /** Every version the peer speaks is below ours: the peer must update. */
+  PeerOlder = 1,
+  /** Every version the peer speaks is above ours: this side must update. */
+  PeerNewer = 2,
+};
+
+inline const char* VersionSkewName(const VersionSkew skew) {
+  switch (skew) {
+    case VersionSkew::PeerOlder:
+      return "peer-older";
+    case VersionSkew::PeerNewer:
+      return "peer-newer";
+    case VersionSkew::Unknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+/** PeerNewer when every one of `theirs` is above `ours`, PeerOlder when every one is below, else Unknown. */
+inline VersionSkew CompareVersions(const uint8_t ours, const std::vector<uint8_t>& theirs) {
+  if (theirs.empty()) {
+    return VersionSkew::Unknown;
+  }
+  bool all_above = true;
+  bool all_below = true;
+  for (const uint8_t v : theirs) {
+    all_above = all_above && v > ours;
+    all_below = all_below && v < ours;
+  }
+  return all_above ? VersionSkew::PeerNewer : all_below ? VersionSkew::PeerOlder : VersionSkew::Unknown;
+}
+
+/** The version a mismatch was found in. */
+enum class VersionLayer : uint8_t {
+  /** The L1 wire version (the packet's first nibble; the peer's version negotiation reply). */
+  Wire = 0,
+  /** The MSH handshake version (the hello's version byte; the responder's Close names its versions). */
+  Msh = 1,
+};
+
+inline const char* VersionLayerName(const VersionLayer layer) {
+  return layer == VersionLayer::Msh ? "msh" : "wire";
+}
+
+/** A version mismatch, as a link found it (LinkEvent::version_mismatch, PeerLink::LastVersionMismatch). */
+struct VersionMismatchInfo {
+  VersionLayer layer = VersionLayer::Wire;
+  /** The version this side speaks. */
+  uint8_t ours = 0;
+  /** The versions the peer said it speaks (from its version negotiation, hello or Close). */
+  std::vector<uint8_t> theirs;
+  /** CompareVersions(ours, theirs): who must update. */
+  VersionSkew skew = VersionSkew::Unknown;
+};
+
+/**
  * Link lifecycle event (ADR_LINK_PLANE: no PeerLink&). Delivered via the completion poster
  * (MeshRuntime::PostToIo) — never on the link's own callback stack.
  */
@@ -122,6 +184,16 @@ struct LinkEvent {
    * evidence the peer is gone; above 0 its echo requests went unanswered.
    */
   uint32_t keepalive_interval_ms = 0;
+  /**
+   * Dropped and DialFailed with reason VersionMismatch: which version, ours and the peer's, and who must update
+   * (U5). Unset otherwise.
+   */
+  std::optional<VersionMismatchInfo> version_mismatch;
+  /**
+   * Dropped and DialFailed, ADP: why the peer closed the association, from its Close (U4). Unspecified when it sent
+   * none, gave no reason (a v6.0.0 peer), or this side closed it.
+   */
+  adp::CloseReason peer_close_reason = adp::CloseReason::Unspecified;
 };
 
 inline const char* LinkEventKindName(const LinkEvent::Kind kind) {

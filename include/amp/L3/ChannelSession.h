@@ -54,7 +54,7 @@ public:
   void Close();
   /** Close the mux channel without invoking `on_closed` (provisional / abandoned roles). */
   void CloseQuiet();
-  void Reset(uint32_t code = 1);
+  void Reset(uint32_t code = ChannelMux::kResetCodeDefault);
 
   /**
    * Drop Bind callbacks + mux handlers (parent unbind — [A027]).

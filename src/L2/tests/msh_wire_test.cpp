@@ -101,6 +101,33 @@ TEST(MshWireTest, RejectUnsupportedHelloVersion) {
   EXPECT_FALSE(static_cast<bool>(MshMessages::DecodeHello(MshMessageType::ClientHello, *wire)));
 }
 
+// Release compatibility U4: a hello of another MSH version fails with a code of its own (the handshake reports a
+// version mismatch, not a broken peer), and its version can be read before anything else in it.
+TEST(MshWireTest, AnotherHelloVersionFailsWithItsOwnCode) {
+  auto wire = MshMessages::EncodeHello(MshMessageType::ServerHello, MakeHello());
+  ASSERT_TRUE(static_cast<bool>(wire));
+  (*wire)[1] = 2;
+  auto decoded = MshMessages::DecodeHello(MshMessageType::ServerHello, *wire);
+  ASSERT_FALSE(static_cast<bool>(decoded));
+  EXPECT_EQ(decoded.error().code, kMshErrUnsupportedVersion);
+  EXPECT_EQ(MshMessages::PeekHelloVersion(*wire), std::optional<uint8_t>(2));
+  EXPECT_FALSE(MshMessages::PeekHelloVersion(std::vector<uint8_t>{2}).has_value());
+
+  (*wire)[1] = kMshVersion;
+  auto truncated = MshMessages::DecodeHello(MshMessageType::ServerHello, std::span(*wire).first(10));
+  ASSERT_FALSE(static_cast<bool>(truncated));
+  EXPECT_NE(truncated.error().code, kMshErrUnsupportedVersion) << "a truncated hello of our version is not one";
+}
+
+TEST(MshWireTest, KnownMessageTypes) {
+  EXPECT_FALSE(IsKnownMshMessageType(0));
+  for (uint8_t t = 1; t <= 5; ++t) {
+    EXPECT_TRUE(IsKnownMshMessageType(t)) << int(t);
+  }
+  EXPECT_FALSE(IsKnownMshMessageType(6));
+  EXPECT_FALSE(IsKnownMshMessageType(0xFF));
+}
+
 TEST(MshWireTest, RejectBadFieldSizesOnEncode) {
   auto hello = MakeHello();
   hello.nonce.clear();

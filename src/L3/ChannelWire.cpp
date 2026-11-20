@@ -53,13 +53,6 @@ Roe<uint64_t> ReadU64(std::span<const uint8_t>& wire) {
   return v;
 }
 
-Roe<void> ExpectEmpty(std::span<const uint8_t> wire) {
-  if (!wire.empty()) {
-    return Error("amp ch: trailing bytes");
-  }
-  return Roe<void>();
-}
-
 } // namespace
 
 Roe<std::vector<uint8_t>> ChannelWire::EncodeLenUtf8Le(std::string_view text) {
@@ -199,20 +192,14 @@ Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
         return max_bytes.error();
       }
       frame.open.max_message_bytes = *max_bytes;
-      if (auto trailing = ExpectEmpty(body); !trailing) {
-        return trailing.error();
-      }
-      break;
+      break; // bytes past max_message_bytes are a later release's fields
     }
     case ChannelFrameType::OpenAck:
       if (body.empty()) {
         return Error("amp ch: missing open ack result");
       }
       frame.open_ack_result = body[0];
-      if (auto trailing = ExpectEmpty(body.subspan(1)); !trailing) {
-        return trailing.error();
-      }
-      break;
+      break; // trailing bytes: a later release's fields
     case ChannelFrameType::Data:
       frame.payload.assign(body.begin(), body.end());
       break;
@@ -223,10 +210,7 @@ Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
         if (!reason) {
           return reason.error();
         }
-        frame.payload.assign(reason->begin(), reason->end());
-        if (auto trailing = ExpectEmpty(body.subspan(consumed)); !trailing) {
-          return trailing.error();
-        }
+        frame.payload.assign(reason->begin(), reason->end()); // bytes past the reason: a later release's fields
       }
       break;
     case ChannelFrameType::Reset: {
@@ -235,10 +219,7 @@ Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
         return code.error();
       }
       frame.reset_code = *code;
-      if (auto trailing = ExpectEmpty(body); !trailing) {
-        return trailing.error();
-      }
-      break;
+      break; // trailing bytes: a later release's fields
     }
     case ChannelFrameType::Frag: {
       auto msg_id = ReadU64(body);
@@ -265,9 +246,16 @@ Roe<ChannelFrame> ChannelWire::Decode(std::span<const uint8_t> wire) {
       break;
     }
     default:
-      return Error("amp ch: unknown frame type");
+      // A later release's frame type: decoded as far as the header, its body kept as is, so the mux can answer it
+      // (a RESET with kResetCodeUnknownFrameType) instead of dropping it unseen.
+      frame.payload.assign(body.begin(), body.end());
+      break;
   }
   return frame;
+}
+
+bool ChannelWire::IsKnownFrameType(const ChannelFrameType type) {
+  return static_cast<uint8_t>(type) <= static_cast<uint8_t>(ChannelFrameType::Frag);
 }
 
 } // namespace pp::amp

@@ -94,12 +94,18 @@ public:
 
   static Roe<std::shared_ptr<Connection>> Open(Endpoint& endpoint, OpenParams params);
 
-  void Close();
+  /**
+   * Send the peer a Close and forget the association. `reason` rides the Close's payload (empty for Unspecified,
+   * exactly as v6.0.0 sends it); `versions` only with CloseReason::UnsupportedMshVersion (the ones we speak).
+   */
+  void Close(CloseReason reason = CloseReason::Unspecified, std::span<const uint8_t> versions = {});
   /** Forget the association without a word to the peer (a full handshake backlog drops a hello silently). */
   void Abandon();
   bool IsClosed() const { return closed_; }
   /** The peer closed it (a Close received; before authentication, only on a dialer: a refusal). */
   bool PeerClosed() const { return peer_closed_; }
+  /** Why the peer closed it (its Close's payload); Unspecified until PeerClosed, or from a v6.0.0 peer. */
+  const ClosePayload& PeerClose() const { return peer_close_; }
   /** A send reported no route to the peer (IsUnreachableSendError): the association is unusable. */
   bool PeerUnreachable() const { return peer_unreachable_; }
   /** A send queued for later (Endpoint::FlushSends) found no route to the peer. */
@@ -229,6 +235,7 @@ private:
   OpenParams params_;
   bool closed_ = false;
   bool peer_closed_ = false;
+  ClosePayload peer_close_;
   bool peer_unreachable_ = false;
   bool peer_version_mismatch_ = false;
   std::vector<uint8_t> peer_wire_versions_;

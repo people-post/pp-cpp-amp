@@ -24,6 +24,35 @@ headers; a link's mux fragments to what one packet carries (`ChannelMux::SetMaxF
 seals its inner packets the same way, `[kind][number]` in the clear, each space with its own replay window. Peers on
 wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
 
+### Release compatibility: readers tolerate, refusals say why
+
+Additive on the wire in both directions with v6.0.0 (pp-browser `projects/release-compatibility/INVENTORY.md`
+T9, U4, U5, U6); no version byte changed.
+
+- **L3 frames (T9).** OPEN, OpenAck, CLOSE and RESET ignore bytes past the fields they know (new fields append). A
+  frame type the reader does not know gets a RESET of its channel with code `ChannelMux::kResetCodeUnknownFrameType`
+  (a bare RESET when the reader has no such channel; dropped on channel 0, the link's own). A new frame type must not
+  use the channel seq, and must be optional or used only once the peer's offer says it is understood: a v6.0.0
+  reader drops it silently. The RESET code reaches the terminal reason: the default code (1, every reset so far)
+  still reads `"peer_reset"`; others read `"peer_reset: unknown-frame-type"` or `"peer_reset: code N"` — match with
+  `ChannelMux::PeerResetCode`. Amp's own codes are from `0x1'0000`; the others are the product's.
+- **MSH (T9, U4).** A message type the handshake does not know fails it at once
+  (`MshAdpHandshake::kErrUnknownMessageType`, `HandshakeFailed`) instead of waiting for the timeout. A hello of
+  another MSH version fails as `kErrUnsupportedVersion`, reported as `VersionMismatch` (not `HandshakeFailed`) on
+  either side.
+- **The ADP Close says why (U4).** Its payload, empty in v6.0.0 and ignored by a v6.0.0 reader, carries an
+  `adp::CloseReason`: `TableFull` (refused, or an idle link evicted for room), `Admission`, `HandshakeFailed`,
+  `UnsupportedMshVersion` (followed by `[count][versions]`, the ones the closer speaks) and `Shutdown`; a close no
+  reason fits sends none. A dialer maps each (`Connection::PeerClose`, `PeerLink::FailRefused`): table full,
+  admission and shutdown stay `TransportFailed`, a handshake failure is `HandshakeFailed`, an unsupported MSH
+  version `VersionMismatch`; no reason (a v6.0.0 peer) reads as before. `LinkEvent::peer_close_reason` carries it.
+- **Who must update (U5).** A `VersionMismatch` — the peer's version negotiation (wire), its hello or its Close (MSH)
+  — sets `LinkEvent::version_mismatch` (`VersionMismatchInfo`: layer, ours, theirs, `VersionSkew` `PeerNewer` /
+  `PeerOlder` / `Unknown`) on the `DialFailed` and `Dropped` events, and the error text says which side updates.
+- **Channel 0's offer (U6).** Leading byte 4 is frozen; fields append. An offer that does not decode is recorded
+  (`PeerLinkManager::UnreadableCapability`, `MeshRuntime::UnreadableCapability`: "unreadable offer, byte N"), and
+  the responder still answers with its own offer.
+
 ## Product entry
 
 **`MeshRuntime`** is the sole product-facing composer (ADR_LINK_PLANE):

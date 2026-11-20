@@ -1,5 +1,6 @@
 #include "amp/L1/Clock.h"
 #include "amp/L1/Endpoint.h"
+#include "amp/L1/HmacBinder.h"
 #include "amp/L1/LossyDatagramIo.h"
 #include "amp/L1/MemoryDatagramIo.h"
 #include "amp/L1/WireCodec.h"
@@ -3477,4 +3478,342 @@ TEST(MeshLinkTest, ADialThatMissesEveryCandidateReportsDialFailedOnce) {
   }
 }
 
+} // namespace pp::amp
+
+// Release compatibility (pp-browser projects/release-compatibility, T9 / U4 / U5 / U6): readers tolerate what a
+// later release sends, refusals say why, and a version mismatch says who must update. Every change is additive on
+// the wire: each test below also runs against what a v6.0.0 node sends or reads.
+namespace pp::amp {
+namespace {
+
+/**
+ * Rewrites the handshake datagrams bob sends or receives. Before keys they are HMAC'd with the public pre-session
+ * key, so a test can change one and seal it again as a node of another release would have written it.
+ */
+class RewriteHandshakeIo final : public adp::DatagramIo {
+public:
+  /** Changes a decoded handshake packet; false leaves the datagram as it was. */
+  using Rewrite = std::function<bool(adp::WirePacket& packet)>;
+
+  RewriteHandshakeIo(std::shared_ptr<adp::DatagramIo> inner, Rewrite on_send, Rewrite on_recv = {})
+      : inner_(std::move(inner)), on_send_(std::move(on_send)), on_recv_(std::move(on_recv)) {}
+  Roe<void> SendTo(const adp::IpEndpoint& peer, std::span<const uint8_t> datagram) override {
+    const auto rewritten = Apply(on_send_, datagram);
+    return inner_->SendTo(peer, rewritten);
+  }
+  Roe<std::optional<std::pair<adp::IpEndpoint, std::vector<uint8_t>>>> RecvFrom() override {
+    auto got = inner_->RecvFrom();
+    if (got && got->has_value()) {
+      (*got)->second = Apply(on_recv_, (*got)->second);
+    }
+    return got;
+  }
+  adp::IpEndpoint LocalEndpoint() const override { return inner_->LocalEndpoint(); }
+  size_t rewritten = 0;
+
+private:
+  std::vector<uint8_t> Apply(const Rewrite& rewrite, std::span<const uint8_t> datagram) {
+    std::vector<uint8_t> out(datagram.begin(), datagram.end());
+    const adp::HmacBinder binder(PreSessionPeerKey());
+    auto packet = adp::WireCodec::Decode(datagram);
+    if (!rewrite || !packet || !binder.Verify(datagram) || !rewrite(*packet)) {
+      return out;
+    }
+    auto encoded = adp::WireCodec::Encode(*packet);
+    auto sealed = encoded ? binder.Seal(*encoded) : Roe<std::vector<uint8_t>>(Error("encode failed"));
+    if (!sealed) {
+      return out;
+    }
+    ++rewritten;
+    return *sealed;
+  }
+
+  std::shared_ptr<adp::DatagramIo> inner_;
+  Rewrite on_send_;
+  Rewrite on_recv_;
+};
+
+/** A `type` hello's version byte set to `version`, in its first piece (MshChunk index 0, or a whole Msh message). */
+RewriteHandshakeIo::Rewrite SetHelloVersion(const MshMessageType type, const uint8_t version) {
+  return [type, version](adp::WirePacket& packet) {
+    auto& p = packet.payload;
+    if (packet.type != adp::PacketType::PlainReliable || p.size() < 8 || p[1] != static_cast<uint8_t>(type)) {
+      return false;
+    }
+    if (p[0] == static_cast<uint8_t>(AmpAdpPayloadKind::MshChunk) && p[2] == 0 && p[3] == 0) {
+      p[7] = version; // [kind][type][index u16][count u16], then the hello: [type][version]
+      return true;
+    }
+    if (p[0] == static_cast<uint8_t>(AmpAdpPayloadKind::Msh)) {
+      p[3] = version; // [kind][type], then the hello
+      return true;
+    }
+    return false;
+  };
+}
+
+/** Bob as a v6.0.0 node: its Close carries no payload. */
+bool StripClosePayload(adp::WirePacket& packet) {
+  if (packet.type != adp::PacketType::Close || packet.payload.empty()) {
+    return false;
+  }
+  packet.payload.clear();
+  return true;
+}
+
+struct DialOutcome {
+  std::optional<PeerLinkManager::LinkRoe> result;
+  std::vector<LinkEvent> a_events;
+  std::vector<LinkEvent> b_events;
+  int64_t took_ms = 0;
+
+  const LinkEvent* Find(const std::vector<LinkEvent>& events, const LinkEvent::Kind kind) const {
+    for (const auto& e : events) {
+      if (e.kind == kind) {
+        return &e;
+      }
+    }
+    return nullptr;
+  }
+};
+
+DialOutcome DialBob(MeshLinkFixture& fixture) {
+  DialOutcome out;
+  fixture.mgr_a->AddLinkEventListener([&out](const LinkEvent& e) { out.a_events.push_back(e); });
+  fixture.mgr_b->AddLinkEventListener([&out](const LinkEvent& e) { out.b_events.push_back(e); });
+  EXPECT_TRUE(static_cast<bool>(fixture.mgr_a->RegisterEndpoint("bob", *FormatAdpMultiaddr(fixture.addr_b, "QmBob"))));
+  fixture.mgr_a->EnsureAssociation("bob", [&out](PeerLinkManager::LinkRoe r) { out.result = std::move(r); });
+  out.took_ms = fixture.PumpTimed([&] { return out.result.has_value(); }, 9000);
+  fixture.PumpTimed([] { return false; }, 50); // the events that follow
+  return out;
+}
+
+// U4: a full table's refusal says so (its Close's reason byte), and the dial-failed event carries it.
+TEST(ReleaseCompatTest, AFullTableSaysSoInItsClose) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false, {}, [](PeerLinkConfig& c) { c.max_links = 0; });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto out = DialBob(*fixture);
+  ASSERT_TRUE(out.result.has_value());
+  ASSERT_FALSE(out.result->isOk());
+  EXPECT_EQ(out.result->error().GetCode(), PeerLinkManager::Err::TransportFailed);
+  EXPECT_NE(out.result->error().message.find("its link table is full"), std::string::npos)
+      << out.result->error().message;
+  EXPECT_LT(out.took_ms, 1000);
+  const auto* failed = out.Find(out.a_events, LinkEvent::Kind::DialFailed);
+  ASSERT_NE(failed, nullptr);
+  EXPECT_EQ(failed->reason, LinkDropReason::TransportFailed) << "the reason mesh reads is as before";
+  EXPECT_EQ(failed->peer_close_reason, adp::CloseReason::TableFull);
+}
+
+// U4, compatibility: a v6.0.0 responder's Close has no payload. The dialer reads it as before: refused, at once,
+// TransportFailed — only the text now says no reason was given.
+TEST(ReleaseCompatTest, AV600StyleEmptyCloseReadsAsARefusalAsBefore) {
+  ASSERT_GE(sodium_init(), 0);
+  std::shared_ptr<RewriteHandshakeIo> io;
+  auto fixture = MeshLinkFixture::Create(
+      false, {}, [](PeerLinkConfig& c) { c.max_links = 0; },
+      [&](std::shared_ptr<adp::DatagramIo> inner) {
+        io = std::make_shared<RewriteHandshakeIo>(std::move(inner), StripClosePayload);
+        return io;
+      });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto out = DialBob(*fixture);
+  ASSERT_GE(io->rewritten, 1u) << "bob sent no Close";
+  ASSERT_TRUE(out.result.has_value());
+  ASSERT_FALSE(out.result->isOk());
+  EXPECT_EQ(out.result->error().GetCode(), PeerLinkManager::Err::TransportFailed);
+  EXPECT_NE(out.result->error().message.find("refused by the peer (no reason given"), std::string::npos)
+      << out.result->error().message;
+  EXPECT_LT(out.took_ms, 1000);
+  const auto* failed = out.Find(out.a_events, LinkEvent::Kind::DialFailed);
+  ASSERT_NE(failed, nullptr);
+  EXPECT_EQ(failed->peer_close_reason, adp::CloseReason::Unspecified);
+}
+
+// U4: an admission refusal says so.
+TEST(ReleaseCompatTest, AnAdmissionRefusalSaysSo) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_b->SetInboundAdmission([] { return false; });
+  auto out = DialBob(*fixture);
+  ASSERT_TRUE(out.result.has_value());
+  ASSERT_FALSE(out.result->isOk());
+  EXPECT_NE(out.result->error().message.find("admission"), std::string::npos) << out.result->error().message;
+  const auto* failed = out.Find(out.a_events, LinkEvent::Kind::DialFailed);
+  ASSERT_NE(failed, nullptr);
+  EXPECT_EQ(failed->peer_close_reason, adp::CloseReason::Admission);
+}
+
+// U4 / U5: a ServerHello of an MSH version the dialer does not speak (a newer responder) fails the dial at once as a
+// version mismatch — not "handshake failed" — and the event says the peer is newer: this side must update.
+TEST(ReleaseCompatTest, AServerHelloOfANewerMshVersionIsAVersionMismatchPeerNewer) {
+  ASSERT_GE(sodium_init(), 0);
+  std::shared_ptr<RewriteHandshakeIo> io;
+  auto fixture = MeshLinkFixture::Create(false, {}, {}, [&](std::shared_ptr<adp::DatagramIo> inner) {
+    io = std::make_shared<RewriteHandshakeIo>(std::move(inner), SetHelloVersion(MshMessageType::ServerHello, 2));
+    return io;
+  });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto out = DialBob(*fixture);
+  ASSERT_GE(io->rewritten, 1u);
+  ASSERT_TRUE(out.result.has_value());
+  ASSERT_FALSE(out.result->isOk());
+  EXPECT_EQ(out.result->error().GetCode(), PeerLinkManager::Err::VersionMismatch) << out.result->error().message;
+  EXPECT_NE(out.result->error().message.find("this side must update"), std::string::npos)
+      << out.result->error().message;
+  EXPECT_LT(out.took_ms, 1000) << "at once, not at the dial timeout";
+  const auto* failed = out.Find(out.a_events, LinkEvent::Kind::DialFailed);
+  ASSERT_NE(failed, nullptr);
+  EXPECT_EQ(failed->reason, LinkDropReason::VersionMismatch);
+  ASSERT_TRUE(failed->version_mismatch.has_value());
+  EXPECT_EQ(failed->version_mismatch->layer, VersionLayer::Msh);
+  EXPECT_EQ(failed->version_mismatch->ours, kMshVersion);
+  EXPECT_EQ(failed->version_mismatch->theirs, std::vector<uint8_t>{2});
+  EXPECT_EQ(failed->version_mismatch->skew, VersionSkew::PeerNewer);
+}
+
+// U4 / U5: a responder that does not speak the ClientHello's MSH version (here an older dialer's, v0) drops it as a
+// version mismatch, the peer older, and its Close names the versions it speaks; the dialer stops at once on it.
+TEST(ReleaseCompatTest, AClientHelloOfAnotherMshVersionGetsACloseNamingTheResponders) {
+  ASSERT_GE(sodium_init(), 0);
+  std::shared_ptr<RewriteHandshakeIo> io;
+  auto fixture = MeshLinkFixture::Create(false, {}, {}, [&](std::shared_ptr<adp::DatagramIo> inner) {
+    io = std::make_shared<RewriteHandshakeIo>(std::move(inner), RewriteHandshakeIo::Rewrite{},
+                                              SetHelloVersion(MshMessageType::ClientHello, 0));
+    return io;
+  });
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto out = DialBob(*fixture);
+  ASSERT_GE(io->rewritten, 1u);
+  ASSERT_TRUE(out.result.has_value());
+  ASSERT_FALSE(out.result->isOk());
+  EXPECT_EQ(out.result->error().GetCode(), PeerLinkManager::Err::VersionMismatch) << out.result->error().message;
+  EXPECT_LT(out.took_ms, 1000) << "at once, not at the dial timeout";
+  const auto* failed = out.Find(out.a_events, LinkEvent::Kind::DialFailed);
+  ASSERT_NE(failed, nullptr);
+  EXPECT_EQ(failed->peer_close_reason, adp::CloseReason::UnsupportedMshVersion);
+  ASSERT_TRUE(failed->version_mismatch.has_value());
+  EXPECT_EQ(failed->version_mismatch->layer, VersionLayer::Msh);
+  EXPECT_EQ(failed->version_mismatch->theirs, std::vector<uint8_t>{kMshVersion}) << "bob's Close named his";
+
+  const auto* dropped = out.Find(out.b_events, LinkEvent::Kind::Dropped);
+  ASSERT_NE(dropped, nullptr);
+  EXPECT_EQ(dropped->reason, LinkDropReason::VersionMismatch);
+  ASSERT_TRUE(dropped->version_mismatch.has_value());
+  EXPECT_EQ(dropped->version_mismatch->theirs, std::vector<uint8_t>{0});
+  EXPECT_EQ(dropped->version_mismatch->skew, VersionSkew::PeerOlder) << "the dialer must update";
+}
+
+/** Bob as a node of another wire version: every datagram it receives is answered with version negotiation. */
+class WireVersionIo final : public adp::DatagramIo {
+public:
+  WireVersionIo(std::shared_ptr<adp::DatagramIo> inner, std::vector<uint8_t> versions)
+      : inner_(std::move(inner)), versions_(std::move(versions)) {}
+  Roe<void> SendTo(const adp::IpEndpoint& peer, std::span<const uint8_t> datagram) override {
+    return inner_->SendTo(peer, datagram);
+  }
+  Roe<std::optional<std::pair<adp::IpEndpoint, std::vector<uint8_t>>>> RecvFrom() override {
+    while (true) {
+      auto got = inner_->RecvFrom();
+      if (!got || !got->has_value()) {
+        return got;
+      }
+      (void)inner_->SendTo((*got)->first, adp::WireCodec::EncodeVersionNegotiation((*got)->second, versions_));
+    }
+  }
+  adp::IpEndpoint LocalEndpoint() const override { return inner_->LocalEndpoint(); }
+
+private:
+  std::shared_ptr<adp::DatagramIo> inner_;
+  std::vector<uint8_t> versions_;
+};
+
+// U5: a wire version mismatch says who must update: the peer's versions compared with ours.
+TEST(ReleaseCompatTest, AWireVersionMismatchSaysWhoMustUpdate) {
+  ASSERT_GE(sodium_init(), 0);
+  const struct {
+    std::vector<uint8_t> theirs;
+    VersionSkew skew;
+    const char* text;
+  } cases[] = {
+      {{3}, VersionSkew::PeerNewer, "this side must update"},
+      {{1}, VersionSkew::PeerOlder, "it must update"},
+      {{1, 3}, VersionSkew::Unknown, "not v2"},
+  };
+  for (const auto& c : cases) {
+    auto fixture = MeshLinkFixture::Create(false, {}, {}, [&](std::shared_ptr<adp::DatagramIo> inner) {
+      return std::make_shared<WireVersionIo>(std::move(inner), c.theirs);
+    });
+    ASSERT_TRUE(static_cast<bool>(fixture));
+    auto out = DialBob(*fixture);
+    ASSERT_TRUE(out.result.has_value());
+    ASSERT_FALSE(out.result->isOk());
+    EXPECT_EQ(out.result->error().GetCode(), PeerLinkManager::Err::VersionMismatch);
+    EXPECT_NE(out.result->error().message.find(c.text), std::string::npos) << out.result->error().message;
+    const auto* failed = out.Find(out.a_events, LinkEvent::Kind::DialFailed);
+    ASSERT_NE(failed, nullptr);
+    ASSERT_TRUE(failed->version_mismatch.has_value());
+    EXPECT_EQ(failed->version_mismatch->layer, VersionLayer::Wire);
+    EXPECT_EQ(failed->version_mismatch->ours, adp::kWireVersion);
+    EXPECT_EQ(failed->version_mismatch->theirs, c.theirs);
+    EXPECT_EQ(failed->version_mismatch->skew, c.skew) << VersionSkewName(failed->version_mismatch->skew);
+  }
+}
+
+TEST(ReleaseCompatTest, CompareVersions) {
+  EXPECT_EQ(CompareVersions(2, {3, 4}), VersionSkew::PeerNewer);
+  EXPECT_EQ(CompareVersions(2, {1}), VersionSkew::PeerOlder);
+  EXPECT_EQ(CompareVersions(2, {1, 3}), VersionSkew::Unknown);
+  EXPECT_EQ(CompareVersions(2, {2}), VersionSkew::Unknown);
+  EXPECT_EQ(CompareVersions(2, {}), VersionSkew::Unknown);
+  EXPECT_STREQ(VersionSkewName(VersionSkew::PeerNewer), "peer-newer");
+  EXPECT_STREQ(VersionSkewName(VersionSkew::PeerOlder), "peer-older");
+}
+
+// U4: stopping says so in each Close; a v6.0.0 peer reads it as a plain Close, and this release records the reason.
+TEST(ReleaseCompatTest, AShutdownSaysSoInItsClose) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  auto out = DialBob(*fixture);
+  ASSERT_TRUE(out.result.has_value());
+  ASSERT_TRUE(out.result->isOk()) << out.result->error().message;
+  out.a_events.clear();
+  EXPECT_GE(fixture->mgr_b->CloseAllLinks(), 1u);
+  fixture->PumpTimed([&] { return out.Find(out.a_events, LinkEvent::Kind::Dropped) != nullptr; }, 1000);
+  const auto* dropped = out.Find(out.a_events, LinkEvent::Kind::Dropped);
+  ASSERT_NE(dropped, nullptr);
+  EXPECT_EQ(dropped->reason, LinkDropReason::ConnectionClosed);
+  EXPECT_EQ(dropped->peer_close_reason, adp::CloseReason::Shutdown);
+}
+
+// U6: an offer the responder cannot read (a later release's leading byte) is recorded as "unreadable offer, byte N",
+// and the responder still answers with its own offer — so the dialer learns what the responder runs.
+TEST(ReleaseCompatTest, AnUnreadableOfferIsStillAnsweredWithOurs) {
+  ASSERT_GE(sodium_init(), 0);
+  auto fixture = MeshLinkFixture::Create(false);
+  ASSERT_TRUE(static_cast<bool>(fixture));
+  fixture->mgr_b->SetAdvertisedNodeInfo("9.9.9", {});
+  fixture->mgr_a->SetCapabilityOfferBytesForTest({5, 0xAA, 0xBB});
+  auto out = DialBob(*fixture);
+  ASSERT_TRUE(out.result.has_value());
+  ASSERT_TRUE(out.result->isOk()) << out.result->error().message;
+  fixture->PumpTimed([&] { return fixture->mgr_a->RemoteCapability("QmBob").has_value(); }, 1000);
+
+  const auto on_a = fixture->mgr_a->RemoteCapability("QmBob");
+  ASSERT_TRUE(on_a.has_value()) << "bob answered with his offer";
+  EXPECT_EQ(on_a->node_version, "9.9.9");
+  EXPECT_EQ(on_a->amp_wire, adp::kWireVersion);
+
+  EXPECT_FALSE(fixture->mgr_b->RemoteCapability("QmAlice").has_value());
+  const auto unreadable = fixture->mgr_b->UnreadableCapability("QmAlice");
+  ASSERT_TRUE(unreadable.has_value());
+  EXPECT_EQ(unreadable->leading_byte, 5);
+  EXPECT_EQ(unreadable->Describe().rfind("unreadable offer, byte 5", 0), 0u) << unreadable->Describe();
+  EXPECT_FALSE(fixture->mgr_a->UnreadableCapability("QmBob").has_value());
+}
+
+} // namespace
 } // namespace pp::amp

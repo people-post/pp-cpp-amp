@@ -61,12 +61,13 @@ Connection::Roe<std::shared_ptr<Connection>> Connection::Open(Endpoint& endpoint
   return conn;
 }
 
-void Connection::Close() {
+void Connection::Close(const CloseReason reason, const std::span<const uint8_t> versions) {
   if (closed_) {
     return;
   }
   const int64_t now = endpoint_->GetClock().NowMs();
-  (void)SendPacket(PacketType::Close, 0, {}, now);
+  const auto payload = WireCodec::EncodeClosePayload(reason, versions);
+  (void)SendPacket(PacketType::Close, 0, payload, now);
   MarkClosed();
 }
 
@@ -602,6 +603,7 @@ void Connection::HandleAuthenticated(const WirePacket& pkt, const IpEndpoint& fr
         break;
       }
       peer_closed_ = true;
+      peer_close_ = WireCodec::DecodeClosePayload(pkt.payload);
       MarkClosed();
       break;
     }

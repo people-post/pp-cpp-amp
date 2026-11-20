@@ -119,6 +119,29 @@ public:
    */
   std::vector<std::function<void()>> DetachAllChannels();
 
+  /**
+   * RESET codes. kResetCodeDefault is what every reset sent so far carries (ChannelSession::Reset, a read timeout, a
+   * bad message). Amp's own codes are from 0x1'0000 up; the others are free for products.
+   */
+  static constexpr uint32_t kResetCodeDefault = 1;
+  /** RESET code: the channel carried a frame type this release does not know (ChannelWire::IsKnownFrameType). */
+  static constexpr uint32_t kResetCodeUnknownFrameType = 0x0001'0001;
+  /**
+   * Terminal reason of the peer's RESET with kResetCodeDefault — the same as before the code reached the reason, so a
+   * product matching "peer_reset" sees no change from any v6.0.0 peer. Other codes read
+   * "peer_reset: unknown-frame-type" or "peer_reset: code N" (PeerResetReason); match with PeerResetCode.
+   */
+  static constexpr const char* kPeerResetReason = "peer_reset";
+  /** The terminal reason a peer's RESET with `code` gives (a string that lives as long as the process). */
+  static const char* PeerResetReason(uint32_t code);
+  /** The RESET code a terminal reason names: nullopt when it is not a peer's reset (or names a code past the 64th). */
+  static std::optional<uint32_t> PeerResetCode(const char* reason);
+  /**
+   * Terminal reason, on this side, for a channel the mux reset because the peer sent a frame type this release does
+   * not know (its peer reads PeerResetReason(kResetCodeUnknownFrameType)).
+   */
+  static constexpr const char* kUnknownFrameTypeReason = "unknown-frame-type";
+
   /** OpenAck result: the responder has no handler for the channel's protocol. */
   static constexpr uint8_t kOpenAckNoHandler = 1;
   /**
@@ -142,7 +165,7 @@ public:
   Roe<void> SendData(uint32_t channel_id, std::vector<uint8_t> payload);
   /** The same from the caller's bytes: a payload that fits one frame is encoded straight from them (one copy). */
   Roe<void> SendData(uint32_t channel_id, std::span<const uint8_t> payload);
-  Roe<void> ResetChannel(uint32_t channel_id, uint32_t code = 1);
+  Roe<void> ResetChannel(uint32_t channel_id, uint32_t code = kResetCodeDefault);
   Roe<void> CloseChannel(uint32_t channel_id, std::string reason = {});
 
   /** One inbound frame the link opened (ChannelWire bytes). */
@@ -163,6 +186,8 @@ public:
   adp::QosClass LastSendQos() const { return last_send_qos_; }
 
   static Roe<void> SendCapabilityOffer(ChannelMux& mux, const CapabilityPayload& offer);
+  /** The same with the offer already encoded (opens channel 0 when it is not yet). */
+  static Roe<void> SendCapabilityOfferBytes(ChannelMux& mux, std::vector<uint8_t> encoded);
 
   /** Test hook — send an encoded frame on the mux transport as if `channel_id` sent it. */
   Roe<void> InjectFrameForTest(uint32_t channel_id, std::vector<uint8_t> frame);
@@ -228,6 +253,8 @@ private:
   void FlushQueued();
   void DropQueued(uint32_t channel_id);
   Roe<void> DispatchFrame(ChannelFrame frame);
+  /** A frame type this release does not know: RESET its channel (code kResetCodeUnknownFrameType); channel 0's is dropped. */
+  Roe<void> AnswerUnknownFrame(const ChannelFrame& frame);
   Roe<void> DeliverPayload(ChannelRecord& channel, std::vector<uint8_t> payload);
   Roe<void> HandleOpen(ChannelFrame frame);
   Roe<void> RefuseOpen(const ChannelFrame& frame, uint8_t result);
