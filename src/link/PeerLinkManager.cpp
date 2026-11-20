@@ -122,6 +122,15 @@ std::optional<CapabilityPayload> PeerLinkManager::RemoteCapability(const std::st
   return *link->RemoteCapability();
 }
 
+std::optional<UnreadableCapabilityOffer> PeerLinkManager::UnreadableCapability(const std::string& peer_id) const {
+  std::lock_guard lock(strand_mu_);
+  const PeerLink* link = table_.FindByPeerId(peer_id);
+  if (!link || link->Phase() != PeerLinkPhase::Connected || !link->UnreadableCapability()) {
+    return std::nullopt;
+  }
+  return *link->UnreadableCapability();
+}
+
 CapabilityPayload PeerLinkManager::LocalCapability() const {
   std::lock_guard lock(strand_mu_);
   CapabilityPayload payload;
@@ -342,12 +351,16 @@ void PeerLinkManager::DropLinkNow(PeerLink& live, const LinkDropReason reason) {
   const LinkId id = link->Id();
   LinkEvent dropped = MakeLinkEvent(LinkEvent::Kind::Dropped, *link);
   dropped.reason = reason;
+  if (reason == LinkDropReason::VersionMismatch) {
+    dropped.version_mismatch = link->LastVersionMismatch();
+  }
   dropped.was_connected = connected_link_ids_.erase(link->Id()) > 0;
   if (auto* conn = link->ConnectionOrNull(); conn && !link->IsCarrierBacked()) {
     if (conn->LastAuthRxMs() > 0) {
       dropped.last_rx_age_ms = endpoint_.GetClock().NowMs() - conn->LastAuthRxMs();
     }
     dropped.keepalive_interval_ms = std::max(conn->LocalKeepaliveIntervalMs(), conn->PeerKeepaliveIntervalMs());
+    dropped.peer_close_reason = conn->PeerClose().reason;
     conn->OnPathChange({});
   }
   // Tell the peer to evict too — silent local-only drop left the far side holding a zombie
@@ -358,7 +371,7 @@ void PeerLinkManager::DropLinkNow(PeerLink& live, const LinkDropReason reason) {
     if (auto* conn = link->ConnectionOrNull()) {
       conn->OnMessage({});
       if (!conn->IsClosed()) {
-        conn->Close();
+        CloseWithReason(*conn, *link, reason);
       }
     }
   }
@@ -1009,6 +1022,14 @@ void PeerLinkManager::FinishDial(const std::string& peer_key, const LinkHandle h
           }
           event.outbound = true;
           event.reason = reason;
+          if (const auto* link = table_.FindLive(handle)) {
+            if (reason == LinkDropReason::VersionMismatch) {
+              event.version_mismatch = link->LastVersionMismatch();
+            }
+            if (const auto* conn = link->ConnectionOrNull(); conn && !link->IsCarrierBacked()) {
+              event.peer_close_reason = conn->PeerClose().reason;
+            }
+          }
           dial_failed = std::move(event);
         }
         ScheduleDropLink(handle, reason);
@@ -1104,7 +1125,7 @@ bool PeerLinkManager::EvictIdleInboundLocked() {
     return false;
   }
   // Closed now (its peer is told), so it holds no slot; Tick removes it.
-  oldest->ConnectionOrNull()->Close();
+  oldest->ConnectionOrNull()->Close(adp::CloseReason::TableFull);
   ScheduleDropLink(oldest->Handle(), LinkDropReason::IdleEvicted);
   return true;
 }
@@ -1236,13 +1257,13 @@ void PeerLinkManager::OnInboundConnection(std::shared_ptr<adp::Connection> conne
   std::lock_guard lock(strand_mu_);
   if (inbound_admission_ && !inbound_admission_()) {
     inbound_refused_by_admission_.fetch_add(1, std::memory_order_relaxed);
-    connection->Close(); // before the handshake: no signature made or checked for it
+    connection->Close(adp::CloseReason::Admission); // before the handshake: no signature made or checked for it
     return;
   }
   // A full table first makes room by evicting its longest-idle inbound link; failing that, the
   // newcomer is refused at once (a Close its dialer takes as a refusal), like a TCP reset.
   if (AtLinkCapacityLocked() && !EvictIdleInboundLocked()) {
-    connection->Close();
+    connection->Close(adp::CloseReason::TableFull);
     return;
   }
   // Pending (Handshaking) inbound links have their own quota, separate from max_links: a flood
@@ -1332,6 +1353,10 @@ void PeerLinkManager::StartCapabilityExchange(PeerLink& link) {
     return;
   }
   link.MarkCapabilityOfferSent();
+  if (capability_offer_bytes_for_test_) {
+    (void)ChannelMux::SendCapabilityOfferBytes(*link.Mux(), *capability_offer_bytes_for_test_);
+    return;
+  }
   (void)ChannelMux::SendCapabilityOffer(*link.Mux(), CapabilityFor(link));
 }
 
@@ -1354,6 +1379,13 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
   }
   auto decoded = CapabilityCodec::Decode(payload);
   if (!decoded) {
+    // Most likely a later release's offer (U6): note what it was, and still answer with ours, so the peer learns
+    // what this side runs (before, neither side learned anything).
+    if (!link->RemoteCapability()) {
+      link->NoteUnreadableCapability(
+          UnreadableCapabilityOffer{payload.empty() ? uint8_t{0} : payload[0], decoded.error().message});
+    }
+    ReplyCapabilityOnce(*link);
     return;
   }
 
@@ -1361,13 +1393,7 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
   link->ApplyRemoteCapability(*decoded);
 
   // Inbound peer replies once with local caps on the same ch0.
-  if (!link->CapabilityOfferSent()) {
-    link->MarkCapabilityOfferSent();
-    auto encoded = CapabilityCodec::Encode(CapabilityFor(*link));
-    if (encoded && link->Mux()->State(kCapabilityChannelId) == ChannelState::Open) {
-      (void)link->Mux()->SendData(kCapabilityChannelId, std::move(*encoded));
-    }
-  }
+  ReplyCapabilityOnce(*link);
   if (first) {
     IngestRemoteCapabilityAddrs(*link, *decoded);
     if (capability_handler_) {
@@ -1375,6 +1401,17 @@ void PeerLinkManager::OnCapabilityData(const std::string& peer_key, std::vector<
         capability_handler_(link->Handle(), link->RemotePeerId(), *remote);
       }
     }
+  }
+}
+
+void PeerLinkManager::ReplyCapabilityOnce(PeerLink& link) {
+  if (link.CapabilityOfferSent() || !link.Mux()) {
+    return;
+  }
+  link.MarkCapabilityOfferSent();
+  auto encoded = CapabilityCodec::Encode(CapabilityFor(link));
+  if (encoded && link.Mux()->State(kCapabilityChannelId) == ChannelState::Open) {
+    (void)link.Mux()->SendData(kCapabilityChannelId, std::move(*encoded));
   }
 }
 
@@ -1559,7 +1596,7 @@ void PeerLinkManager::SweepLinksLocked(const int64_t now) {
       timed_out.push_back(link.Handle());
     }
   });
-  // A dialer the peer refused (its table full) fails now, not at the dial timeout — like a TCP reset.
+  // A dialer the peer refused fails now, not at the dial timeout — like a TCP reset — for the reason its Close gives.
   std::vector<LinkHandle> refused;
   table_.ForEach([&](PeerLink& link) {
     const auto phase = link.Phase();
@@ -1571,7 +1608,8 @@ void PeerLinkManager::SweepLinksLocked(const int64_t now) {
   });
   for (const auto& handle : refused) {
     if (auto* link = table_.FindLive(handle)) {
-      link->FailRefused(); // → establish_cb → FinishDial
+      link->FailRefused(link->ConnectionOrNull() ? link->ConnectionOrNull()->PeerClose() : adp::ClosePayload{});
+      // → establish_cb → FinishDial
     }
   }
   // A dialer whose handshake found no route fails now (a send queued in a corked round, Endpoint::FlushSends,
@@ -2131,6 +2169,28 @@ bool PeerLinkManager::HasBurstDialFor(const std::string& peer_id) const {
     }
   }
   return false;
+}
+
+void PeerLinkManager::CloseWithReason(adp::Connection& conn, const PeerLink& link, const LinkDropReason reason) {
+  // The reason rides the Close's payload (U4); a v6.0.0 peer ignores it and reads a plain Close.
+  switch (reason) {
+    case LinkDropReason::LocalShutdown:
+      conn.Close(adp::CloseReason::Shutdown);
+      return;
+    case LinkDropReason::HandshakeFailed:
+      conn.Close(adp::CloseReason::HandshakeFailed);
+      return;
+    case LinkDropReason::VersionMismatch:
+      if (const auto& mismatch = link.LastVersionMismatch(); mismatch && mismatch->layer == VersionLayer::Msh) {
+        const uint8_t ours[] = {kMshVersion};
+        conn.Close(adp::CloseReason::UnsupportedMshVersion, ours);
+        return;
+      }
+      break;
+    default:
+      break;
+  }
+  conn.Close();
 }
 
 LinkDropReason PeerLinkManager::DropReasonFor(const Failure& failure) {

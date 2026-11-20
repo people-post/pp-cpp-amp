@@ -252,6 +252,8 @@ public:
   void SetAdvertisedNodeInfo(std::string node_version, std::vector<std::string> features);
   /** See PeerLinkManager::RemoteCapability (N032). */
   std::optional<CapabilityPayload> RemoteCapability(const std::string& peer_id) const;
+  /** See PeerLinkManager::UnreadableCapability (U6). */
+  std::optional<UnreadableCapabilityOffer> UnreadableCapability(const std::string& peer_id) const;
 
   void MarkWarm(const DialKey& peer_key);
   void MarkHot(const DialKey& peer_key);

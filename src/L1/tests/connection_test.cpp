@@ -3,6 +3,7 @@
 #include "amp/L1/MemoryDatagramIo.h"
 #include "amp/L1/Types.h"
 #include "amp/L1/ReplayWindow.h"
+#include "amp/L1/WireCodec.h"
 
 #include <gtest/gtest.h>
 #include <sodium.h>
@@ -423,6 +424,69 @@ TEST_F(AdpConnTest, DemuxMultipleAssocs) {
   p.ep_b->Pump();
   EXPECT_NE(p.ep_b->Find(Aid(1)), nullptr);
   EXPECT_NE(p.ep_b->Find(Aid(2)), nullptr);
+}
+
+// Release compatibility U4: a Close's payload says why. Unspecified is an empty payload, exactly what v6.0.0 sends.
+TEST_F(AdpConnTest, ClosePayloadRoundTrip) {
+  using pp::adp::CloseReason;
+  using pp::adp::WireCodec;
+  EXPECT_TRUE(WireCodec::EncodeClosePayload(CloseReason::Unspecified).empty());
+  EXPECT_EQ(WireCodec::EncodeClosePayload(CloseReason::TableFull), (std::vector<uint8_t>{1}));
+  EXPECT_EQ(WireCodec::EncodeClosePayload(CloseReason::Admission), (std::vector<uint8_t>{2}));
+  EXPECT_EQ(WireCodec::EncodeClosePayload(CloseReason::HandshakeFailed), (std::vector<uint8_t>{3}));
+  EXPECT_EQ(WireCodec::EncodeClosePayload(CloseReason::Shutdown), (std::vector<uint8_t>{5}));
+  const uint8_t ours[] = {1};
+  EXPECT_EQ(WireCodec::EncodeClosePayload(CloseReason::UnsupportedMshVersion, ours), (std::vector<uint8_t>{4, 1, 1}));
+
+  // A v6.0.0 Close: no payload.
+  EXPECT_EQ(WireCodec::DecodeClosePayload({}).reason, CloseReason::Unspecified);
+  const std::vector<uint8_t> msh = {4, 2, 1, 2, 0xEE}; // a later release's byte after the versions
+  const auto decoded = WireCodec::DecodeClosePayload(msh);
+  EXPECT_EQ(decoded.reason, CloseReason::UnsupportedMshVersion);
+  EXPECT_EQ(decoded.versions, (std::vector<uint8_t>{1, 2}));
+  const std::vector<uint8_t> truncated = {4, 3, 1};
+  EXPECT_EQ(WireCodec::DecodeClosePayload(truncated).versions, (std::vector<uint8_t>{1}));
+  const std::vector<uint8_t> later = {0x40, 9, 9};
+  EXPECT_EQ(static_cast<uint8_t>(WireCodec::DecodeClosePayload(later).reason), 0x40);
+  EXPECT_STREQ(pp::adp::CloseReasonName(WireCodec::DecodeClosePayload(later).reason), "unknown");
+  EXPECT_STREQ(pp::adp::CloseReasonName(CloseReason::TableFull), "table-full");
+}
+
+// The reason crosses the wire inside the HMAC'd Close, read by the dialer; an empty one (v6.0.0) reads Unspecified.
+TEST_F(AdpConnTest, ADialerReadsTheReasonOfThePeersClose) {
+  for (const bool with_reason : {true, false}) {
+    auto p = MakePair();
+    p.ep_b->SetAcceptKey(Key());
+    p.ep_b->SetAcceptEnabled(true);
+    pp::adp::OpenParams op;
+    op.key = Key();
+    op.id = Aid();
+    op.mint_id = false;
+    op.peer = p.addr_b;
+    op.dialer_backoff = true; // a dialer takes a pre-auth Close as a refusal
+    auto ca = p.ep_a->Open(op);
+    ASSERT_TRUE(ca);
+    ASSERT_TRUE((*ca)->Send(pp::adp::QosClass::BestEffort,
+                            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("hi"), 2)));
+    p.ep_b->Pump();
+    auto cb = p.ep_b->Find(Aid());
+    ASSERT_NE(cb, nullptr);
+    const uint8_t ours[] = {1};
+    if (with_reason) {
+      cb->Close(pp::adp::CloseReason::UnsupportedMshVersion, ours);
+    } else {
+      cb->Close();
+    }
+    p.ep_a->Pump();
+    ASSERT_TRUE((*ca)->PeerClosed()) << with_reason;
+    if (with_reason) {
+      EXPECT_EQ((*ca)->PeerClose().reason, pp::adp::CloseReason::UnsupportedMshVersion);
+      EXPECT_EQ((*ca)->PeerClose().versions, (std::vector<uint8_t>{1}));
+    } else {
+      EXPECT_EQ((*ca)->PeerClose().reason, pp::adp::CloseReason::Unspecified);
+      EXPECT_TRUE((*ca)->PeerClose().versions.empty());
+    }
+  }
 }
 
 } // namespace

@@ -37,7 +37,7 @@ Injection knobs:
 | **N7** | Replay / late seq | Steady | BE + Reliable | Reject duplicate | L1 | **landed** (replay / dup-ACK) |
 | **N8** | Bit-flip / truncate wire | Any | Encoded ADP | Reject, no crash | L1 | **landed** (mutilator + HMAC) |
 | **N9** | Tamper sealed / Finished | HS / post | MSH / AEAD | Reject | L2 | **landed** |
-| **N10** | Garbage mid-HS | Handshake | Raw + MSH-shaped | Recover or dial fail clean | Integ | **landed** (Adv03) |
+| **N10** | Garbage mid-HS | Handshake | Raw + MSH-shaped | Raw: recover. An unknown MSH type: dial fails clean at once (the Close says handshake failed) | Integ | **landed** (Adv03, Adv03b) |
 | **N11** | Sealed garbage flood | Post-assoc | Invalid AEAD | Stay up; good data works | Integ | **landed** (Adv06) |
 | **N12** | Partial FRAG bomb | Post-open | Incomplete frags | Bound memory; sweep | Integ | **landed** (Adv08) |
 | **N12b** | Oversized message | Post-open | FRAG declaring more than the reader's `max_message_bytes` | Channel RESET at the first fragment (`bad-message`); sender stops | L3 unit | **landed** (`MessageOverTheReadersLimitResetsTheChannel`) |

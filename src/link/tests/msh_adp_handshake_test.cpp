@@ -81,10 +81,10 @@ public:
     };
   }
 
-  MshAdpHandshake::SendWire SendToClient() {
-    return [this](std::vector<uint8_t> wire) -> Roe<void> {
+  MshAdpHandshake::SendWire SendToClient(Rewrite rewrite = nullptr) {
+    return [this, rewrite](std::vector<uint8_t> wire) -> Roe<void> {
       if (auto whole = Join(to_client_parts_, std::move(wire))) {
-        queue_.push_back({false, std::move(*whole)});
+        queue_.push_back({false, rewrite ? rewrite(std::move(*whole)) : std::move(*whole)});
       }
       return Roe<void>();
     };
@@ -213,6 +213,89 @@ TEST(MshAdpHandshakeTest, RejectsPayloadKemKeyMismatchingHello) {
   const bool rejected = !start || !drained || !server_result;
   EXPECT_TRUE(rejected);
   EXPECT_FALSE(static_cast<bool>(server_result));
+}
+
+/** `wire` ([kind][type][hello …]) with its hello's version byte set to `version`. */
+std::vector<uint8_t> WithHelloVersion(std::vector<uint8_t> wire, const uint8_t version) {
+  auto type = AmpAdpCarrier::DecodeMshType(wire);
+  if (type && (*type == MshMessageType::ClientHello || *type == MshMessageType::ServerHello) && wire.size() > 3) {
+    wire[3] = version; // [kind][type] then the hello: [type][version]
+  }
+  return wire;
+}
+
+// Release compatibility U4 / U5: a ServerHello of another MSH version fails the initiator at once as a version
+// mismatch (its own code, the peer's version kept), not as a generic handshake failure.
+TEST(MshAdpHandshakeTest, AServerHelloOfAnotherVersionFailsAsUnsupportedVersion) {
+  Pump pump;
+  std::optional<Roe<MshAdpEstablished>> client_result;
+  MshAdpHandshake client(
+      MshAdpHandshake::Role::Initiator, MakeIdentity(), pump.SendToServer(),
+      [&](Roe<MshAdpEstablished> result) { client_result = std::move(result); }, /*over_carrier=*/true);
+  MshAdpHandshake server(
+      MshAdpHandshake::Role::Responder, MakeIdentity(),
+      pump.SendToClient([](std::vector<uint8_t> wire) { return WithHelloVersion(std::move(wire), 2); }),
+      [](Roe<MshAdpEstablished>) {}, /*over_carrier=*/true);
+  pump.SetTargets(&client, &server);
+  ASSERT_TRUE(static_cast<bool>(client.Start()));
+  (void)pump.Drain();
+  ASSERT_TRUE(client_result.has_value()) << "failed at once, not left to time out";
+  ASSERT_FALSE(static_cast<bool>(*client_result));
+  EXPECT_EQ(client_result->error().code, MshAdpHandshake::kErrUnsupportedVersion) << client_result->error().message;
+  EXPECT_EQ(client.RemoteHelloVersion(), std::optional<uint8_t>(2));
+  EXPECT_TRUE(client.IsComplete());
+}
+
+// The same on the responder's side: a ClientHello of another version.
+TEST(MshAdpHandshakeTest, AClientHelloOfAnotherVersionFailsTheResponderAsUnsupportedVersion) {
+  Pump pump;
+  std::optional<Roe<MshAdpEstablished>> server_result;
+  MshAdpHandshake client(
+      MshAdpHandshake::Role::Initiator, MakeIdentity(),
+      pump.SendToServer([](std::vector<uint8_t> wire) { return WithHelloVersion(std::move(wire), 0); }),
+      [](Roe<MshAdpEstablished>) {}, /*over_carrier=*/true);
+  MshAdpHandshake server(
+      MshAdpHandshake::Role::Responder, MakeIdentity(), pump.SendToClient(),
+      [&](Roe<MshAdpEstablished> result) { server_result = std::move(result); }, /*over_carrier=*/true);
+  pump.SetTargets(&client, &server);
+  ASSERT_TRUE(static_cast<bool>(client.Start()));
+  (void)pump.Drain();
+  ASSERT_TRUE(server_result.has_value());
+  ASSERT_FALSE(static_cast<bool>(*server_result));
+  EXPECT_EQ(server_result->error().code, MshAdpHandshake::kErrUnsupportedVersion);
+  EXPECT_EQ(server.RemoteHelloVersion(), std::optional<uint8_t>(0));
+}
+
+// Release compatibility T9: an MSH message type this release does not know fails the handshake at once, with a
+// code, instead of being ignored until the handshake times out.
+TEST(MshAdpHandshakeTest, AnUnknownMessageTypeFailsTheHandshakeAtOnce) {
+  for (const auto role : {MshAdpHandshake::Role::Initiator, MshAdpHandshake::Role::Responder}) {
+    std::optional<Roe<MshAdpEstablished>> result;
+    MshAdpHandshake handshake(
+        role, MakeIdentity(), [](std::vector<uint8_t>) { return Roe<void>(); },
+        [&](Roe<MshAdpEstablished> r) { result = std::move(r); });
+    if (role == MshAdpHandshake::Role::Initiator) {
+      ASSERT_TRUE(static_cast<bool>(handshake.Start()));
+    }
+    const std::vector<uint8_t> body = {6, 0, 1, 2};
+    EXPECT_FALSE(static_cast<bool>(handshake.HandleMsh(static_cast<MshMessageType>(6), body)));
+    ASSERT_TRUE(result.has_value());
+    ASSERT_FALSE(static_cast<bool>(*result));
+    EXPECT_EQ(result->error().code, MshAdpHandshake::kErrUnknownMessageType) << result->error().message;
+    EXPECT_TRUE(handshake.IsComplete());
+  }
+}
+
+// A known message out of turn is still ignored (a resend, a reordered packet): only an unknown type ends it.
+TEST(MshAdpHandshakeTest, AKnownMessageOutOfTurnIsStillIgnored) {
+  std::optional<Roe<MshAdpEstablished>> result;
+  MshAdpHandshake responder(
+      MshAdpHandshake::Role::Responder, MakeIdentity(), [](std::vector<uint8_t>) { return Roe<void>(); },
+      [&](Roe<MshAdpEstablished> r) { result = std::move(r); });
+  const std::vector<uint8_t> body = {static_cast<uint8_t>(MshMessageType::Finished), 0};
+  EXPECT_FALSE(static_cast<bool>(responder.HandleMsh(MshMessageType::Finished, body)));
+  EXPECT_FALSE(result.has_value());
+  EXPECT_FALSE(responder.IsComplete());
 }
 
 } // namespace

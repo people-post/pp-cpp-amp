@@ -633,6 +633,10 @@ std::optional<CapabilityPayload> MeshRuntime::RemoteCapability(const std::string
   return links_.RemoteCapability(peer_id);
 }
 
+std::optional<UnreadableCapabilityOffer> MeshRuntime::UnreadableCapability(const std::string& peer_id) const {
+  return links_.UnreadableCapability(peer_id);
+}
+
 void MeshRuntime::MarkWarm(const DialKey& peer_key) {
   links_.MarkWarm(peer_key);
 }

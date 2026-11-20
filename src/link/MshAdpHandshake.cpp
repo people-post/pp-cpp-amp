@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <sodium.h>
+#include <string>
 
 namespace pp::amp {
 
@@ -170,6 +171,18 @@ Roe<void> MshAdpHandshake::Fail(const std::string message) {
   return Finish(Error(message));
 }
 
+Roe<void> MshAdpHandshake::Fail(const int32_t code, std::string message) {
+  return Finish(Error(code, std::move(message)));
+}
+
+Roe<void> MshAdpHandshake::FailHello(const std::span<const uint8_t> body, const Error& error) {
+  if (error.code == kMshErrUnsupportedVersion) {
+    remote_hello_version_ = MshMessages::PeekHelloVersion(body);
+    return Fail(kErrUnsupportedVersion, error.message);
+  }
+  return Fail(error.message);
+}
+
 Roe<void> MshAdpHandshake::Start() {
   if (role_ != Role::Initiator) {
     return Error("amp msh adp: start on non-initiator");
@@ -195,6 +208,11 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
   if (complete_) {
     return Error("amp msh adp: handshake complete");
   }
+  if (!IsKnownMshMessageType(static_cast<uint8_t>(type))) {
+    // A later release's message: this handshake cannot go on, and waiting would only end in the timeout.
+    return Fail(kErrUnknownMessageType,
+                "amp msh adp: unknown message type " + std::to_string(static_cast<unsigned>(type)));
+  }
 
   if (role_ == Role::Responder) {
     if (over_carrier_ && IsRepeatOfLastAnswered(type, body)) {
@@ -212,8 +230,9 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
         started_ = true;
         auto parsed = MshMessages::DecodeHello(MshMessageType::ClientHello, body);
         if (!parsed) {
-          return Fail(parsed.error().message);
+          return FailHello(body, parsed.error());
         }
+        remote_hello_version_ = parsed->version;
         remote_hello_ = std::move(*parsed);
         AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
 
@@ -306,8 +325,9 @@ Roe<void> MshAdpHandshake::HandleMsh(const MshMessageType type, const std::span<
       }
       auto parsed = MshMessages::DecodeHello(MshMessageType::ServerHello, body);
       if (!parsed) {
-        return Fail(parsed.error().message);
+        return FailHello(body, parsed.error());
       }
+      remote_hello_version_ = parsed->version;
       remote_hello_ = std::move(*parsed);
       AppendPart(transcript_, std::vector<uint8_t>(body.begin(), body.end()));
 

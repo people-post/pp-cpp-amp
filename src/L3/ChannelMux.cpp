@@ -4,6 +4,10 @@
 #include "amp/L3/Capability.h"
 
 #include <algorithm>
+#include <charconv>
+#include <mutex>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace pp::amp {
@@ -37,7 +41,58 @@ std::shared_ptr<const ChannelMux::DataHandler> SharedHandler(ChannelMux::DataHan
   return handler ? std::make_shared<const ChannelMux::DataHandler>(std::move(handler)) : nullptr;
 }
 
+constexpr std::string_view kPeerResetUnknownFrameType = "peer_reset: unknown-frame-type";
+constexpr std::string_view kPeerResetCodePrefix = "peer_reset: code ";
+constexpr std::string_view kPeerResetCodeOther = "peer_reset: code other";
+/** Distinct "peer_reset: code N" reasons kept; a peer cycling codes cannot grow the table past this. */
+constexpr size_t kMaxInternedResetReasons = 64;
+
 } // namespace
+
+const char* ChannelMux::PeerResetReason(const uint32_t code) {
+  if (code == kResetCodeDefault) {
+    return kPeerResetReason;
+  }
+  if (code == kResetCodeUnknownFrameType) {
+    return kPeerResetUnknownFrameType.data();
+  }
+  // Interned: a terminal reason is a `const char*` its handler may keep, so it must outlive the call.
+  static std::mutex mu;
+  static std::unordered_map<uint32_t, std::string> reasons;
+  std::lock_guard lock(mu);
+  if (auto it = reasons.find(code); it != reasons.end()) {
+    return it->second.c_str();
+  }
+  if (reasons.size() >= kMaxInternedResetReasons) {
+    return kPeerResetCodeOther.data();
+  }
+  auto [it, inserted] = reasons.emplace(code, std::string(kPeerResetCodePrefix) + std::to_string(code));
+  return it->second.c_str();
+}
+
+std::optional<uint32_t> ChannelMux::PeerResetCode(const char* reason) {
+  if (!reason) {
+    return std::nullopt;
+  }
+  const std::string_view text(reason);
+  if (text == kPeerResetReason) {
+    return kResetCodeDefault;
+  }
+  if (text == kPeerResetUnknownFrameType) {
+    return kResetCodeUnknownFrameType;
+  }
+  if (text.size() <= kPeerResetCodePrefix.size() ||
+      text.substr(0, kPeerResetCodePrefix.size()) != kPeerResetCodePrefix) {
+    return std::nullopt;
+  }
+  const std::string_view digits = text.substr(kPeerResetCodePrefix.size());
+  uint32_t code = 0;
+  const auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), code);
+  if (ec != std::errc() || end != digits.data() + digits.size()) {
+    return std::nullopt;
+  }
+  return code;
+}
 
 ChannelMux::ChannelMux(const bool initiator) : now_ms_(DefaultNowMs) {
   // Dual-open on one Session: initiator allocates odd ids, responder even — avoids OPEN glare.
@@ -431,7 +486,7 @@ Roe<void> ChannelMux::DispatchFrame(ChannelFrame frame) {
         // (a request it refused early can be megabytes).
         DropQueued(frame.header.channel_id);
         channel->state = ChannelState::Closed;
-        NotifyTerminal(*channel, "peer_reset");
+        NotifyTerminal(*channel, PeerResetReason(frame.reset_code));
         channels_.erase(frame.header.channel_id);
       }
       return Roe<void>();
@@ -491,7 +546,38 @@ Roe<void> ChannelMux::OnFrameInbound(const std::span<const uint8_t> wire) {
   if (!frame) {
     return frame.error();
   }
+  if (!ChannelWire::IsKnownFrameType(frame->header.frame_type)) {
+    return AnswerUnknownFrame(*frame);
+  }
   return DispatchFrame(std::move(*frame));
+}
+
+Roe<void> ChannelMux::AnswerUnknownFrame(const ChannelFrame& frame) {
+  const uint32_t id = frame.header.channel_id;
+  const auto type = std::to_string(static_cast<unsigned>(frame.header.frame_type));
+  if (id == kCapabilityChannelId) {
+    // The link's own channel is never reset over a frame it may do without (Types.h: such a type must be optional).
+    return Error("amp mux: unknown frame type " + type + " on channel 0, dropped");
+  }
+  if (auto* channel = ChannelById(id)) {
+    // This side can no longer follow the channel: what the frame meant, and whether it took a seq, is unknown.
+    TerminalHandler handler = channel->on_terminal; // ResetChannel erases the record
+    (void)ResetChannel(id, kResetCodeUnknownFrameType);
+    if (handler) {
+      handler(id, kUnknownFrameTypeReason);
+    }
+    return Error("amp mux: unknown frame type " + type + ", channel reset");
+  }
+  // No such channel here: tell the sender all the same, so it stops waiting on an answer that will not come.
+  ChannelRecord none;
+  none.id = id;
+  ChannelFrame reset;
+  reset.header.frame_type = ChannelFrameType::Reset;
+  reset.header.channel_id = id;
+  reset.header.channel_seq = 0;
+  reset.reset_code = kResetCodeUnknownFrameType;
+  (void)SendFrame(reset, none);
+  return Error("amp mux: unknown frame type " + type + " on an unknown channel");
 }
 
 void ChannelMux::AdvanceTxSeq(const uint32_t channel_id) {
@@ -676,6 +762,10 @@ Roe<void> ChannelMux::SendCapabilityOffer(ChannelMux& mux, const CapabilityPaylo
   if (!encoded) {
     return encoded.error();
   }
+  return SendCapabilityOfferBytes(mux, std::move(*encoded));
+}
+
+Roe<void> ChannelMux::SendCapabilityOfferBytes(ChannelMux& mux, std::vector<uint8_t> encoded) {
   if (!mux.ChannelById(kCapabilityChannelId)) {
     auto id = mux.OpenOutbound(kCapabilityProtocolId, CapabilityChannelPolicy(), kCapabilityChannelId);
     if (!id) {
@@ -684,11 +774,11 @@ Roe<void> ChannelMux::SendCapabilityOffer(ChannelMux& mux, const CapabilityPaylo
   }
   const auto state = mux.State(kCapabilityChannelId);
   if (state == ChannelState::Open) {
-    return mux.SendData(kCapabilityChannelId, std::move(*encoded));
+    return mux.SendData(kCapabilityChannelId, std::move(encoded));
   }
   if (state == ChannelState::Opening) {
     // Async ADP: OpenAck arrives on a later pump; queue DATA until then.
-    mux.pending_open_data_[kCapabilityChannelId] = std::move(*encoded);
+    mux.pending_open_data_[kCapabilityChannelId] = std::move(encoded);
     return Roe<void>();
   }
   return Error("amp mux: capability channel not usable");

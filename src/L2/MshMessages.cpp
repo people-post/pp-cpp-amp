@@ -5,6 +5,7 @@
 #include "amp/L2/Types.h"
 
 #include <cstring>
+#include <string>
 
 namespace pp::amp {
 
@@ -68,6 +69,13 @@ Roe<std::vector<uint8_t>> MshMessages::EncodeHello(const MshMessageType type, co
   return out;
 }
 
+std::optional<uint8_t> MshMessages::PeekHelloVersion(const std::span<const uint8_t> wire) {
+  if (wire.size() < 2) {
+    return std::nullopt;
+  }
+  return wire[1]; // [type][version]…
+}
+
 Roe<MshHello> MshMessages::DecodeHello(const MshMessageType expected, std::span<const uint8_t> wire) {
   auto span = wire;
   auto typed = ExpectType(span, expected);
@@ -81,7 +89,8 @@ Roe<MshHello> MshMessages::DecodeHello(const MshMessageType expected, std::span<
   hello.version = span[0];
   span = span.subspan(1);
   if (hello.version != kMshVersion) {
-    return Error("amp msh: unsupported hello version");
+    return Error(kMshErrUnsupportedVersion, "amp msh: unsupported hello version " + std::to_string(hello.version) +
+                                                " (we speak " + std::to_string(kMshVersion) + ")");
   }
   auto kem_pk = ReadFixed(span, pp::kMlKem768PublicKeyBytes);
   if (!kem_pk) {

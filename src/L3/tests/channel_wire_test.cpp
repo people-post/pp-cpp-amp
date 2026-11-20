@@ -69,5 +69,97 @@ TEST(ChannelWireTest, DataRoundTrip) {
   EXPECT_EQ(decoded->payload, frame.payload);
 }
 
+std::vector<uint8_t> Encoded(const ChannelFrame& frame) {
+  auto wire = ChannelWire::Encode(frame);
+  EXPECT_TRUE(static_cast<bool>(wire));
+  return wire ? *wire : std::vector<uint8_t>{};
+}
+
+ChannelFrame Control(const ChannelFrameType type, const uint32_t channel_id) {
+  ChannelFrame frame;
+  frame.header.frame_type = type;
+  frame.header.channel_id = channel_id;
+  return frame;
+}
+
+// Release compatibility T9: OPEN, OpenAck, CLOSE and RESET read the fields they know and ignore what a later release
+// appends (before, the frame was refused and dropped silently: the opener waited out its deadline).
+TEST(ChannelWireTest, ControlFramesIgnoreTrailingBytes) {
+  const std::vector<uint8_t> later = {0xA1, 0xB2, 0xC3};
+
+  ChannelFrame open = Control(ChannelFrameType::Open, 7);
+  open.open.protocol_id = "/test/chat/1.0.0";
+  open.open.channel_class = ChannelClass::Bulk;
+  open.open.flags = 0x8001;
+  open.open.max_message_bytes = 4096;
+  auto wire = Encoded(open);
+  wire.insert(wire.end(), later.begin(), later.end());
+  auto decoded = ChannelWire::Decode(wire);
+  ASSERT_TRUE(static_cast<bool>(decoded)) << decoded.error().message;
+  EXPECT_EQ(decoded->open.protocol_id, "/test/chat/1.0.0");
+  EXPECT_EQ(decoded->open.channel_class, ChannelClass::Bulk);
+  EXPECT_EQ(decoded->open.flags, 0x8001);
+  EXPECT_EQ(decoded->open.max_message_bytes, 4096u);
+
+  ChannelFrame ack = Control(ChannelFrameType::OpenAck, 7);
+  ack.open_ack_result = 2;
+  wire = Encoded(ack);
+  wire.insert(wire.end(), later.begin(), later.end());
+  decoded = ChannelWire::Decode(wire);
+  ASSERT_TRUE(static_cast<bool>(decoded)) << decoded.error().message;
+  EXPECT_EQ(decoded->open_ack_result, 2);
+
+  ChannelFrame close = Control(ChannelFrameType::Close, 7);
+  close.payload = {'b', 'y', 'e'};
+  wire = Encoded(close);
+  wire.insert(wire.end(), later.begin(), later.end());
+  decoded = ChannelWire::Decode(wire);
+  ASSERT_TRUE(static_cast<bool>(decoded)) << decoded.error().message;
+  EXPECT_EQ(decoded->payload, (std::vector<uint8_t>{'b', 'y', 'e'}));
+
+  ChannelFrame reset = Control(ChannelFrameType::Reset, 7);
+  reset.reset_code = 0x01020304u;
+  wire = Encoded(reset);
+  wire.insert(wire.end(), later.begin(), later.end());
+  decoded = ChannelWire::Decode(wire);
+  ASSERT_TRUE(static_cast<bool>(decoded)) << decoded.error().message;
+  EXPECT_EQ(decoded->reset_code, 0x01020304u);
+}
+
+// What this release writes is byte for byte what v6.0.0 wrote: no field was added.
+TEST(ChannelWireTest, GoldenControlFrames) {
+  ChannelFrame reset = Control(ChannelFrameType::Reset, 0x04030201u);
+  reset.header.channel_seq = 5;
+  reset.reset_code = 1;
+  EXPECT_EQ(Encoded(reset), (std::vector<uint8_t>{4, 1, 2, 3, 4, 5, 0, 0, 0, 1, 0, 0, 0}));
+  ChannelFrame ack = Control(ChannelFrameType::OpenAck, 2);
+  ack.open_ack_result = 1;
+  EXPECT_EQ(Encoded(ack), (std::vector<uint8_t>{1, 2, 0, 0, 0, 0, 0, 0, 0, 1}));
+  EXPECT_EQ(Encoded(Control(ChannelFrameType::Close, 2)), (std::vector<uint8_t>{3, 2, 0, 0, 0, 0, 0, 0, 0}));
+}
+
+TEST(ChannelWireTest, TruncatedKnownFieldsAreStillRefused) {
+  const std::vector<uint8_t> reset = {4, 7, 0, 0, 0, 0, 0, 0, 0, 1, 0}; // a RESET code of two bytes
+  EXPECT_FALSE(static_cast<bool>(ChannelWire::Decode(reset)));
+  const std::vector<uint8_t> ack = {1, 7, 0, 0, 0, 0, 0, 0, 0}; // no result
+  EXPECT_FALSE(static_cast<bool>(ChannelWire::Decode(ack)));
+  const std::vector<uint8_t> close = {3, 7, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 'x'}; // a 9-byte reason, 1 there
+  EXPECT_FALSE(static_cast<bool>(ChannelWire::Decode(close)));
+}
+
+// An unknown frame type decodes as its header and body, so the mux can answer it instead of dropping it unseen.
+TEST(ChannelWireTest, AnUnknownFrameTypeDecodesAsItsHeader) {
+  const std::vector<uint8_t> wire = {9, 5, 0, 0, 0, 0, 0, 0, 0, 0xEE, 0xFF};
+  auto decoded = ChannelWire::Decode(wire);
+  ASSERT_TRUE(static_cast<bool>(decoded)) << decoded.error().message;
+  EXPECT_FALSE(ChannelWire::IsKnownFrameType(decoded->header.frame_type));
+  EXPECT_EQ(static_cast<uint8_t>(decoded->header.frame_type), 9);
+  EXPECT_EQ(decoded->header.channel_id, 5u);
+  EXPECT_EQ(decoded->payload, (std::vector<uint8_t>{0xEE, 0xFF}));
+  for (uint8_t t = 0; t <= 5; ++t) {
+    EXPECT_TRUE(ChannelWire::IsKnownFrameType(static_cast<ChannelFrameType>(t))) << int(t);
+  }
+}
+
 } // namespace
 } // namespace pp::amp

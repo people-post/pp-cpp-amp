@@ -9,6 +9,8 @@
 #include <gtest/gtest.h>
 #include <sodium.h>
 
+#include <optional>
+
 namespace pbr::test {
 namespace {
 
@@ -709,6 +711,7 @@ TEST_F(AmpIntegrationTest, AdversarialMshChunkCountBombAdv11) {
   ASSERT_TRUE(ok_single->has_value());
 }
 
+// N10: raw garbage datagrams mid-handshake are dropped and the handshake recovers.
 TEST_F(AmpIntegrationTest, AdversarialGarbageMshMidHandshakeAdv03) {
   auto created = MakeAmpIntegrationHarness();
   ASSERT_TRUE(static_cast<bool>(created));
@@ -723,9 +726,6 @@ TEST_F(AmpIntegrationTest, AdversarialGarbageMshMidHandshakeAdv03) {
     done = true;
   });
   for (size_t i = 0; i < 500; ++i) {
-    if (h.mgr_a().FindLink("b") != nullptr) {
-      h.InjectMshGarbage(HarnessSide::A, "b");
-    }
     h.InjectRawDatagram(HarnessSide::A, h.addr_b, std::vector<uint8_t>(32, 0xCC));
     h.PumpBoth();
     if (done && h.mgr_a().IsConnected("b")) {
@@ -735,6 +735,35 @@ TEST_F(AmpIntegrationTest, AdversarialGarbageMshMidHandshakeAdv03) {
   ASSERT_TRUE(done);
   EXPECT_TRUE(ok);
   EXPECT_TRUE(h.mgr_a().IsConnected("b"));
+}
+
+// N10, release compatibility T9 / U4: an MSH message of a type the responder does not know (here 0xFF) fails its
+// handshake at once — "dial fail clean" — instead of being ignored until the dial timed out, and its Close tells the
+// dialer why (a handshake failure, not "its link table is full").
+TEST_F(AmpIntegrationTest, AnUnknownMshMessageTypeFailsTheDialCleanlyAdv03b) {
+  auto created = MakeAmpIntegrationHarness();
+  ASSERT_TRUE(static_cast<bool>(created));
+  auto& h = **created;
+  h.ep_b->SetAcceptEnabled(true);
+  ASSERT_TRUE(static_cast<bool>(h.mgr_a().RegisterEndpoint("b", h.ma_b)));
+
+  std::optional<pp::amp::PeerLinkManager::LinkRoe> result;
+  h.mgr_a().EnsureAssociation("b", [&](pp::amp::PeerLinkManager::LinkRoe r) { result = std::move(r); });
+  int64_t took_ms = 0;
+  for (size_t i = 0; i < 500 && !result; ++i) {
+    if (h.mgr_a().FindLink("b") != nullptr) {
+      h.InjectMshGarbage(HarnessSide::A, "b");
+    }
+    h.PumpBoth();
+    h.AdvanceMs(10);
+    took_ms += 10;
+  }
+  ASSERT_TRUE(result.has_value());
+  EXPECT_LT(took_ms, 1000) << "at once, not at the dial timeout";
+  ASSERT_FALSE(result->isOk());
+  EXPECT_EQ(result->error().GetCode(), pp::amp::PeerLinkManager::Err::HandshakeFailed) << result->error().message;
+  EXPECT_NE(result->error().message.find("the peer failed the handshake"), std::string::npos)
+      << result->error().message;
 }
 
 TEST_F(AmpIntegrationTest, AdversarialSealedGarbageFloodAdv06) {

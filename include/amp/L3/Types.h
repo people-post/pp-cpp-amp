@@ -22,6 +22,16 @@ inline constexpr int64_t kDefaultFragAssemblyTimeoutMs = 30'000;
 /** A lossy (BestEffort) channel's partial message expires sooner: its sender never resends a fragment. */
 inline constexpr int64_t kLossyFragAssemblyTimeoutMs = 1'000;
 
+/**
+ * Frame types. Rules for a type added later (release compatibility T9):
+ * - A reader that does not know the type answers it with a RESET of its channel, code
+ *   ChannelMux::kResetCodeUnknownFrameType (on channel 0, the link's own channel, it drops it instead). A v6.0.0
+ *   reader drops it silently. So a new type is either optional (safe to lose) or used only once the peer's offer
+ *   says it is understood.
+ * - A new type must not use the channel seq (send it with seq 0 and do not advance the channel's): a reader that
+ *   does not know it does not count it, and a reliable channel whose next DATA then carried the wrong seq would stall.
+ * - Known types' bodies grow by appending fields: readers ignore bytes past the fields they know.
+ */
 enum class ChannelFrameType : uint8_t {
   Open = 0,
   OpenAck = 1,

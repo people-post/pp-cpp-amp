@@ -1003,3 +1003,124 @@ TEST(ChannelMuxTest, RawMuxAcceptsUnhandledOpensByDefault) {
 
 } // namespace
 } // namespace pp::amp
+
+namespace pp::amp {
+namespace {
+
+/** A frame of a type this release does not know (a later release's), on `channel_id`, with seq 0. */
+std::vector<uint8_t> UnknownTypeFrame(const uint32_t channel_id, const uint8_t type = 9) {
+  return {type,
+          static_cast<uint8_t>(channel_id),
+          static_cast<uint8_t>(channel_id >> 8),
+          static_cast<uint8_t>(channel_id >> 16),
+          static_cast<uint8_t>(channel_id >> 24),
+          0,
+          0,
+          0,
+          0,
+          0xAB};
+}
+
+// Release compatibility T9: a frame type the reader does not know gets a RESET with a code (before: dropped
+// silently, and a reliable channel stalled if the frame had taken a seq). Both ends' sessions learn why.
+TEST(ChannelMuxTest, AnUnknownFrameTypeIsAnsweredWithACodedReset) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+
+  std::string sender_reason;
+  std::string reader_reason;
+  ChannelSession sender;
+  sender.Bind(
+      link.initiator.mux, *ch, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; },
+      [&](const char* reason) { sender_reason = reason ? reason : ""; });
+  ChannelSession reader;
+  reader.Bind(
+      link.responder.mux, *ch, ControlJsonChannelPolicy(), [](Roe<std::vector<uint8_t>>) { return true; },
+      [&](const char* reason) { reader_reason = reason ? reason : ""; });
+
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.InjectFrameForTest(*ch, UnknownTypeFrame(*ch))));
+  EXPECT_EQ(reader_reason, ChannelMux::kUnknownFrameTypeReason);
+  EXPECT_EQ(sender_reason, "peer_reset: unknown-frame-type");
+  EXPECT_EQ(ChannelMux::PeerResetCode(sender_reason.c_str()), ChannelMux::kResetCodeUnknownFrameType);
+  EXPECT_TRUE(sender.IsClosed());
+  EXPECT_TRUE(reader.IsClosed());
+  EXPECT_EQ(link.initiator.mux.State(*ch), ChannelState::Closed);
+  EXPECT_EQ(link.responder.mux.State(*ch), ChannelState::Closed);
+}
+
+// On a channel the reader has no record of, the sender is still told (a bare RESET).
+TEST(ChannelMuxTest, AnUnknownFrameTypeOnAnUnknownChannelIsStillAnswered) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch));
+  std::string sender_reason;
+  link.initiator.mux.SetTerminalHandler(*ch,
+                                        [&](uint32_t, const char* reason) { sender_reason = reason ? reason : ""; });
+  // The responder forgets the channel (no RESET goes back); the initiator still has it open.
+  link.responder.mux.SetTransport([](adp::QosClass, std::vector<uint8_t>) { return Roe<void>(); });
+  ASSERT_TRUE(static_cast<bool>(link.responder.mux.ResetChannel(*ch)));
+  std::vector<std::vector<uint8_t>> answered;
+  link.responder.mux.SetTransport([&](adp::QosClass, std::vector<uint8_t> frame) {
+    answered.push_back(frame);
+    (void)link.initiator.mux.OnFrameInbound(frame);
+    return Roe<void>();
+  });
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.InjectFrameForTest(*ch, UnknownTypeFrame(*ch))));
+  ASSERT_EQ(answered.size(), 1u);
+  auto reset = ChannelWire::Decode(answered[0]);
+  ASSERT_TRUE(static_cast<bool>(reset));
+  EXPECT_EQ(reset->header.frame_type, ChannelFrameType::Reset);
+  EXPECT_EQ(reset->reset_code, ChannelMux::kResetCodeUnknownFrameType);
+  EXPECT_EQ(sender_reason, "peer_reset: unknown-frame-type");
+}
+
+// Channel 0 is the link's own: an unknown frame type on it is dropped, never reset (new types there are optional).
+TEST(ChannelMuxTest, AnUnknownFrameTypeOnChannelZeroIsDropped) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch0 = link.initiator.mux.OpenOutbound(kCapabilityProtocolId, CapabilityChannelPolicy(), kCapabilityChannelId);
+  ASSERT_TRUE(static_cast<bool>(ch0));
+  size_t answered = 0;
+  link.responder.mux.SetTransport([&](adp::QosClass, std::vector<uint8_t>) {
+    ++answered;
+    return Roe<void>();
+  });
+  EXPECT_FALSE(static_cast<bool>(link.responder.mux.OnFrameInbound(UnknownTypeFrame(kCapabilityChannelId))));
+  EXPECT_EQ(answered, 0u);
+  EXPECT_EQ(link.responder.mux.State(kCapabilityChannelId), ChannelState::Open);
+}
+
+// Release compatibility T9: the RESET code reaches the terminal reason. The default code keeps the reason every
+// v6.0.0 reset gave ("peer_reset"), so products matching it see no change.
+TEST(ChannelMuxTest, TheResetCodeReachesTheTerminalReason) {
+  auto link_result = test::AmpTestLink::Create();
+  ASSERT_TRUE(static_cast<bool>(link_result));
+  auto& link = **link_result;
+  auto ch1 = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  auto ch2 = link.initiator.mux.OpenOutbound("/test/chat/1.0.0", ControlJsonChannelPolicy());
+  ASSERT_TRUE(static_cast<bool>(ch1));
+  ASSERT_TRUE(static_cast<bool>(ch2));
+  std::string reason1;
+  std::string reason2;
+  link.responder.mux.SetTerminalHandler(*ch1, [&](uint32_t, const char* reason) { reason1 = reason; });
+  link.responder.mux.SetTerminalHandler(*ch2, [&](uint32_t, const char* reason) { reason2 = reason; });
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch1)));
+  ASSERT_TRUE(static_cast<bool>(link.initiator.mux.ResetChannel(*ch2, 7)));
+  EXPECT_EQ(reason1, "peer_reset");
+  EXPECT_EQ(reason2, "peer_reset: code 7");
+  EXPECT_EQ(ChannelMux::PeerResetCode(reason1.c_str()), 1u);
+  EXPECT_EQ(ChannelMux::PeerResetCode(reason2.c_str()), 7u);
+  EXPECT_EQ(ChannelMux::PeerResetReason(7), ChannelMux::PeerResetReason(7)) << "interned: the pointer lasts";
+  EXPECT_FALSE(ChannelMux::PeerResetCode("peer_close").has_value());
+  EXPECT_FALSE(ChannelMux::PeerResetCode("peer_reset: code x").has_value());
+  EXPECT_FALSE(ChannelMux::PeerResetCode(nullptr).has_value());
+}
+
+} // namespace
+} // namespace pp::amp

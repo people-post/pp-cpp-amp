@@ -137,6 +137,38 @@ enum class PacketType : uint8_t {
 };
 inline constexpr uint8_t kMaxPacketType = static_cast<uint8_t>(PacketType::PlainReliable);
 
+/**
+ * Why an association was closed: the first byte of a Close packet's payload (release compatibility U4). A v6.0.0
+ * node sends its Close with no payload and ignores the payload of a Close it receives, so a reason is additive in
+ * both directions: an empty payload reads as Unspecified. Fields after the reason byte append (readers ignore bytes
+ * past the ones they know), and a reason byte this release does not know reads as a refusal without a reason.
+ */
+enum class CloseReason : uint8_t {
+  /** No reason given: an empty payload (every v6.0.0 Close, or a close no reason below fits). */
+  Unspecified = 0,
+  /** The closer's link table is full (it refused the newcomer, or evicted this idle link to make room). */
+  TableFull = 1,
+  /** The closer's admission policy refused the association before any handshake. */
+  Admission = 2,
+  /** The handshake failed on the closer's side. */
+  HandshakeFailed = 3,
+  /** The closer does not speak the hello's MSH version: `[count u8][version u8 …]`, the ones it does, follow. */
+  UnsupportedMshVersion = 4,
+  /** The closer is shutting down. */
+  Shutdown = 5,
+};
+
+/** "table-full", "admission", …; "unspecified"; "unknown" for a byte this release does not know. */
+const char* CloseReasonName(CloseReason reason);
+
+/** A Close packet's payload, decoded (WireCodec::DecodeClosePayload). */
+struct ClosePayload {
+  /** As sent: may hold a value past Shutdown (a later release's reason). */
+  CloseReason reason = CloseReason::Unspecified;
+  /** UnsupportedMshVersion: the MSH versions the closer speaks. */
+  std::vector<uint8_t> versions;
+};
+
 /** Sealed by the session (no HMAC, no timestamp; the number is the packet number). */
 inline constexpr bool IsSealed(PacketType type) {
   return type == PacketType::DataBestEffort || type == PacketType::DataReliable;

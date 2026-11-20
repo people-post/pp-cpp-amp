@@ -48,7 +48,16 @@ public:
   /** Encode a FRAG frame from a payload span (avoids copying into ChannelFragBody::chunk). */
   static Roe<std::vector<uint8_t>> EncodeFrag(const ChannelHeader& header, uint64_t msg_id, uint16_t frag_index,
                                               uint16_t frag_count, uint32_t total_len, std::span<const uint8_t> chunk);
+  /**
+   * Decode one frame. Readers tolerate what a later release adds (release compatibility T9):
+   * - OPEN, OpenAck, CLOSE and RESET ignore bytes past the fields they know (new fields append).
+   * - A frame type this release does not know decodes as its header, its body in `payload`
+   *   (IsKnownFrameType false): the mux answers it with a RESET (ChannelMux::kResetCodeUnknownFrameType).
+   * Truncated known fields are still refused.
+   */
   static Roe<ChannelFrame> Decode(std::span<const uint8_t> wire);
+  /** Whether this release knows `type` (Open … Frag). */
+  static bool IsKnownFrameType(ChannelFrameType type);
 
   static Roe<std::vector<uint8_t>> EncodeLenUtf8Le(std::string_view text);
   static Roe<std::string> DecodeLenUtf8Le(std::span<const uint8_t> wire, size_t& consumed);

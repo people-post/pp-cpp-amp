@@ -71,6 +71,50 @@ Roe<WireCodec::VersionNegotiation> WireCodec::DecodeVersionNegotiation(const std
   return out;
 }
 
+const char* CloseReasonName(const CloseReason reason) {
+  switch (reason) {
+    case CloseReason::Unspecified:
+      return "unspecified";
+    case CloseReason::TableFull:
+      return "table-full";
+    case CloseReason::Admission:
+      return "admission";
+    case CloseReason::HandshakeFailed:
+      return "handshake-failed";
+    case CloseReason::UnsupportedMshVersion:
+      return "unsupported-msh-version";
+    case CloseReason::Shutdown:
+      return "shutdown";
+  }
+  return "unknown";
+}
+
+std::vector<uint8_t> WireCodec::EncodeClosePayload(const CloseReason reason, const std::span<const uint8_t> versions) {
+  if (reason == CloseReason::Unspecified) {
+    return {};
+  }
+  std::vector<uint8_t> out{static_cast<uint8_t>(reason)};
+  if (reason == CloseReason::UnsupportedMshVersion) {
+    const size_t count = std::min<size_t>(versions.size(), 0xff);
+    out.push_back(static_cast<uint8_t>(count));
+    out.insert(out.end(), versions.begin(), versions.begin() + static_cast<std::ptrdiff_t>(count));
+  }
+  return out;
+}
+
+ClosePayload WireCodec::DecodeClosePayload(const std::span<const uint8_t> payload) {
+  ClosePayload out;
+  if (payload.empty()) {
+    return out;
+  }
+  out.reason = static_cast<CloseReason>(payload[0]);
+  if (out.reason == CloseReason::UnsupportedMshVersion && payload.size() >= 2) {
+    const size_t count = std::min<size_t>(payload[1], payload.size() - 2);
+    out.versions.assign(payload.begin() + 2, payload.begin() + 2 + static_cast<std::ptrdiff_t>(count));
+  }
+  return out; // bytes past these are a later release's fields
+}
+
 Roe<PacketType> WireCodec::PeekType(std::span<const uint8_t> datagram) {
   if (datagram.empty()) {
     return Error("adp: empty datagram");

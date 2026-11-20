@@ -7,6 +7,7 @@
 #include "amp/L3/ChannelSession.h"
 #include "amp/link/CarrierLane.h"
 #include "amp/link/CodedFailure.h"
+#include "amp/link/LinkEvents.h"
 #include "amp/link/LinkIdentity.h"
 #include "amp/link/MshAdpHandshake.h"
 #include "amp/link/Types.h"
@@ -197,12 +198,19 @@ public:
 
   int64_t HandshakeStartedMs() const { return handshake_started_ms_; }
   void FailHandshakeTimeout();
-  /** The peer closed the association during our handshake: it refused us (table full). */
-  void FailRefused();
+  /**
+   * The peer closed the association during our handshake: it refused us, for the reason its Close gives (U4). No
+   * reason (a v6.0.0 peer) reads as before: refused, its link table most likely full (TransportFailed).
+   */
+  void FailRefused(const adp::ClosePayload& close = {});
   /** A queued send of its handshake found no route to the peer (Endpoint::FlushSends): the dial fails now. */
   void FailUnreachable();
   /** Its dial's peer speaks none of our wire version (`versions` from its negotiation reply). */
   void FailVersionMismatch(const std::vector<uint8_t>& versions);
+  /** The peer speaks none of our MSH version (`versions` from its hello or its Close; `source` says which). */
+  void FailMshVersionMismatch(std::vector<uint8_t> versions, const char* source);
+  /** The last version mismatch this link failed on (wire or MSH, with who must update — U5); unset otherwise. */
+  const std::optional<VersionMismatchInfo>& LastVersionMismatch() const { return version_mismatch_; }
   void DemoteForScheduledDrop();
 
   /** Index / table ops — public so LinkTable needs no friendship into PeerLink. */
@@ -212,7 +220,15 @@ public:
   }
   void RebindDialKey(std::string peer_key) { peer_key_ = std::move(peer_key); }
 
-  void ApplyRemoteCapability(CapabilityPayload payload) { remote_capability_ = std::move(payload); }
+  void ApplyRemoteCapability(CapabilityPayload payload) {
+    remote_capability_ = std::move(payload);
+    unreadable_capability_.reset();
+  }
+  /** The peer's offer did not decode (U6): what its first byte was and why. */
+  void NoteUnreadableCapability(UnreadableCapabilityOffer offer) { unreadable_capability_ = std::move(offer); }
+  const UnreadableCapabilityOffer* UnreadableCapability() const {
+    return unreadable_capability_ ? &*unreadable_capability_ : nullptr;
+  }
   bool CapabilityExchangeStarted() const { return capability_exchange_started_; }
   void MarkCapabilityExchangeStarted() { capability_exchange_started_ = true; }
   bool CapabilityOfferSent() const { return capability_offer_sent_; }
@@ -282,6 +298,8 @@ private:
   bool capability_exchange_started_ = false;
   bool capability_offer_sent_ = false;
   std::optional<CapabilityPayload> remote_capability_;
+  std::optional<UnreadableCapabilityOffer> unreadable_capability_;
+  std::optional<VersionMismatchInfo> version_mismatch_;
 
   std::unique_ptr<MshAdpHandshake> handshake_;
   /** Carrier-backed initiator: when the last handshake message goes again, and the wait after that. */
