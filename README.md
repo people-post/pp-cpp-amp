@@ -18,21 +18,27 @@ tests/integration/    Cross-layer integration tests
 
 Consumers include headers as `#include "amp/L1/Clock.h"` (include root is `include/`).
 
-NAT / association keepalive: [docs/KEEPALIVE.md](docs/KEEPALIVE.md).
+## Docs
 
-Tunable transport policy (`PeerLinkConfig::adp` / `::mux`): [docs/TUNING.md](docs/TUNING.md).
+| Doc | What |
+|-----|------|
+| [docs/STACK.md](docs/STACK.md) | **Start here.** The big picture and layer map: layers, objects, failure propagation, QoS, security, channel 0, circuits, addressing; the product entry (`MeshRuntime`) and the lifetimes product code can rely on |
+| [docs/contracts/ADP.md](docs/contracts/ADP.md) | L1 wire (normative): packets, version negotiation, addresses |
+| [docs/contracts/AMP-SESSION.md](docs/contracts/AMP-SESSION.md) | L2 session (normative): MSH handshake, keys, sealing packets, rekey |
+| [docs/contracts/AMP-CHANNEL.md](docs/contracts/AMP-CHANNEL.md) | L3 channels (normative): frames, lifecycle, channel 0, fragmentation, policies, the nested Session carrier, ownership |
+| [docs/DESIGN.md](docs/DESIGN.md) | L1 design: threat model, API, I/O (and the retired wire v1) |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | Why: the stack's decisions (A001–A029, the transport's; ids from pp-browser, unchanged) |
+| [docs/testing/](docs/testing/TEST_MATRIX.md) | Test matrices: [Tier B](docs/testing/TEST_MATRIX.md) across layers; Tier A per layer, [L1](docs/testing/L1_TEST_MATRIX.md), [L2](docs/testing/L2_TEST_MATRIX.md), [L3](docs/testing/L3_TEST_MATRIX.md), [link](docs/testing/LINK_TEST_MATRIX.md) |
+| [docs/FAULT_CASES.md](docs/FAULT_CASES.md) | Fault / bad-network correctness matrix (N1–N16) |
+| [docs/PERF_CASES.md](docs/PERF_CASES.md) | Performance case matrix and scaffold (`pp_amp_perf`) |
+| [docs/STATUS.md](docs/STATUS.md) | What is left to do |
+| [docs/OWNERSHIP.md](docs/OWNERSHIP.md) | Ownership boundary: what Amp shares, what is the product's L4 |
+| [docs/ADR_LINK_PLANE.md](docs/ADR_LINK_PLANE.md) | Link plane ADR |
+| [docs/ADR_STREAM_TRANSPORT.md](docs/ADR_STREAM_TRANSPORT.md) | Stream transport for networks without UDP (TCP / TLS / WebSocket, Bluetooth; proposed, not built) |
+| [docs/KEEPALIVE.md](docs/KEEPALIVE.md) | NAT / association keepalive |
+| [docs/TUNING.md](docs/TUNING.md) | Tunable transport policy (`PeerLinkConfig::adp` / `::mux`) |
 
-Layer map + product entry (`MeshRuntime`): [docs/STACK.md](docs/STACK.md).
-
-Ownership boundary (what Amp shares vs product L4): [docs/OWNERSHIP.md](docs/OWNERSHIP.md).
-
-Link plane ADR: [docs/ADR_LINK_PLANE.md](docs/ADR_LINK_PLANE.md).
-
-Stream transport for networks without UDP (TCP / TLS / WebSocket, Bluetooth; proposed, not built): [docs/ADR_STREAM_TRANSPORT.md](docs/ADR_STREAM_TRANSPORT.md).
-
-Performance case matrix + scaffold: [docs/PERF_CASES.md](docs/PERF_CASES.md) (`pp_amp_perf`).
-
-Fault / bad-network correctness matrix: [docs/FAULT_CASES.md](docs/FAULT_CASES.md) (N1–N16).
+The stack's design history, contracts and test matrices moved here from pp-browser (its `projects/adp/` and `docs/contracts/`, [CR025](https://github.com/people-post/pp-browser/blob/main/projects/capability-repos/DECISIONS.md#cr025--documentation-lives-with-what-it-describes-pp-specs-public-holds-shared-contracts-vectors-and-cross-repo-programs)). What stays there is the app's: its adoption of Amp (`projects/adp/`, decisions A006, A008–A011, A017, A020–A023, A028), the protocols it and pp-cpp-mesh run on channels ([AMP-CHANNEL](https://github.com/people-post/pp-browser/blob/main/docs/contracts/AMP-CHANNEL.md), [L4_PROTOCOL_KINDS](https://github.com/people-post/pp-browser/blob/main/docs/contracts/L4_PROTOCOL_KINDS.md)), and the link error table [AMP-LINK-ERRORS](https://github.com/people-post/pp-browser/blob/main/docs/contracts/AMP-LINK-ERRORS.md), which pp-cpp-mesh mirrors.
 
 ## Build
 
