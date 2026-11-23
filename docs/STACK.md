@@ -1,6 +1,61 @@
 # STACK
 
-Amp layer map and product entry points.
+Amp's big picture and layer map: the four layers and the objects they hold, how failures travel, one association per peer, QoS, security, the capability channel, fragmentation, circuits, addressing; then the entry points an embedder uses and the lifetimes it can rely on. Normative detail: [ADP](contracts/ADP.md) (L1), [AMP-SESSION](contracts/AMP-SESSION.md) (L2), [AMP-CHANNEL](contracts/AMP-CHANNEL.md) (L3); why: [DECISIONS.md](DECISIONS.md).
+
+> The big picture (§ Names to § Non-goals, and § Related docs) moved from pp-browser `projects/adp/STACK.md` at [3e407e3](https://github.com/people-post/pp-browser/blob/3e407e342320719794edd3025c0c7a632bb5f13a/projects/adp/STACK.md) (pp-browser [CR025](https://github.com/people-post/pp-browser/blob/main/projects/capability-repos/DECISIONS.md#cr025--documentation-lives-with-what-it-describes-pp-specs-public-holds-shared-contracts-vectors-and-cross-repo-programs)) and is merged here with this file's layer map and product entry. It is the stack as designed in D0 (2026-08-30); *Since D0* / *Now* notes say where it has changed since. Links back into pp-browser point at its `main`.
+
+**Status:** Foundation spec (2026-08-30)  
+**Owner:** Hongwei + agents  
+**Related:** [ADP.md](contracts/ADP.md) (L1), [AMP-SESSION.md](contracts/AMP-SESSION.md) (L2), [AMP-CHANNEL.md](contracts/AMP-CHANNEL.md) (L3), [L4_PROTOCOL_KINDS.md](https://github.com/people-post/pp-browser/blob/main/docs/contracts/L4_PROTOCOL_KINDS.md) (L4 kinds / [A028](https://github.com/people-post/pp-browser/blob/main/projects/adp/DECISIONS.md#a028--l4-protocol-kinds--seven-conversation-shapes)), [DECISIONS.md](DECISIONS.md) (the transport's; the app's stay in pp-browser)
+
+## Names
+
+| Name | Scope |
+|------|--------|
+| **ADP** | L1 wire only — Association Datagram Protocol (`src/lib/amp/L1/`, `pp_base_adp`) |
+| **AMP** | Full four-layer peer mesh stack built on ADP — **A**ssociation **M**esh **P**rotocol |
+
+When migrating off TCP/QUIC/Yamux, say **AMP** or **ADP stack**. Reserve **ADP** for the UDP datagram layer.
+
+## North star
+
+Replace the product peer underlay (**TCP + Noise + Yamux**) with **UDP + AMP (L1–L3)**. Application payloads ([WIRE_SCHEMAS.md](https://github.com/people-post/pp-browser/blob/main/docs/contracts/WIRE_SCHEMAS.md)) stay at L4 unchanged.
+
+Libp2p shrinks to retained crypto/identity utilities; `Host::newStream` and stream transports retire from the product path ([A017](https://github.com/people-post/pp-browser/blob/main/projects/adp/DECISIONS.md#a017--libp2p-shrink-retain-crypto--peerid-only)).
+
+## Four layers
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  L4  Application protocols (kinds: identify / discover /│
+│      reach / circuit / rpc / blob / realtime — A028)    │
+│      /pp/* /pp-mesh/* + WIRE_SCHEMAS payloads    │
+└─────────────────────────┬───────────────────────────────┘
+                          │ messages ≤ app max (e.g. 256 KiB)
+┌─────────────────────────▼───────────────────────────────┐
+│  L3  AMP Channel                                        │
+│      mux, OPEN/CLOSE/RESET, fragmentation, QoS policy   │
+│      channel 0 = capabilities / identify                │
+└─────────────────────────┬───────────────────────────────┘
+                          │ AEAD plaintext (L2-full)
+┌─────────────────────────▼───────────────────────────────┐
+│  L2  AMP Session (FULL)                                 │
+│      MSH handshake, PeerId bind, session AEAD, rekey    │
+│      derives K_assoc → L1 HMAC                          │
+└─────────────────────────┬───────────────────────────────┘
+                          │ ADP payloads (≤ 1200 B per datagram)
+┌─────────────────────────▼───────────────────────────────┐
+│  L1  ADP Wire v1                                        │
+│      HMAC bind, BestEffort + Reliable, path migrate     │
+└─────────────────────────┬───────────────────────────────┘
+                          │ UDP
+                    PeerLinkManager
+              (dial, warm, backoff, address book)
+```
+
+**Horizontal (not a layer):** `PeerLinkManager` — who to dial, warm/cold policy, circuit escalation, preferred multiaddrs. Evolves from today’s `PeerSessionManager`.
+
+*Since D0:* the diagram is the stack as designed (wire v1). Since v4.0.0 L1, the L2 envelope and the L3 frame header are one packet sealed once: a datagram is at most 1232 B, a sealed packet carries no HMAC and `K_assoc` keys only the handshake and control packets' HMAC (§ [Wire v2](#wire-v2-since-v400), [A029](DECISIONS.md#a029--a-smaller-packet-one-sealed-header-derived-nonces-no-second-tag)). The layers' headers and roles now: § [Layers](#layers).
 
 ## Layers
 
@@ -22,7 +77,7 @@ space, key epoch and packet number (never sent), the clear header as associated 
 keep a sequence number, a timestamp and an HMAC (33 B). The largest datagram is 1232 B, IPv6's smallest MTU less its
 headers; a link's mux fragments to what one packet carries (`ChannelMux::SetMaxFrameBytes`). A carrier-backed link
 seals its inner packets the same way, `[kind][number]` in the clear, each space with its own replay window. Peers on
-wire v1 are refused. Design: pp-browser `projects/adp/DECISIONS.md` A029.
+wire v1 are refused. Design: [A029](DECISIONS.md#a029--a-smaller-packet-one-sealed-header-derived-nonces-no-second-tag).
 
 ### Release compatibility: readers tolerate, refusals say why
 
@@ -52,6 +107,121 @@ T9, U4, U5, U6); no version byte changed.
 - **Channel 0's offer (U6).** Leading byte 4 is frozen; fields append. An offer that does not decode is recorded
   (`PeerLinkManager::UnreadableCapability`, `MeshRuntime::UnreadableCapability`: "unreadable offer, byte N"), and
   the responder still answers with its own offer.
+
+## Object hierarchy
+
+Carry forward the three-object discipline from [LIBP2P_STREAMS.md](https://github.com/people-post/pp-browser/blob/main/docs/architecture/LIBP2P_STREAMS.md) (pipe vs peer link vs domain session):
+
+| Object | Question | Lifetime | Notes |
+|--------|----------|----------|-------|
+| **Endpoint** | UDP I/O + L1 demux? | Process | One or more per host; `Endpoint::Pump()` |
+| **Association** (L1) | Which `assoc_id` + UDP path? | Until L1 Close / fatal error | Path migrate via `SetPeerEndpoint` |
+| **Session** (L2) | Which **PeerId** + crypto epoch? | Until session fail or explicit close | Survives path migrate |
+| **Channel** (L3) | Which **protocol / conversation**? | Until RESET or CLOSE | Siblings independent |
+| **Domain session** (L4) | What product work? | Call, thread, relay hop | Never on the wire |
+
+### Failure propagation
+
+| Event | Effect |
+|-------|--------|
+| **Channel RESET** | That channel only; session + siblings continue |
+| **Channel CLOSE** | Graceful end; drain or abort per policy |
+| **Session rekey** | Channels stay open; new `session_epoch` |
+| **Path migrate** (L1) | Session + channels unchanged |
+| **Session fail** | All channels on that peer torn down |
+| **Association Close** | Session ends |
+| **Endpoint stop** | Everything on that socket |
+
+Domain state (call roster, SQLite, jitter buffers) lives on L4 consumers — not on Channel/Session objects.
+
+**Error escalation** follows the same hierarchy: each owner wraps its immediate child's
+`CodedFailure` (code remap + `AppendFrom` on `message`). See
+[CODED_FAILURE.md](https://github.com/people-post/pp-browser/blob/main/docs/contracts/CODED_FAILURE.md); link-level code table in
+[AMP-LINK-ERRORS.md](https://github.com/people-post/pp-browser/blob/main/docs/contracts/AMP-LINK-ERRORS.md).
+
+## One association per peer pair (default)
+
+**One long-lived Association + one Session per remote PeerId**, many Channels on top ([A026](DECISIONS.md#a026--one-session-per-peerid-under-dual-dial-mesh-election)).
+
+| Anti-pattern | Why avoid |
+|--------------|-----------|
+| New assoc per chat message | Handshake + NAT churn |
+| Separate assocs for media vs control | Double punch / double bind |
+| Assoc per call | Breaks warm-peer policy |
+| Keep both dual-dial links Connected | Two muxes → L4 TearDown / dangling `ChannelSession` |
+
+**Dual-dial:** both sides may dial briefly; mesh **elects** one Connected link (higher base58 PeerId’s outbound wins when both initiated; else keep already-Connected), then drops the loser **on Tick** (never `DropLink` the existing winner’s rival mid-`OnLinkEstablished` — UAF). Call-media OPEN glare stays on that single mux ([A021](https://github.com/people-post/pp-browser/blob/main/projects/adp/DECISIONS.md#a021--call-media--channel-bundle-on-meshruntime)).
+
+**Ownership:** only the parent destroys a child (manager → link/mux → `ChannelSession` → callbacks signal only) — repo-wide [OWNERSHIP.md](https://github.com/people-post/pp-browser/blob/main/docs/architecture/OWNERSHIP.md), mesh [A027](DECISIONS.md#a027--parent-only-destroy-l3l4-ownership-hierarchy), [AMP-CHANNEL § Ownership](contracts/AMP-CHANNEL.md#ownership-hierarchy-a027).
+
+Media vs control separation uses **channels + QoS**, not separate UDP associations.
+
+## QoS mapping (fixed at channel OPEN)
+
+| L3 channel class | ADP QoS | Examples |
+|------------------|---------|----------|
+| Transactional, Control, Bulk | **Reliable** | chat, history, blob, dial-back, call hello/teardown |
+| Realtime media | **BestEffort** | Opus, relay media frames |
+| Realtime signaling on a call | **Reliable** | same call may use both classes on different channels |
+
+**Rule:** L3 Reliable channels send only on ADP Reliable. Realtime media sends only on ADP BestEffort. Do not stack reliable byte streams on top of unreliable ADP for control.
+
+Port today’s `StreamIoPolicy` concepts (`CallMediaIoPolicy`, `ControlJsonIoPolicy`, …) to **channel policies** at L3.
+
+## L2-full security (summary)
+
+- **MSH** (Message Session Handshake): PQ peer authentication + forward secrecy — message-native transcript; semantic reference [libp2p-pq-transport](https://github.com/people-post/pp-browser/blob/main/projects/_archive/libp2p-pq-transport/DESIGN.md) (ML-KEM-768 + ML-DSA-65).
+- **Session profile:** **full only** on the product path ([A013](DECISIONS.md#a013--l2-full-session-only)).
+- **Key separation** ([A015](DECISIONS.md#a015--k_assoc-and-k_session-from-msh-transcript)):
+  - `K_assoc` → ADP L1 HMAC only
+  - `K_session` → L2 AEAD only (never reuse labels)
+- **AEAD AAD:** `session_epoch || channel_id || channel_seq || direction`
+  *Now* (wire v2): the clear packet header is the associated data and the nonce derives from the packet number; channel id and seq travel sealed ([AMP-SESSION § Sealing packets](contracts/AMP-SESSION.md#sealing-packets)).
+- L4 E2E (chat body, call-media AEAD) remains; L2 hides metadata (envelope JSON, Identify addrs, relay control).
+
+Transitional call Opus path (`CallMediaAdpPath`, A008–A011) used TCP-hello `K_assoc`; **delete when AMP call-media ships** ([A015](DECISIONS.md#a015--k_assoc-and-k_session-from-msh-transcript)).
+
+## Channel 0 — capability plane
+
+Immediately after Session completes, open **well-known channel 0** ([A016](DECISIONS.md#a016--channel-0--capability--identify-plane)):
+
+- PeerId confirmation, supported L4 protocol ids, listen multiaddrs
+- Relay/circuit capability flags
+- Replaces libp2p Identify + partial peerstore on the product path
+
+Dynamic protocols use `OPEN` with `protocol_id` (same `/pp/*/1.0.0` and `/pp-mesh/*/1.0.0` strings where applicable).
+
+## Fragmentation
+
+**L1 ADP payload cap stays 1200 B.** Multi-datagram **L3 messages** for L4 frames up to app max ([A018](DECISIONS.md#a018--fragmentation-at-l3-not-l1)) — analogous to today’s `u64` length-prefixed stream frames, but message-native.
+
+*Now:* the limit is the datagram's, 1232 B, and each link fragments to its own frame budget (`ChannelMux::SetMaxFrameBytes`; [AMP-CHANNEL § Fragmentation (L3)](contracts/AMP-CHANNEL.md#fragmentation-l3)).
+
+## Circuit / media-relay (big-picture)
+
+**Channel tunnel model** ([A019](DECISIONS.md#a019--circuit-relay--channel-tunnel)):
+
+```text
+A ──Session──► R ──Session──► B
+     tunnel_ch_A              tunnel_ch_B
+          └──── R forwards L3 frames opaque ────┘
+```
+
+- **v1 (shipped D7a / [A022](https://github.com/people-post/pp-browser/blob/main/projects/adp/DECISIONS.md#a022--circuit-tunnel--non-blocking-coordinator-on-meshruntime)):** `CircuitTunnelCoordinator` splices opaque **L4 DATA** on A↔R and R↔B Sessions via `ChannelBridge` — message-oriented, non-blocking (not a sync `RequestBridge` port)
+- **Future:** nested A↔B Session so relay sees only L2 ciphertext (full [A019](DECISIONS.md#a019--circuit-relay--channel-tunnel) blind)
+- Target `protocol_id` in bridge JSON (replaces stream-bridge target protocol)
+
+*Now:* the nested A↔B Session is built ([A024](DECISIONS.md#a024--amp-call-media-over-circuit--nested-session), [AMP-CHANNEL § Nested Session carrier](contracts/AMP-CHANNEL.md#nested-session-carrier-a024)); the circuit and media-relay coordinators are pp-cpp-mesh's.
+
+## Addressing
+
+```text
+/ip4/<host>/udp/<port>/adp/1.0.0/p2p/<PeerId>
+```
+
+Listen: one UDP socket per host (`Endpoint` demuxes many associations). Dial: create association toward `(ip, port)`; MSH binds PeerId.
+
+*Now:* an address names its wire version, `/adp/2/`, and may name a host (`/dns4|dns6|dns/…`); the versionless `/adp/1.0.0/` is refused ([ADP § Addresses](contracts/ADP.md#addresses), § [Lifetimes](#lifetimes-product-code-can-rely-on)).
 
 ## Product entry
 
@@ -161,6 +331,68 @@ T9, U4, U5, U6); no version byte changed.
 
 `PeerLinkManager::Links()` remains for Amp-internal tests and gradual migration. New product code should not add `FindLink` call sites.
 
+## Threading — MeshPump
+
+| Thread | Work |
+|--------|------|
+| **MeshPump (MeshHost-owned)** | `MeshRuntime::Drive` ~5ms → Endpoint drain → Session decrypt → Channel demux → L4 dispatch (fast) |
+| **MeshControlPool (MeshHost-owned, 1–2)** | Blocking Connect / `IoPumpUntil` facades; may call `MeshHost::Tick` while waiting |
+| **WorkerPool (shared)** | SQLite history serve, Brief HTTP, heavy decrypt/parse — **not** Amp dial waits |
+
+L3 channel objects are **pump/control affine** (same rule as former io-thread affinity). See [THREADING.md](https://github.com/people-post/pp-browser/blob/main/docs/architecture/THREADING.md).
+
+**Product pump:** Amp has no async reactor. `MeshHost::Start` owns a joinable `MeshPumpThread` that calls `Tick()` → `MeshRuntime::Drive()`. `AttachAmpStack` (tests) installs `MeshControlPool` only and leaves Tick to the harness — VirtualClock is not continuous-pump safe. `Drive` is mutex-serialized so MeshControl waiters’ nested `Tick` and the pump do not race PeerLink/Mux.
+
+**Known debt:** many L4 facades still use sync `IoPumpUntil` on MeshControlPool. Prefer A022-style non-blocking callbacks (`StartBridge` + completion) when touching a path; async `Connect(cb)` for call-media is deferred ([SESSION_MACHINES](https://github.com/people-post/pp-browser/blob/main/projects/p2p-av-calls/SESSION_MACHINES.md)).
+
+*Now:* `MeshHost` is pp-cpp-mesh's; who drives the runtime, and when: § [Product entry](#product-entry) (one driver, `DriveResult::next_due`).
+
+## Code layout (planned)
+
+*History:* the layout planned in pp-browser before the extraction. This repo's: [README § Layout](../README.md#layout).
+
+```text
+src/lib/amp/L1/          → L1 (exists; no libp2p)
+src/lib/amp/L2/ → L2 MSH, Session, rekey
+src/lib/amp/L3/ → L3 mux, frag, ChannelSession
+src/lib/mesh/          → PeerLinkManager, reachability; libp2p glue shrinks
+```
+
+Acyclic: `crypto` → `adp` → `mesh` → `p2p` → `people`. `mesh` must not link libp2p ([A017](https://github.com/people-post/pp-browser/blob/main/projects/adp/DECISIONS.md#a017--libp2p-shrink-retain-crypto--peerid-only)).
+
+## Transition
+
+*History:* pp-browser's move onto Amp, done (its D9 and D10, [PHASES](https://github.com/people-post/pp-browser/blob/main/projects/adp/PHASES.md)).
+
+| Phase | Milestone |
+|-------|-----------|
+| **A** | AMP stack parallel — `MemoryDatagramIo` + unit tests only |
+| **B** | L4 protocols port one-by-one (chat → history → call → relay) |
+| **C** | Delete TCP/Yamux/Noise wire path; libp2p Host gone from product |
+
+No scattered `if (amp) … else (libp2p) …` in features — single `ChannelSession` entry per protocol ([A020](https://github.com/people-post/pp-browser/blob/main/projects/adp/DECISIONS.md#a020--single-transport-entry-per-protocol)).
+
+## Non-goals (v1)
+
+- Traffic padding / traffic analysis resistance
+- Kademlia DHT as dial requirement (contacts-first mesh)
+- QUIC compatibility
+- Per-channel lite/full session profiles (session is full only)
+
 ## Ownership
 
 See [OWNERSHIP.md](OWNERSHIP.md). Keepalive: [KEEPALIVE.md](KEEPALIVE.md). Fault matrix: [FAULT_CASES.md](FAULT_CASES.md).
+
+## Related docs
+
+| Doc | What |
+|-----|------|
+| [DESIGN.md](DESIGN.md) | L1 detail |
+| [AMP-SESSION.md](contracts/AMP-SESSION.md) | L2 normative |
+| [AMP-CHANNEL.md](contracts/AMP-CHANNEL.md) | L3 normative |
+| [PHASES.md](https://github.com/people-post/pp-browser/blob/main/projects/adp/PHASES.md) | Implementation checklist (pp-browser's D0–D10, done) |
+| [LIBP2P_STREAMS.md](https://github.com/people-post/pp-browser/blob/main/docs/architecture/LIBP2P_STREAMS.md) | **Legacy** stream stack (until Phase C) |
+| [OWNERSHIP.md](OWNERSHIP.md) | What Amp owns, and what is the embedder's L4 |
+| [DECISIONS.md](DECISIONS.md) | Why the stack is as it is |
+| [testing/TEST_MATRIX.md](testing/TEST_MATRIX.md) | Test matrices: across layers (Tier B), and per layer from there |
+| [STATUS.md](STATUS.md) | What is left to do |
