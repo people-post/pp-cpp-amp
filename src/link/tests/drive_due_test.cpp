@@ -9,7 +9,10 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
+#include <string>
 #include <thread>
+#include <vector>
 
 // An idle driver waits until the runtime's next deadline (DriveResult::next_due), not a fixed few ms, and a change
 // another thread makes on the lane wakes it when it is due sooner (STACK.md § Drive; pp-browser #596: an idle phone's
@@ -336,6 +339,115 @@ TEST(DriveDueTest, AReceiveErrorIsCountedAndTold) {
   EXPECT_EQ(endpoint.Stats().rx_errors, 1u);
   ASSERT_EQ(told.size(), 1u);
   EXPECT_EQ(told[0], "recvfrom errno=57");
+}
+
+// --- Posting off the lane (pp-browser #816): PostToIo / PostDeferred never wait for a drive turn. The pump holds the io
+// lock for a whole turn and may post to the UI from it; a thread holding a lock the lane needs (the UI's, inside a
+// platform callback) that waited for the io lock to post deadlocked.
+
+TEST(DriveDueTest, APostFromOffTheLaneDoesNotWaitWhileTheLaneIsHeld) {
+  auto h = Harness();
+  auto& rt = *h->runtime_a;
+  std::atomic<bool> lane_held{false};
+  std::atomic<bool> release_lane{false};
+  std::thread holder([&] {
+    rt.WithIoLock([&] {
+      lane_held.store(true);
+      while (!release_lane.load()) {
+        std::this_thread::sleep_for(milliseconds(1)); // a long drive turn
+      }
+    });
+  });
+  while (!lane_held.load()) {
+    std::this_thread::yield();
+  }
+  std::atomic<bool> posted{false};
+  int ran = 0;
+  std::thread poster([&] {
+    rt.PostToIo([&] { ++ran; });
+    rt.PostDeferred([&] { ++ran; });
+    posted.store(true);
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!posted.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(milliseconds(1));
+  }
+  EXPECT_TRUE(posted.load()) << "the posts returned while another thread held the lane";
+  release_lane.store(true);
+  holder.join();
+  poster.join();
+  EXPECT_EQ(rt.NextDueIn(), milliseconds(0)) << "what was posted off the lane is due at once";
+  EXPECT_TRUE(rt.Drive().worked);
+  EXPECT_EQ(ran, 2);
+}
+
+TEST(DriveDueTest, PostsKeepTheirOrderOnAndOffTheLane) {
+  auto h = Harness();
+  auto& rt = *h->runtime_a;
+  std::vector<std::string> order;
+  rt.PostToIo([&] { order.push_back("a off"); });
+  rt.WithIoLock([&] { rt.PostToIo([&] { order.push_back("b on"); }); });
+  rt.PostToIo([&] {
+    order.push_back("c off");
+    rt.PostToIo([&] { order.push_back("d from a task"); }); // still runs in this turn
+  });
+  rt.PostDeferred([&] { order.push_back("deferred off"); });
+  EXPECT_TRUE(rt.Drive().worked);
+  EXPECT_EQ(order, (std::vector<std::string>{"a off", "b on", "c off", "d from a task", "deferred off"}));
+}
+
+TEST(DriveDueTest, AnOffLanePostWakesAWaitingDriverOnceAndSharesTheWakeWithLockedChanges) {
+  auto h = Harness();
+  auto& rt = *h->runtime_a;
+  std::atomic<int> wakes{0};
+  rt.SetWakeHandler([&] { wakes.fetch_add(1); });
+  rt.ClaimDriver();
+  const auto other = [&](const std::function<void()>& fn) {
+    std::thread t(fn);
+    t.join();
+  };
+  EXPECT_EQ(wakes.load(), 0);
+  other([&] { rt.PostToIo([] {}); });
+  EXPECT_EQ(wakes.load(), 0) << "no Drive has planned a wait yet: nothing to end";
+
+  ASSERT_TRUE(rt.Drive().worked);
+  ASSERT_EQ(Quiet(rt, *h->clock).next_due, DriveResult::kNothingDue);
+  int before = wakes.load();
+  other([&] { rt.PostToIo([] {}); });
+  EXPECT_EQ(wakes.load(), before + 1) << "a post off the lane ends the wait";
+  other([&] { rt.PostToIo([] {}); });
+  other([&] { (void)rt.IsConnected("nobody"); });
+  EXPECT_EQ(wakes.load(), before + 1) << "one wake per wait, whoever ends it";
+
+  ASSERT_TRUE(rt.Drive().worked);
+  ASSERT_EQ(Quiet(rt, *h->clock).next_due, DriveResult::kNothingDue);
+  before = wakes.load();
+  other([&] { (void)rt.IsConnected("nobody"); }); // waiting long: a locked change ends the wait
+  other([&] { rt.PostToIo([] {}); });
+  EXPECT_EQ(wakes.load(), before + 1) << "a post after a locked change's wake wakes nothing more";
+  EXPECT_TRUE(rt.Drive().worked);
+}
+
+// Stop drops what was posted off the lane; a dropped task whose destructor posts again does not deadlock.
+TEST(DriveDueTest, StopDropsOffLanePostsAndADestructorThatPostsIsSafe) {
+  auto h = Harness();
+  auto& rt = *h->runtime_a;
+  struct PostsWhenGone {
+    MeshRuntime* rt;
+    ~PostsWhenGone() {
+      if (rt) {
+        rt->PostToIo([] {});
+      }
+    }
+  };
+  int ran = 0;
+  auto guard = std::make_shared<PostsWhenGone>(PostsWhenGone{&rt});
+  rt.PostToIo([&ran, guard] { ++ran; });
+  guard.reset();
+  rt.Stop();
+  rt.Start();
+  (void)rt.Drive();
+  EXPECT_EQ(ran, 0) << "a stop drops the queue, posts from off the lane included";
 }
 
 } // namespace

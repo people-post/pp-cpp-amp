@@ -96,6 +96,8 @@ MeshRuntime::~MeshRuntime() {
   std::lock_guard lock(io_mu_);
   io_mu_.SetReleaseHook(nullptr, nullptr); // the members it reads go before the lock does
   wake_ = nullptr;
+  std::lock_guard posts(post_mu_);
+  post_wake_ = nullptr;
 }
 
 void MeshRuntime::Start() {
@@ -113,6 +115,18 @@ void MeshRuntime::Stop() {
   claimed_driver_.store(std::thread::id{}, std::memory_order_release); // a restart claims afresh
   io_queue_.clear();
   deferred_queue_.clear();
+  // Taken out under post_mu_, destroyed after it: a task's destructor may post again, and post_mu_ is not recursive.
+  std::deque<IoTask> dropped_posts;
+  std::deque<IoTask> dropped_deferred;
+  {
+    std::lock_guard posts(post_mu_);
+    dropped_posts.swap(off_lane_posts_);
+    dropped_deferred.swap(off_lane_deferred_);
+    off_lane_count_.store(0, std::memory_order_release);
+  }
+  dropped_posts.clear();
+  dropped_deferred.clear();
+  wake_armed_.store(false, std::memory_order_release);
   timers_.clear();
   io_ticks_.clear();
   timers_due_ms_ = kNotDue;
@@ -167,6 +181,10 @@ void MeshRuntime::SetHousekeepingInterval(const std::chrono::milliseconds interv
 
 void MeshRuntime::SetWakeHandler(std::function<void()> wake) {
   std::lock_guard lock(io_mu_);
+  {
+    std::lock_guard posts(post_mu_);
+    post_wake_ = wake;
+  }
   wake_ = std::move(wake);
 }
 
@@ -193,8 +211,40 @@ void MeshRuntime::OnLaneReleaseLocked() {
   if (pump_idle_until_ms_ - now <= housekeeping_interval_ms_ && FastDueMsLocked(now) >= pump_idle_until_ms_) {
     return;
   }
-  pump_idle_until_ms_ = now; // one wake per wait
-  wake_();
+  pump_idle_until_ms_ = now;                                    // one wake per wait
+  if (wake_armed_.exchange(false, std::memory_order_acq_rel)) { // not already ended by a post off the lane
+    wake_();
+  }
+}
+
+void MeshRuntime::MergeOffLanePostsLocked() {
+  if (off_lane_count_.load(std::memory_order_acquire) == 0) {
+    return;
+  }
+  std::lock_guard posts(post_mu_);
+  for (IoTask& task : off_lane_posts_) {
+    io_queue_.push_back(std::move(task));
+  }
+  for (IoTask& task : off_lane_deferred_) {
+    deferred_queue_.push_back(std::move(task));
+  }
+  off_lane_posts_.clear();
+  off_lane_deferred_.clear();
+  off_lane_count_.store(0, std::memory_order_release);
+}
+
+void MeshRuntime::WakeForOffLanePost() {
+  if (!wake_armed_.exchange(false, std::memory_order_acq_rel)) {
+    return; // not waiting, or its wait was already ended: the driver sees the post at its next drain
+  }
+  std::function<void()> wake;
+  {
+    std::lock_guard posts(post_mu_);
+    wake = post_wake_;
+  }
+  if (wake) {
+    wake(); // outside post_mu_: a wake handler that posts would otherwise take it twice
+  }
 }
 
 void MeshRuntime::PullHousekeepingLocked() {
@@ -209,7 +259,7 @@ void MeshRuntime::PullHousekeepingLocked() {
 }
 
 int64_t MeshRuntime::FastDueMsLocked(const int64_t now) const {
-  if (!io_queue_.empty() || !deferred_queue_.empty()) {
+  if (!io_queue_.empty() || !deferred_queue_.empty() || off_lane_count_.load(std::memory_order_acquire) > 0) {
     return now;
   }
   return std::min({timers_due_ms_, endpoint_.NextResendDueMs(), links_.EveryTickDueMsLocked(now)});
@@ -293,6 +343,7 @@ void MeshRuntime::TickLocked() {
 }
 
 size_t MeshRuntime::DrainPostedIoLocked() {
+  MergeOffLanePostsLocked();
   size_t budget = 0;
   for (; budget < 32 && !io_queue_.empty(); ++budget) {
     auto task = std::move(io_queue_.front());
@@ -306,6 +357,7 @@ size_t MeshRuntime::DrainPostedIoLocked() {
 
 size_t MeshRuntime::DrainDeferredLocked() {
   // Drain all deferred posted this turn (teardown must not wait on a budget).
+  MergeOffLanePostsLocked();
   size_t ran = 0;
   while (!deferred_queue_.empty()) {
     auto batch = std::move(deferred_queue_);
@@ -424,6 +476,9 @@ DriveResult MeshRuntime::Drive() {
   }
   endpoint_.FlushSends();
   const bool worked = touched || ran > 0 || ran_after > 0;
+  // Armed before the due is computed: a post off the lane that lands after this either is counted below (due now) or
+  // finds the wake armed — it can never land unseen in between.
+  wake_armed_.store(true, std::memory_order_release);
   const int64_t now = endpoint_.GetClock().NowMs();
   const int64_t due = NextDueMsLocked(now);
   pump_idle_until_ms_ = due == kNotDue ? std::numeric_limits<int64_t>::max() - 1 : due;
@@ -435,16 +490,38 @@ void MeshRuntime::PostToIo(IoTask task) {
   if (!task) {
     return;
   }
-  std::lock_guard lock(io_mu_);
-  io_queue_.push_back(std::move(task));
+  if (io_mu_.HeldByThisThread()) {
+    // On the lane (a task, a callback, WithIoLock): straight into the queue, after what came before it from off the
+    // lane, so the order holds and it can still run in this turn.
+    std::lock_guard lock(io_mu_);
+    MergeOffLanePostsLocked();
+    io_queue_.push_back(std::move(task));
+    return;
+  }
+  {
+    std::lock_guard posts(post_mu_);
+    off_lane_posts_.push_back(std::move(task));
+    off_lane_count_.fetch_add(1, std::memory_order_acq_rel);
+  }
+  WakeForOffLanePost();
 }
 
 void MeshRuntime::PostDeferred(IoTask task) {
   if (!task) {
     return;
   }
-  std::lock_guard lock(io_mu_);
-  deferred_queue_.push_back(std::move(task));
+  if (io_mu_.HeldByThisThread()) {
+    std::lock_guard lock(io_mu_);
+    MergeOffLanePostsLocked();
+    deferred_queue_.push_back(std::move(task));
+    return;
+  }
+  {
+    std::lock_guard posts(post_mu_);
+    off_lane_deferred_.push_back(std::move(task));
+    off_lane_count_.fetch_add(1, std::memory_order_acq_rel);
+  }
+  WakeForOffLanePost();
 }
 
 MeshRuntime::TimerId MeshRuntime::PostAfter(std::chrono::milliseconds delay, IoTask task) {

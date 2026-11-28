@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <mutex>
+#include <thread>
 
 namespace pp::amp {
 
@@ -17,22 +19,32 @@ public:
 
   void lock() {
     mu_.lock();
-    ++depth_;
+    if (++depth_ == 1) {
+      owner_.store(std::this_thread::get_id(), std::memory_order_release);
+    }
   }
   bool try_lock() {
     if (!mu_.try_lock()) {
       return false;
     }
-    ++depth_;
+    if (++depth_ == 1) {
+      owner_.store(std::this_thread::get_id(), std::memory_order_release);
+    }
     return true;
   }
   void unlock() {
-    if (depth_ == 1 && hook_ != nullptr) {
-      hook_(context_);
+    if (depth_ == 1) {
+      if (hook_ != nullptr) {
+        hook_(context_);
+      }
+      owner_.store(std::thread::id{}, std::memory_order_release);
     }
     --depth_;
     mu_.unlock();
   }
+
+  /** The calling thread holds the lock (any depth). Any thread; only the holder can see itself here. */
+  bool HeldByThisThread() const { return owner_.load(std::memory_order_acquire) == std::this_thread::get_id(); }
 
   /** Under the lock (or before any other thread can take it). `hook` null: none. */
   void SetReleaseHook(void* context, ReleaseHook hook) {
@@ -44,6 +56,8 @@ private:
   std::recursive_mutex mu_;
   /** Recursion depth of the holder (written only by it). */
   int depth_ = 0;
+  /** The holder (none while free): set at its outermost lock, cleared before its outermost unlock. */
+  std::atomic<std::thread::id> owner_{};
   void* context_ = nullptr;
   ReleaseHook hook_ = nullptr;
 };
