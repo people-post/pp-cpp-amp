@@ -252,6 +252,16 @@ Listen: one UDP socket per host (`Endpoint` demuxes many associations). Dial: cr
   work and handlers run, so nothing there may wait for posted io work. `Stop()` releases the claim.
   Unclaimed runtimes are driven by any thread, one at a time (harnesses driving by hand).
   `IsDriving()` may be read from any thread.
+- **Posting never waits for a turn.** A drive holds the io lock for its whole turn (every posted task,
+  timer and link callback runs under it). `PostToIo` / `PostDeferred` from a thread that does not
+  hold the lock queue the task under a small lock of their own and wake a waiting driver; the next
+  drain takes them, in the order they were posted. Posted from the lane itself (a task, a callback,
+  inside `WithIoLock`), a task goes straight into the queue and can still run in the same turn. Why:
+  a thread that holds a lock the lane needs — an app's UI lock inside a platform callback, while the
+  lane posts to the UI — must not wait for the io lock just to post (pp-browser #816). Everything
+  else that takes the io lock (`WithIoLock`, the link manager's calls, timers) still waits for the
+  turn: such a thread must not call it. One wake per wait: a post and a change made under the lock
+  share it.
 - **When to drive.** Each `Drive()` returns a `DriveResult`: datagrams read, whether it worked
   (posted or deferred work, timers, a change another thread made on the lane) and `next_due` — how
   soon the next turn has something to do: posted work (now), the earliest timer, the earliest

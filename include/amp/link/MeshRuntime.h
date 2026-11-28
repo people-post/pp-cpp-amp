@@ -140,15 +140,22 @@ public:
   /** How soon a Drive has something to do now (as Drive's next_due). Any thread. */
   std::chrono::milliseconds NextDueIn() const;
   /**
-   * Any thread: how to end the driver's idle wait (MeshPumpThread::Wake). Called with the io lock held, by a thread
-   * other than the one driving, when its change on the lane is due before the wake the last Drive planned
-   * (next_due) — work posted, a timer sooner, a resend sooner — or when the driver waits longer than the
-   * housekeeping interval (whatever it changed is then looked at within that interval, as before). Must not block or
-   * take the io lock again. Unset: no wake (a driver of its own polls).
+   * Any thread: how to end the driver's idle wait (MeshPumpThread::Wake). Called by a thread other than the one
+   * driving, at most once per wait: with the io lock held when its change on the lane is due before the wake the last
+   * Drive planned (next_due) — a timer sooner, a resend sooner — or when the driver waits longer than the housekeeping
+   * interval (whatever it changed is then looked at within that interval, as before); without it, by PostToIo /
+   * PostDeferred from a thread not holding the lane. Must not block or take the io lock. Unset: no wake (a driver of its
+   * own polls).
    */
   void SetWakeHandler(std::function<void()> wake);
 
-  /** Work lane — drained during Drive (after io ticks / before or with pump). */
+  /**
+   * Work lane — drained during Drive (after io ticks / before or with pump). Any thread, and it never waits for a drive
+   * turn: a thread not holding the io lock queues the task under a lock of its own (the pump holds the io lock for a
+   * whole turn, so waiting for it from a thread that holds a lock the lane may need — the UI's, inside a platform
+   * callback — deadlocks: pp-browser #816). Tasks run in the order they were posted; one posted from the lane (a task,
+   * a callback, inside WithIoLock) still runs in the same turn when the budget allows.
+   */
   void PostToIo(IoTask task);
 
   /**
@@ -306,6 +313,10 @@ private:
   /** IoLaneMutex hook: a thread let go of the lane. */
   static void OnLaneRelease(void* self);
   void OnLaneReleaseLocked();
+  /** Under the io lock: the tasks posted from off the lane join io_queue_ / deferred_queue_, in their order. */
+  void MergeOffLanePostsLocked();
+  /** Off the lane: ends the driver's wait once, if a Drive armed it (wake_armed_). */
+  void WakeForOffLanePost();
 
   struct IoTickEntry {
     IoTickId id = 0;
@@ -332,6 +343,21 @@ private:
   MeshPump pump_;
   std::deque<IoTask> io_queue_;
   std::deque<IoTask> deferred_queue_;
+  /**
+   * PostToIo / PostDeferred from a thread not holding the io lock: queued here under post_mu_ alone, merged into
+   * io_queue_ / deferred_queue_ (MergeOffLanePostsLocked) at every drain and before every post made on the lane, so
+   * posts keep their order. post_wake_ is wake_'s copy for those posters.
+   */
+  std::mutex post_mu_;
+  std::deque<IoTask> off_lane_posts_;
+  std::deque<IoTask> off_lane_deferred_;
+  std::function<void()> post_wake_;
+  std::atomic<size_t> off_lane_count_{0};
+  /**
+   * Set when a Drive plans its wait; the first wake of that wait takes it (a post off the lane, or OnLaneReleaseLocked),
+   * so a wait is ended once whoever ends it.
+   */
+  std::atomic<bool> wake_armed_{false};
   std::vector<TimerEntry> timers_;
   std::vector<IoTickEntry> io_ticks_;
   int64_t housekeeping_interval_ms_ = kDefaultHousekeepingInterval.count();
